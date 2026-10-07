@@ -1072,12 +1072,15 @@ class SyntaxValidator:
             files_map = files_by_rel if files_by_rel is not None else {}
             if not files_map:
                 for p in self.ws.rglob("*"):
-                    if not p.is_file() or not p.suffix:
+                    if any(x in p.parts for x in ignore_dirs):
+                        continue
+                    try:
+                        if not p.is_file() or not p.suffix:
+                            continue
+                    except Exception:
                         continue
                     ext = p.suffix.lstrip(".").lower()
                     if ext not in scan_exts:
-                        continue
-                    if any(x in p.parts for x in ignore_dirs):
                         continue
                     try:
                         rp = Path(os.path.realpath(p))
@@ -1212,12 +1215,15 @@ class SyntaxValidator:
                 scan_exts.update(exts)
 
             for p in self.ws.rglob("*"):
-                if not p.is_file() or not p.suffix:
+                if any(x in p.parts for x in ignore_dirs):
+                    continue
+                try:
+                    if not p.is_file() or not p.suffix:
+                        continue
+                except Exception:
                     continue
                 ext = p.suffix.lstrip(".").lower()
                 if ext not in scan_exts:
-                    continue
-                if any(x in p.parts for x in ignore_dirs):
                     continue
                 try:
                     rp = Path(os.path.realpath(p))

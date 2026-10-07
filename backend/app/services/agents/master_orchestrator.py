@@ -172,6 +172,10 @@ def analyze_workspace(workspace_dir: str) -> Dict[str, Any]:
         "backend/src/index.js", "backend/src/server.js", "backend/src/app.js",
         "backend/index.js", "backend/server.js", "backend/app.js",
         "server/index.js", "server/server.js", "server/app.js", "server.js", "index.js",
+        # Package-style FastAPI layout (backend/app/main.py, app/main.py) — these were
+        # previously invisible to the analyzer, so agents never owned the entrypoint
+        # and the app shipped without it (missing main.py bug class).
+        "backend/app/main.py", "backend/src/main.py", "app/main.py", "src/app/main.py",
         "backend/main.py", "backend/app.py", "main.py", "app.py", "server.py", "src/main.py",
         "cmd/main.go", "main.go"
     ):
@@ -233,45 +237,139 @@ def load_contracts(workspace_dir: str) -> Dict[str, Any]:
 
 
 def extract_backend_contracts(workspace_dir: str) -> Dict[str, Any]:
-    """Inspect workspace code files to discover API endpoints and DB models."""
+    """Inspect workspace code files to discover API endpoints and DB models with full prefixes."""
     import re
     discovered_routes = []
     discovered_models = []
 
+    # Map of router module/file -> prefix from main.py / app.py include_router statements
+    include_prefixes: Dict[str, str] = {}
+    global_api_prefix = ""
+
+    # Pass 1: Discover global and router include prefixes in entry points
+    for entry_cand in ("backend/app/main.py", "backend/main.py", "app/main.py", "main.py", "app.py", "server.js", "src/server.js", "server/index.js"):
+        entry_file = os.path.join(workspace_dir, entry_cand)
+        if os.path.exists(entry_file):
+            try:
+                with open(entry_file, "r", encoding="utf-8", errors="ignore") as ef:
+                    entry_content = ef.read()
+
+                # Check for global prefix like API_V1_STR = "/api/v1" or prefix="/api/v1"
+                g_match = re.search(r'(?:API_V1_STR|API_PREFIX|prefix)\s*=\s*["\']([^"\']+)["\']', entry_content)
+                if g_match:
+                    global_api_prefix = g_match.group(1).rstrip("/")
+
+                # FastAPI include_router: app.include_router(auth.router, prefix="/api/v1/auth")
+                for inc_match in re.finditer(r'include_router\(\s*([A-Za-z0-9_.]+)(?:,\s*prefix\s*=\s*["\']([^"\']+)["\'])?', entry_content):
+                    r_mod = inc_match.group(1).split(".")[0].strip()
+                    r_pfx = inc_match.group(2) or ""
+                    if r_pfx:
+                        include_prefixes[r_mod] = r_pfx
+
+                # Express app.use('/api/v1/users', usersRouter)
+                for exp_inc in re.finditer(r'app\.use\(\s*["\']([^"\']+)["\'],\s*([A-Za-z0-9_]+)\)', entry_content):
+                    pfx, mod = exp_inc.group(1), exp_inc.group(2)
+                    include_prefixes[mod] = pfx
+            except Exception:
+                pass
+
+    # Pass 2: Extract routes from all files with prefix resolution
     for root, _, files in os.walk(workspace_dir):
-        if any(skip in root for skip in ("node_modules", ".git", ".agent", "venv", "__pycache__")):
+        if any(skip in root for skip in ("node_modules", ".git", ".agent", "venv", "__pycache__", "dist", "build")):
             continue
         for f in files:
             fpath = os.path.join(root, f)
             rel = os.path.relpath(fpath, workspace_dir).replace("\\", "/")
+            base_no_ext = os.path.splitext(f)[0]
+
             if f.endswith(".py"):
                 try:
                     with open(fpath, "r", encoding="utf-8", errors="ignore") as pf:
                         content = pf.read()
-                    route_matches = re.findall(r'@(?:router|app)\.(get|post|put|delete|patch)\(\s*["\']([^"\']+)["\']', content, re.IGNORECASE)
+
+                    # Find APIRouter prefix inside file: router = APIRouter(prefix="/auth")
+                    router_prefix = ""
+                    pfx_match = re.search(r'APIRouter\([^)]*prefix\s*=\s*["\']([^"\']+)["\']', content)
+                    if pfx_match:
+                        router_prefix = pfx_match.group(1).strip()
+
+                    # Combine with include_router prefix if known
+                    inc_pfx = include_prefixes.get(base_no_ext, "")
+                    combined_prefix = ""
+                    if inc_pfx and router_prefix and router_prefix not in inc_pfx:
+                        combined_prefix = f"{inc_pfx.rstrip('/')}/{router_prefix.lstrip('/')}"
+                    elif inc_pfx:
+                        combined_prefix = inc_pfx
+                    elif router_prefix:
+                        combined_prefix = router_prefix
+                    elif global_api_prefix and "router" in content:
+                        combined_prefix = global_api_prefix
+
+                    route_matches = re.findall(r'@(?:router|app)\.(get|post|put|delete|patch)\(\s*["\']([^"\']*)["\']', content, re.IGNORECASE)
                     for method, path in route_matches:
-                        discovered_routes.append({"method": method.upper(), "path": path, "file": rel})
+                        raw_route = path.strip()
+                        if combined_prefix:
+                            clean_pfx = combined_prefix.rstrip("/")
+                            clean_path = raw_route.lstrip("/")
+                            full_path = f"{clean_pfx}/{clean_path}" if clean_path else clean_pfx
+                        else:
+                            full_path = raw_route if raw_route.startswith("/") else f"/{raw_route}"
+
+                        full_path = re.sub(r'/{2,}', '/', full_path)
+                        discovered_routes.append({"method": method.upper(), "path": full_path, "file": rel})
+
                     class_matches = re.findall(r'class\s+([A-Za-z0-9_]+)\s*\((?:BaseModel|Base|SQLModel|Model)\):', content)
                     for cls in class_matches:
                         discovered_models.append({"model": cls, "file": rel})
                 except Exception:
                     pass
+
             elif f.endswith((".ts", ".js")):
                 try:
                     with open(fpath, "r", encoding="utf-8", errors="ignore") as jf:
                         content = jf.read()
-                    exp_matches = re.findall(r'(?:router|app)\.(get|post|put|delete|patch)\(\s*["\']([^"\']+)["\']', content, re.IGNORECASE)
+
+                    inc_pfx = include_prefixes.get(base_no_ext, "")
+                    exp_matches = re.findall(r'(?:router|app)\.(get|post|put|delete|patch)\(\s*["\']([^"\']*)["\']', content, re.IGNORECASE)
                     for method, path in exp_matches:
+                        raw_route = path.strip()
+                        if inc_pfx:
+                            clean_pfx = inc_pfx.rstrip("/")
+                            clean_path = raw_route.lstrip("/")
+                            full_path = f"{clean_pfx}/{clean_path}" if clean_path else clean_pfx
+                        else:
+                            full_path = raw_route if raw_route.startswith("/") else f"/{raw_route}"
+                        full_path = re.sub(r'/{2,}', '/', full_path)
+                        discovered_routes.append({"method": method.upper(), "path": full_path, "file": rel})
+                except Exception:
+                    pass
+
+            elif f.endswith(".go"):
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as gf:
+                        content = gf.read()
+                    go_matches = re.findall(r'\.(GET|POST|PUT|DELETE|PATCH)\(\s*["\']([^"\']+)["\']', content)
+                    for method, path in go_matches:
                         discovered_routes.append({"method": method.upper(), "path": path, "file": rel})
                 except Exception:
                     pass
 
+    # Deduplicate routes preserving order
+    seen_routes = set()
+    unique_routes = []
+    for r in discovered_routes:
+        key = (r["method"], r["path"])
+        if key not in seen_routes:
+            seen_routes.add(key)
+            unique_routes.append(r)
+
     contract_data = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "routes": discovered_routes,
+        "routes": unique_routes,
         "models": discovered_models,
     }
     save_contract(workspace_dir, "api_contract", contract_data)
+    save_contract(workspace_dir, "openapi", contract_data)
     return contract_data
 
 

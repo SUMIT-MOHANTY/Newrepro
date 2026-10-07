@@ -68,19 +68,27 @@ Sprint 1 builds the **living application prototype & core foundation** — a com
 If an agent builds a button that does nothing, the task has FAILED.
 
 ### NAVIGATION & FULL-STACK CONNECTIVITY ARCHITECTURE REQUIREMENT
-TASK-00 MUST establish the project foundation that ALL subsequent tasks depend on:
-  1. **Framework Routing Setup** in the main application entry file with application routes pre-registered according to the detected tech stack
-  2. **Shared Layout component / Template** containing persistent navigation (sidebar/navbar) and main content rendering area
-  3. **Design token / styling file** (e.g., CSS variables or theme configuration) defining primary/secondary colors, typography scale, spacing, and shadows
-  4. **Global mock data store** with realistic domain-appropriate records per entity type
-  5. **Shared UI components** (buttons, badges, cards, modals, tables, inputs) used consistently across screens
-  6. **Core Backend Scaffold, Database Models & Migrations**: Initial backend directory layout, ORM/DB model definitions, migration execution scripts (e.g. Django `makemigrations && migrate`, Alembic `upgrade head`, Prisma), and initial seed data with default user accounts.
-  7. **Full-Stack Authentication & Login Flow (CONDITIONAL — ONLY IF REQUIRED BY BRD)**:
-     - **If the BRD specifies user accounts, roles, permissions, login/signup, or protected data**: establish a dedicated Login & Registration page/modal, authentication state store (token/session management), and default pre-seeded demo credentials (e.g., admin / admin123) with a one-click demo login option.
-     - **If the application is a public portal, open tool, calculator, or does NOT require user accounts**: do NOT force an authentication wall. Keep the application open, accessible, and frictionless.
-  8. **Unified API Client with Dynamic Fallback**: Frontend HTTP/API client targeting `/api` that attaches auth tokens (when authentication is enabled), handles error states cleanly, and falls back gracefully to mock data if an endpoint is pending backend deployment, ensuring zero 404/401 runtime breaks.
+The project foundation is split into two lean, concurrent MICRO-GATEWAYS that execute in parallel with ZERO file collisions:
 
-All subsequent early-sprint tasks IMPORT from these shared foundations. No task invents its own navigation, colors, or mock data structure.
+1. **TASK-00A — Backend Engine Gateway & Contract Emitter**:
+   - Database connection & initial ORM schema scaffolding matching the detected backend stack
+   - Migration runner / setup (e.g., alembic upgrade, manage.py migrate, Prisma db push)
+   - Healthcheck & ping route (`/health` or `/api/health`)
+   - Auto-emitted API contract skeleton (`.agent/contracts/api_contract.json`)
+   - Subsequent backend domain tasks depend on `TASK-00A` (linked_tasks: ["TASK-00A"]).
+
+2. **TASK-00B — Frontend Shell Gateway & Navigation Skeleton**:
+   - Web entrypoint (`index.html`), bundler config (`vite.config.ts`, `webpack.config.js`, etc.)
+   - Design tokens, global CSS, and theme configuration (e.g., `index.css`, Tailwind, CSS variables)
+   - Idiomatic routing setup with root routes registered
+   - Shared persistent layout template (`AppLayout` with navbar/sidebar and content slot)
+   - Shared UI components & realistic mock data store for immediate interactive prototyping
+   - Unified API client targeting `/api` with graceful mock data fallback
+   - Subsequent frontend screen tasks depend on `TASK-00B` (linked_tasks: ["TASK-00B"]).
+
+Both micro-gateways launch concurrently at T=0. Because backend and frontend files are strictly segregated, both worker agents make progress simultaneously without file lock collisions!
+
+All subsequent tasks IMPORT from these shared foundations. No task invents its own navigation, colors, or mock data structure.
 
 ### ⚠️ CRITICAL — CANONICAL PATH RULE (APPLIES TO ALL TASKS)
 The REPOSITORY STRUCTURE provided in the context is the SINGLE SOURCE OF TRUTH for all file paths.
@@ -312,24 +320,28 @@ For backend/infra tasks:
 ---
 
 ## ═══════════════════════════════════════════════════════
-## PART 8 — TASK-00: THE IMMOVABLE GATEWAY
+## PART 8 — MICRO-GATEWAYS ARCHITECTURE (CONCURRENT FOUNDATIONS)
 ## ═══════════════════════════════════════════════════════
 
-TASK-00 is not a regular task. It is the **project gateway** — a structural law, not a suggestion.
+Foundations are split into decoupled Micro-Gateways so the swarm operates in high parallelism from T=0:
 
-### NON-NEGOTIABLE TASK-00 RULES:
+### NON-NEGOTIABLE MICRO-GATEWAY RULES:
 
-**Rule 1 — TASK-00 is ALWAYS the first object in the JSON array.**
-No exceptions. Index 0 in the output array is always TASK-00. If you generate it anywhere else, the output is invalid.
+**Rule 1 — Micro-Gateways are ALWAYS the first objects in the JSON array:**
+- Generate `TASK-00A` (Backend Engine Gateway & Contract Emitter) and `TASK-00B` (Frontend Shell Gateway & Navigation Skeleton) at indices 0 and 1.
+- Both have `linked_tasks: []` and execute concurrently at T=0.
+- (If generating a single gateway, name it `TASK-00` with `linked_tasks: []`).
 
-**Rule 2 — Task Numbering starts at TASK-01.**
-Task IDs must be sequential strings: "TASK-01", "TASK-02", "TASK-03", etc.
+**Rule 2 — Task Numbering continues sequentially:**
+- Subsequent feature tasks start at `TASK-01`, `TASK-02`, etc.
 
-**Rule 3 — Tasks link to logical prerequisites.**
-Each task specifies dependent task IDs in its `linked_tasks` array based on actual component/API prerequisites. Tasks with no prerequisites use `linked_tasks: []`.
+**Rule 3 — Tasks link to logical prerequisites:**
+- Backend tasks link to `["TASK-00A"]` (or `["TASK-00"]`).
+- Frontend tasks link to `["TASK-00B"]` (or `["TASK-00"]`).
+- Fullstack integration tasks link to both the frontend source and backend target task.
 
-**Rule 4 — Agents inspect workspace code & build incrementally.**
-Each worker agent inspects the workspace code (`list_dir`, `view_file`), formulates an execution checklist, and dynamically creates or updates required files and configurations incrementally using its ReAct loop.
+**Rule 4 — Agents inspect workspace code & build incrementally:**
+- Each worker agent inspects the workspace code (`list_dir`, `view_file`), formulates an execution checklist, and dynamically creates or updates required files and configurations incrementally using its ReAct loop.
 
 ⚠️ Use FULL CANONICAL PATHS from the REPOSITORY STRUCTURE when listing file ownership in tasks. Never use bare relative paths like `src/App.tsx` if the canonical tree shows `frontend/src/`.
 
@@ -1111,15 +1123,15 @@ def _validate_task_set_completeness(
     if len(tasks) > 3:  # only warn for non-trivial projects
         unlinked: List[str] = []
         for tid, t in task_by_id.items():
-            if tid == "TASK-00":
+            if tid in ("TASK-00", "TASK-00A", "TASK-00B"):
                 continue
             task_type = str(t.get("task_type", "")).upper()
             if task_type not in ("TASK", "BUG", "ANALYSIS", "DEVELOPMENT", "TESTING"):
                 continue
             linked = t.get("linked_tasks", [])
-            if not linked or (isinstance(linked, list) and len(linked) == 1 and str(linked[0]).upper() == "TASK-00"):
-                # Only warn if task ONLY depends on TASK-00 (no real dependencies)
-                pass  # actually, TASK-00 dependency is the minimum — this is ok
+            if not linked or (isinstance(linked, list) and len(linked) == 1 and str(linked[0]).upper() in ("TASK-00", "TASK-00A", "TASK-00B")):
+                # Micro-gateway dependency is the minimum — this is ok
+                pass
             if not linked:
                 unlinked.append(tid)
         if unlinked:
@@ -1208,8 +1220,15 @@ def _score_task_quality(task: Dict[str, Any], task_id: str) -> Dict[str, Any]:
     return {"score": max(score, 0), "warnings": warnings, "level": level}
 
 
-def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> List[Dict[str, Any]]:
-    """Generate detailed checklist items from repository structure for TASK-00"""
+def _generate_bootstrap_checklist(
+    repo_structure: str, 
+    project_name: str, 
+    gateway_type: str = "all"
+) -> List[Dict[str, Any]]:
+    """
+    Generate detailed checklist items from repository structure for TASK-00, TASK-00A, or TASK-00B.
+    gateway_type can be 'backend' (TASK-00A), 'frontend' (TASK-00B), or 'all' (TASK-00).
+    """
     
     checklist = []
     import re
@@ -1279,6 +1298,14 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
                 directories = [d[prefix_len:] for d in directories if d != root_dir]
                 files = [f[prefix_len:] for f in files]
                 logger.info(f"Stripped top-level container folder '{root_dir}' from bootstrap checklist paths.")
+
+    # Filter directories and files according to gateway type
+    if gateway_type == "backend":
+        directories = [d for d in directories if d.startswith("backend") or any(k in d.lower() for k in ["api", "app", "model", "migration", "server", "db"])]
+        files = [f for f in files if f.startswith("backend") or any(k in f.lower() for k in ["requirement", "pyproject", "alembic", "manage.py", "main.py", "app.py", "settings"])]
+    elif gateway_type == "frontend":
+        directories = [d for d in directories if d.startswith("frontend") or any(k in d.lower() for k in ["src", "component", "page", "style", "public", "asset"])]
+        files = [f for f in files if f.startswith("frontend") or any(k in f.lower() for k in ["package.json", "vite.config", "tsconfig", "index.html", "index.css", "app.tsx", "main.tsx"])]
     
     # Add checklist items
     checklist.append({
@@ -1341,9 +1368,26 @@ def _generate_bootstrap_checklist(repo_structure: str, project_name: str) -> Lis
                 "completed": False
             })
         
-        if code_files:
+        if gateway_type == "backend":
             checklist.append({
-                "text": f"Create placeholder code files: touch {' '.join(code_files)}",
+                "text": "Configure database connection and run initial schema migrations",
+                "completed": False
+            })
+            checklist.append({
+                "text": "Implement health check route (/health or /api/health) returning HTTP 200",
+                "completed": False
+            })
+            checklist.append({
+                "text": "Emit initial API contracts to .agent/contracts/api_contract.json",
+                "completed": False
+            })
+        elif gateway_type == "frontend":
+            checklist.append({
+                "text": "Create web entrypoint (index.html) and bundler configuration file",
+                "completed": False
+            })
+            checklist.append({
+                "text": "Establish global stylesheet, design tokens, and persistent navigation layout (AppLayout)",
                 "completed": False
             })
     
@@ -1923,9 +1967,9 @@ def _renumber_task_ids(tasks: List[Dict[str, Any]], start_index: int) -> List[Di
 
     for task in tasks:
         old_id = task.get("task_id", "")
-        # TASK-00 is sacred — never renumber it
-        if old_id == "TASK-00":
-            id_map[old_id] = "TASK-00"
+        # TASK-00, TASK-00A, TASK-00B are sacred gateways — never renumber them
+        if old_id in ("TASK-00", "TASK-00A", "TASK-00B"):
+            id_map[old_id] = old_id
         else:
             new_id = f"TASK-{counter:02d}"
             id_map[old_id] = new_id
@@ -2810,20 +2854,21 @@ Set the "milestone" field of every generated task to "{sp.get('milestone', '')}"
 
         # ── Inject repo structure ──────────────────────────────────────────────
         if repo_structure:
-            if task.get("task_id") == "TASK-00":
+            task_id = task.get("task_id", "")
+            if task_id in ("TASK-00", "TASK-00A", "TASK-00B"):
+                gateway_mode = "backend" if task_id == "TASK-00A" else ("frontend" if task_id == "TASK-00B" else "all")
                 structure_block = (
                     f"\n\n===BEGIN_DIRECTORY_STRUCTURE===\n{repo_structure}\n===END_DIRECTORY_STRUCTURE===\n\n"
-                    "CRITICAL: This is the CANONICAL directory structure for the entire project. "
-                    "You MUST create ALL directories and files shown above. "
-                    "ALL subsequent tasks MUST reference files from this structure. "
-                    "ALL agents MUST wait for this task to complete before starting their own work."
+                    f"CRITICAL: Scope your implementation to the {gateway_mode.upper()} micro-gateway foundation. "
+                    "Create essential directory layouts and configuration files. "
+                    "Do NOT block other agents; publish your contracts/scaffold cleanly so downstream tasks can proceed."
                 )
                 task["description"] = task.get("description", "") + structure_block
 
-                detailed_checklist = _generate_bootstrap_checklist(repo_structure, project_name)
+                detailed_checklist = _generate_bootstrap_checklist(repo_structure, project_name, gateway_type=gateway_mode)
                 if detailed_checklist:
                     task["checklist"] = detailed_checklist
-                    logger.info(f"✅ TASK-00: injected repo structure + {len(detailed_checklist)} checklist items")
+                    logger.info(f"✅ {task_id}: injected repo structure + {len(detailed_checklist)} checklist items ({gateway_mode})")
             else:
                 structure_reference = (
                     f"\n\n===CANONICAL_REPOSITORY_STRUCTURE===\n{repo_structure}\n===END_STRUCTURE===\n\n"
@@ -2836,7 +2881,7 @@ Set the "milestone" field of every generated task to "{sp.get('milestone', '')}"
 
         # Enforce verification checklist items for other Sprint 1 tasks (Change #3 and Change #7)
         task_id = task.get("task_id", "")
-        if task_id != "TASK-00" and task.get("sprint") == sprints[0]["name"]:
+        if task_id not in ("TASK-00", "TASK-00A", "TASK-00B") and task.get("sprint") == sprints[0]["name"]:
             checklist = task.setdefault("checklist", [])
             
             # Check if build/dev server checks already exist to avoid duplicates

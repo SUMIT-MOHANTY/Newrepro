@@ -39,6 +39,7 @@ from runtime.process_supervisor import ProcessSupervisor
 from runtime.reality_guard import AgentRealityGuard
 from runtime.starter_scaffold import seed_starter_scaffold
 from runtime.static_scanner import StaticScanner
+from runtime.verification_engine import VerificationEngine, VerificationReport, detect_project_kinds, run_verification
 from agent.techstack_detector import detect_techstack
 from infrastructure.llm_client import LLMClient
 from infrastructure.model_profile import ModelProfile, get_profile
@@ -2176,18 +2177,78 @@ def build_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
             # Never fail the build because of the smoke-test itself
             print(f"[Graph:BuildNode] Backend smoke-test skipped: {smoke_exc}")
 
-        print("[Graph:BuildNode] Build succeeded! Probing health endpoint...")
-        ctx.post_event("build_completed", {
-            "session_id": state["session_id"],
-            "task_id": state["task_id"],
-            "success": True,
-        })
-        return {
-            "build_success": True,
-            "build_error": None,
-            "status": "verified",
-            "backend_port": backend_port,
-        }
+        print("[Graph:BuildNode] Build succeeded! Running platform runnability verification (Gate B)...")
+        # ── Gate B: platform-owned runnability verification ──────────────────
+        # Independent of the agent: foundation / imports / backend boot + health /
+        # contract route coverage (npm build was just proven by install_and_build).
+        # Checks that cannot run are recorded as skipped — never silently passed.
+        try:
+            ws = state["workspace_path"]
+            engine = VerificationEngine(ws, event_cb=ctx.post_event)
+            report = engine.run_full_verification(
+                stages=["foundation", "imports", "boot", "contract"]
+            )
+            report_dict = report.to_dict()
+            ctx.post_event("platform_verification", {
+                "session_id": state["session_id"],
+                "task_id": state["task_id"],
+                "passed": report.passed,
+                "failure_classes": report.failure_classes,
+                "stages": report_dict.get("stages", []),
+            })
+            print(f"[Graph:BuildNode] Platform verification: {'PASS' if report.passed else 'FAIL'} "
+                  f"({report.summary_text().replace(chr(10), ' | ')[:400]})")
+            if not report.passed:
+                ctx.post_event("build_completed", {
+                    "session_id": state["session_id"],
+                    "task_id": state["task_id"],
+                    "success": False,
+                    "error": "Platform verification failed",
+                })
+                return {
+                    "build_success": False,
+                    "build_error": "[PLATFORM VERIFICATION FAILED]\n" + report.summary_text(),
+                    "platform_verified": False,
+                    "verification_report": report_dict,
+                    "verification_signature": report.error_signature,
+                    "status": "build_failed",
+                    "backend_port": backend_port,
+                }
+            ctx.post_event("build_completed", {
+                "session_id": state["session_id"],
+                "task_id": state["task_id"],
+                "success": True,
+            })
+            return {
+                "build_success": True,
+                "build_error": None,
+                "status": "verified",
+                "platform_verified": True,
+                "verification_report": report_dict,
+                "verification_signature": None,
+                "backend_port": backend_port,
+            }
+        except Exception as gate_exc:
+            # The gate itself crashed — record honestly as skipped, never fake a pass.
+            print(f"[Graph:BuildNode] Platform verification gate errored (recorded as skipped): {gate_exc}")
+            ctx.post_event("platform_verification", {
+                "session_id": state["session_id"],
+                "task_id": state["task_id"],
+                "skipped": True,
+                "error": str(gate_exc)[:500],
+            })
+            ctx.post_event("build_completed", {
+                "session_id": state["session_id"],
+                "task_id": state["task_id"],
+                "success": True,
+            })
+            return {
+                "build_success": True,  # preserve legacy behavior when the gate itself fails
+                "build_error": None,
+                "status": "verified",
+                "verification_report": {"skipped": True, "reason": str(gate_exc)[:500]},
+                "backend_port": backend_port,
+            }
     else:
         err_msg = str(build_res.error or "Build failed")
         print(f"[Graph:BuildNode] Build failed: {err_msg[:200]}...")
@@ -2197,10 +2258,19 @@ def build_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
             "success": False,
             "error": err_msg,
         })
+        # Classify even raw build errors so the convergence guard in
+        # route_build_result can detect identical-repeat loops (the
+        # ENOENT-on-missing-package.json infinite-retry failure mode).
+        from runtime.verification_engine import classify_failure
+        fail_class = classify_failure(err_msg)
+        sig_line = err_msg.strip().splitlines()[0][:160] if err_msg.strip() else "build"
         return {
             "build_success": False,
             "build_error": err_msg,
             "status": "build_failed",
+            "platform_verified": False,
+            "verification_report": None,
+            "verification_signature": f"build:{fail_class}:{sig_line}",
         }
 
 
@@ -2209,11 +2279,18 @@ def build_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def fix_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
-    """Apply targeted repairs using the exact compiler/syntax stderr."""
+    """Apply targeted repairs using the exact compiler/syntax stderr.
+
+    Before repairing, the current failure fingerprint is archived so the router
+    can detect non-convergence (identical signature after a fix = stop).
+    """
     attempts = state.get("fix_attempts", 0) + 1
     err = state.get("build_error", "Unknown build failure")
     ws = state["workspace_path"]
     print(f"[Graph:FixNode] Starting self-healing fix attempt {attempts}/2...")
+
+    # Archive the current failure fingerprint for convergence detection in the router
+    state["previous_failure_signature"] = state.get("verification_signature") or ""
 
     config = ctx.router.route(TaskType.build_fix, model=state.get("model_name"))
     all_tools = ctx.registry.get_tools(ToolPhase.build_fix)

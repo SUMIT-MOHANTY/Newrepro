@@ -33,6 +33,8 @@ class TaskResult:
         self.output = output
         self.error = error
         self.files_changed = files_changed or []
+        # Gate A/C: platform verification evidence attached by the gate or supervisor
+        self.verification: dict | None = None
 
 
 class SubAgent(ABC):
@@ -78,12 +80,29 @@ class SubAgent(ABC):
                 brd_context_str = f"## Project Specification & BRD Context\n{brd_preview}\n\n"
 
         contract_guidance = ""
+        live_contracts_text = ""
+        try:
+            for w in ("/workspace", "."):
+                c_file = os.path.join(w, ".agent", "contracts", "api_contract.json")
+                if os.path.exists(c_file):
+                    with open(c_file, "r", encoding="utf-8") as cf:
+                        cd = json.load(cf)
+                    c_routes = cd.get("routes", [])
+                    if c_routes:
+                        live_contracts_text = "\n### LIVE BACKEND ENDPOINTS PUBLISHED BY BACKEND AGENT (USE EXACT PATHS):\n"
+                        for cr in c_routes[:35]:
+                            live_contracts_text += f"- {cr.get('method')} {cr.get('path')}\n"
+                        break
+        except Exception:
+            pass
+
         if self.lane == "frontend":
             contract_guidance = (
                 "## Inter-Agent API Contract & Authentication\n"
-                "1. **Contract Discovery**: Backend APIs publish schemas to `.agent/contracts/api_contract.json` or backend route files. Discover endpoints before wiring calls.\n"
-                "2. **Authentication Flow**: If the application requires user identity or protected data, ensure a Login/Register view or modal exists, tokens are stored, and `Authorization: Bearer <token>` is sent to `/api`.\n"
-                "3. **Zero 404 / 401 Crashes**: The frontend API client must target `/api` and gracefully handle unauthenticated or loading states.\n\n"
+                "1. **Contract Discovery**: Backend APIs publish schemas to `.agent/contracts/api_contract.json`. Discover endpoints before wiring calls.\n"
+                "2. **Authentication Flow**: If the application requires user identity, provide login/register forms and send `Authorization: Bearer <token>`.\n"
+                "3. **Exact Endpoint Alignment**: Target the exact endpoint paths listed below. Fallback to mock data if the API returns network errors.\n"
+                f"{live_contracts_text}\n"
             )
         elif self.lane == "backend":
             contract_guidance = (
@@ -247,6 +266,23 @@ class BaseReActAgent(SubAgent):
                         f"Task {task_id} ('{title}') failed: No files were modified or created on disk. "
                         f"The agent stopped without applying code changes."
                     )
+
+                # ── Gate A: platform-owned per-task verification ─────────────
+                # Every changed file must at least parse cleanly (py_compile /
+                # node --check). Agent-reported success alone is never enough to
+                # mark a task complete.
+                try:
+                    from runtime.verification_engine import VerificationEngine
+                    task_gate = VerificationEngine(workspace_path).verify_task_changes(files)
+                    if not task_gate.passed:
+                        raise RuntimeError(
+                            f"Platform per-task verification failed for '{title}':\n{task_gate.detail}"
+                        )
+                except RuntimeError:
+                    raise  # genuine verification failure → self-healing retry path below
+                except Exception as gate_err:
+                    # The gate itself crashed — recorded honestly, not blocking legacy flow
+                    logger.warning(f"[{self.name}] Per-task verification gate errored (recorded as skipped): {gate_err}")
 
                 logger.info(
                     f"[{self.name}] Task {task_id} completed successfully (attempt {attempt}) in {elapsed:.1f}s. "

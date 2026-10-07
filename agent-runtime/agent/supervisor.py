@@ -29,6 +29,14 @@ from agent.dag_scheduler import DAGScheduler, TaskStatus
 from agent.sub_agents import BackendSubAgent, FrontendSubAgent, QASubAgent, SubAgent
 from agent.ipc import IPCRouter
 
+# Platform verification engine (Gate A/B/C) — optional import so legacy
+# deployments without the engine keep working.
+try:
+    from runtime.verification_engine import VerificationEngine
+    _VERIFICATION_AVAILABLE = True
+except Exception:  # pragma: no cover
+    _VERIFICATION_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -155,6 +163,23 @@ class SupervisorAgent:
         result = agent.execute_task(task, self.workspace_path, self.mcp, self.router, context=self.task_config)
         elapsed = time.time() - start_time
 
+        # ── Gate A+: platform-owned per-task verification before accepting success ──
+        # The sub-agent already parse-checked its own files (Gate A). This second,
+        # independent pass catches files the agent's own gate missed. A failed gate
+        # flips the task to failed with a classified error — agent opinion is never
+        # the final word.
+        if result.success and _VERIFICATION_AVAILABLE:
+            try:
+                gate = VerificationEngine(self.workspace_path).verify_task_changes(result.files_changed)
+                result.verification = gate.to_dict()
+                if not gate.passed:
+                    result.success = False
+                    result.error = f"Platform per-task verification failed:\n{gate.detail}"
+            except Exception as gate_err:
+                result.verification = {"skipped": True, "reason": str(gate_err)[:300]}
+        elif result.success:
+            result.verification = {"skipped": True, "reason": "verification engine unavailable"}
+
         if result.success:
             self.tasks_completed += 1
             self.total_files_changed.extend(result.files_changed)
@@ -165,6 +190,10 @@ class SupervisorAgent:
                 "lane": task.lane,
                 "elapsed_seconds": round(elapsed, 1),
                 "files_changed": result.files_changed,
+                # Gate C honesty: agent-reported vs platform-verified
+                "agent_reported_status": "completed",
+                "platform_verified": bool((getattr(result, "verification", None) or {}).get("passed")),
+                "verification": getattr(result, "verification", None),
             }
 
             print(f"\n[Supervisor] ✅ Task {task_id} completed by {agent.name} "
@@ -194,6 +223,9 @@ class SupervisorAgent:
                 "lane": task.lane,
                 "elapsed_seconds": round(elapsed, 1),
                 "error": result.error or "Unknown error",
+                # Gate C honesty: distinguish agent-reported failure from gate failure
+                "agent_reported_status": "completed" if result.files_changed else "failed",
+                "verification": getattr(result, "verification", None),
             }
 
             print(f"\n[Supervisor] ❌ Task {task_id} FAILED by {agent.name} "
@@ -312,6 +344,36 @@ class SupervisorAgent:
             "files_changed": len(set(self.total_files_changed)),
             "tasks": self.task_results,
         }
+
+        # ── Gate B/C: global platform verification of the whole workspace ─────
+        # The swarm summary no longer claims success from task counts alone: the
+        # platform proves the assembled app is runnable (foundation/imports/boot/
+        # contract) and records the honest global status.
+        global_verification: dict[str, Any] = {"skipped": True, "reason": "verification engine unavailable"}
+        if _VERIFICATION_AVAILABLE:
+            try:
+                g_report = VerificationEngine(self.workspace_path).run_full_verification(
+                    stages=["foundation", "imports", "boot", "contract"]
+                )
+                global_verification = g_report.to_dict()
+            except Exception as g_exc:
+                global_verification = {"skipped": True, "reason": str(g_exc)[:300]}
+
+        if global_verification.get("skipped"):
+            platform_status = "unverified"
+        elif global_verification.get("passed"):
+            platform_status = "runnable"
+        else:
+            platform_status = "not_runnable"
+
+        summary["agent_reported_status"] = (
+            "completed" if self.tasks_completed == total_tasks and total_tasks > 0
+            else ("partial" if self.tasks_completed else "failed")
+        )
+        summary["platform_verified_status"] = platform_status
+        summary["platform_verification"] = global_verification
+        print(f"[Supervisor] 🔎 Platform verification (Gate B/C): {platform_status} "
+              f"(agent-reported: {summary['agent_reported_status']})")
 
         print(f"\n{'#'*60}")
         print(f"[Supervisor] 📊 Execution Summary")

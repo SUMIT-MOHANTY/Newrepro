@@ -525,9 +525,34 @@ class PreviewManager:
                 except Exception as exc:
                     print(f"[PreviewManager] Note during npm install: {exc}")
 
+    def _ensure_valid_entrypoint(self, cwd: Path) -> None:
+        """Ensure index.html points to an existing entrypoint (main.tsx / main.jsx / index.tsx / App.tsx)."""
+        idx = cwd / "index.html"
+        if not idx.exists():
+            idx = self._workspace / "index.html"
+        if not idx.exists():
+            return
+        try:
+            content = idx.read_text(encoding="utf-8", errors="replace")
+            src_dir = cwd / "src"
+            if not src_dir.exists():
+                src_dir = self._workspace / "src"
+            if src_dir.exists():
+                has_main = any((src_dir / f"main.{ext}").exists() for ext in ("tsx", "jsx", "ts", "js"))
+                if has_main and ("/src/App." in content and "/src/main." not in content):
+                    for ext in ("tsx", "jsx", "ts", "js"):
+                        if (src_dir / f"main.{ext}").exists():
+                            content = content.replace("/src/App.tsx", f"/src/main.{ext}").replace("/src/App.jsx", f"/src/main.{ext}")
+                            idx.write_text(content, encoding="utf-8")
+                            print(f"[PreviewManager] Fixed index.html entrypoint -> /src/main.{ext}")
+                            break
+        except Exception as e:
+            print(f"[PreviewManager] Entrypoint fix note: {e}")
+
     def _start_fullstack_dev_preview_spec(self, fe_spec: ServiceSpec, backend_port: int) -> PreviewInfo:
         """Start frontend dev server from detected ServiceSpec and proxy through Nginx."""
         self._ensure_node_dependencies(fe_spec.cwd)
+        self._ensure_valid_entrypoint(fe_spec.cwd)
         cmd = fe_spec.command
         print(f"[PreviewManager] Starting frontend dev server: {' '.join(cmd)} in {fe_spec.cwd}")
         
@@ -551,7 +576,7 @@ class PreviewManager:
             print(f"[PreviewManager] [ERROR] Frontend dev server failed: {frontend_err[:300]}")
         else:
             # Probe frontend dev server on its port
-            fe_ok, probe_err = self._wait_for_port_health(fe_spec.port, timeout=8.0)
+            fe_ok, probe_err = self._wait_for_frontend_health(fe_spec.port, timeout=8.0)
             if not fe_ok:
                 log_handle.flush()
                 try:

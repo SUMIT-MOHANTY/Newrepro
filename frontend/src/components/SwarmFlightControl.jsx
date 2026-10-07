@@ -24,6 +24,7 @@ export default function SwarmFlightControl({
   contractInfo = null,
   isLive = false,
   onOpenLogs = null,
+  onOpenWorkspace = null,
 }) {
   // Normalize agents to standard 3 swarm roles
   const backendAgent = agents.find(a => 
@@ -140,8 +141,18 @@ export default function SwarmFlightControl({
           </div>
         </div>
 
-        {/* Live Active Status Pill */}
-        <div className="flex items-center gap-2">
+        {/* Live Active Status Pill & In-Flight Workspace Trigger */}
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {onOpenWorkspace && (
+            <button
+              onClick={onOpenWorkspace}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-sky-600 hover:from-indigo-500 hover:via-purple-500 hover:to-sky-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 border border-indigo-400/30 transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>In-Flight Workspace (3-Col)</span>
+            </button>
+          )}
+
           {currentActiveAgent ? (
             <div className="flex items-center gap-2 bg-slate-800/90 border border-emerald-500/40 rounded-xl px-3 py-1.5 shadow-sm">
               <span className="relative flex h-2.5 w-2.5">

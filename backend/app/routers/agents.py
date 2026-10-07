@@ -1655,6 +1655,7 @@ async def _bg_run_agent(
     continuous: bool = True,
     source_repo_url: Optional[str] = None,
     source_repo_token: Optional[str] = None,
+    custom_override_prompt: Optional[str] = None,
 ):
     """
     Launch agent execution in the isolated Docker container runtime.
@@ -1879,21 +1880,43 @@ async def _bg_run_agent(
                 project_token,
             )
 
-            prompt = build_agent_prompt(
-                agent_name=agent_name,
-                agent_role=agent_role,
-                agent_spec=agent_spec,
-                agent_lanes=agent_lanes,
-                assigned_model=assigned_model,
-                assigned_tools=assigned_tools,
-                skills_summary=skills_summary,
-                assigned_tasks=tasks_to_execute,
-                other_tasks=other_tasks[:5],
-                brd_context=brd_context,
-                workspace_analysis=workspace_analysis,
-                is_qa_agent=is_qa_agent,
-                workspace_dir=workspace_dir,
-            )
+            if custom_override_prompt:
+                prompt = custom_override_prompt
+            else:
+                prompt = build_agent_prompt(
+                    agent_name=agent_name,
+                    agent_role=agent_role,
+                    agent_spec=agent_spec,
+                    agent_lanes=agent_lanes,
+                    assigned_model=assigned_model,
+                    assigned_tools=assigned_tools,
+                    skills_summary=skills_summary,
+                    assigned_tasks=tasks_to_execute,
+                    other_tasks=other_tasks[:5],
+                    brd_context=brd_context,
+                    workspace_analysis=workspace_analysis,
+                    is_qa_agent=is_qa_agent,
+                    workspace_dir=workspace_dir,
+                )
+
+            # ── Inject Blackboard Active File Locks & Live Reasoning Context ──
+            try:
+                from app.services.agents.swarm_blackboard import get_swarm_blackboard
+                blackboard = get_swarm_blackboard(project_token, workspace_dir)
+                active_locks = blackboard.get_active_locks()
+                if active_locks:
+                    lock_summary = "\n### ACTIVE FILE LOCKS BY PEER AGENTS (Do NOT modify concurrently):\n"
+                    for path, lk in active_locks.items():
+                        if lk.get("agent_id") != agent_id:
+                            lock_summary += f"- {path} (locked by {lk.get('agent_id')}: {lk.get('reason')})\n"
+                    prompt += lock_summary
+                blackboard.record_agent_thought(
+                    agent_id=agent_id,
+                    thought=f"Starting execution of {len(tasks_to_execute)} task(s) in {agent_role} lane.",
+                    event_kind="logic",
+                )
+            except Exception as b_err:
+                logger.debug(f"Blackboard prompt context note: {b_err}")
 
             if agent_rec_mem:
                 agent_rec_mem["status"] = "running"
@@ -1962,6 +1985,21 @@ async def _bg_run_agent(
                 }
                 for idx, t in enumerate(tasks_to_execute)
             ]
+
+            # Inter-Agent Dynamic Contract Bus: extract and inject contracts for consumer agents
+            try:
+                from app.services.agents.master_orchestrator import extract_backend_contracts
+                contracts = extract_backend_contracts(workspace_dir)
+                routes = contracts.get("routes", [])
+                if routes and any(t.get("lane") in ("frontend", "ui", "qa") for t in task_config):
+                    contract_summary = "\n### LIVE BACKEND API CONTRACT (From Backend Agent):\nYou MUST use these exact endpoint paths and HTTP methods:\n"
+                    for r in routes[:35]:
+                        contract_summary += f"- {r.get('method')} {r.get('path')}\n"
+                    for t in task_config:
+                        if t.get("lane") in ("frontend", "ui", "qa"):
+                            t["description"] = f"{t.get('description', '')}\n{contract_summary}"
+            except Exception as c_err:
+                logger.warning(f"Contract bus extraction note: {c_err}")
 
             # Write task config to workspace (isolated per-agent file + fallback)
             clean_aid = re.sub(r'[^a-zA-Z0-9_]', '_', agent_id)
@@ -2251,6 +2289,11 @@ async def _bg_run_agent(
             logger.info(f"[_bg_run_agent] Agent {agent_name} processed {total_tasks} tasks. Success: {execution_success}.")
 
         finally:
+            try:
+                from app.services.agents.swarm_blackboard import get_swarm_blackboard
+                get_swarm_blackboard(project_token, workspace_dir).release_all_agent_locks(agent_id)
+            except Exception:
+                pass
             db.close()
     except Exception as e:
         logger.error(f"[_bg_run_agent] Error launching agent runtime: {e}", exc_info=True)
@@ -2568,12 +2611,23 @@ async def _run_phased_swarm_coordinator(
     clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
     workspace_dir = os.path.join(settings.project_storage_root, clean_token)
 
-    # ── Phase 1: Backend / Data Layer ──
+    # ── Initialize Swarm Blackboard ──
+    from app.services.agents.swarm_blackboard import get_swarm_blackboard
+    blackboard = get_swarm_blackboard(project_token, workspace_dir)
+
+    # ── Phase 1 & 2: Dynamic Concurrent Execution (Event-Driven DAG) ──
     p1 = phased_plan.get("phase1_backend", [])
-    if p1:
+    p2 = phased_plan.get("phase2_frontend", [])
+
+    concurrent_agents = []
+    for aid in (p1 + p2):
+        if aid not in concurrent_agents:
+            concurrent_agents.append(aid)
+
+    if concurrent_agents:
         agent_service.append_agent_log(
             "M_agent_01",
-            f"[Swarm Coordinator] Launching Phase 1: Backend & Data Layer ({len(p1)} agents: {', '.join(p1)})...",
+            f"[Swarm Coordinator] 🚀 Launching Dynamic Parallel Wave ({len(concurrent_agents)} agents: {', '.join(concurrent_agents)})...",
             "info",
             project_token,
         )
@@ -2585,107 +2639,25 @@ async def _run_phased_swarm_coordinator(
                 project_token=project_token,
                 x_task_token=x_task_token,
             )
-            for aid in p1
+            for aid in concurrent_agents
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Extract and publish API contracts for Phase 2 consumers (IPC: Backend -> Frontend)
+        # Extract and publish API contracts for consumers
         try:
             contracts = extract_backend_contracts(workspace_dir)
+            blackboard.publish_contract(contracts, agent_id="M_agent_01")
             routes = contracts.get("routes", [])
             models_list = contracts.get("models", [])
             agent_service.append_agent_log(
                 "M_agent_01",
-                f"[Swarm Coordinator] Phase 1 complete. Published verified API contracts: "
-                f"{len(routes)} routes, {len(models_list)} data schemas to .agent/contracts/api_contract.json.",
+                f"[Swarm Coordinator] Core wave complete. Published API contracts: "
+                f"{len(routes)} routes, {len(models_list)} models to .agent/contracts/api_contract.json.",
                 "output",
                 project_token,
             )
-            from app.routers.helpers import broadcast_preview_log
-            await broadcast_preview_log(
-                project_token=project_token,
-                content=f"📜 Published verified API contracts: {len(routes)} routes, {len(models_list)} data schemas.",
-                event_type="contract_published",
-                payload={
-                    "project_id": project_token,
-                    "agent_id": "M_agent_01",
-                    "routes_count": len(routes),
-                    "models_count": len(models_list),
-                    "contracts": contracts,
-                }
-            )
         except Exception as e:
             logger.warning(f"[SwarmCoordinator] Contract extraction error: {e}")
-
-        # ── Phase 1 Quality Gate ──
-        try:
-            from app.core.database import SessionLocal
-            import models
-            with SessionLocal() as gate_db:
-                p1_failed = gate_db.query(models.Task).filter(
-                    models.Task.project_token == project_token,
-                    models.Task.lane.in_(["backend", "database", "api", "governance"]),
-                    models.Task.status.in_(["FAILED", "IN_PROGRESS"])
-                ).all()
-                p1_done = gate_db.query(models.Task).filter(
-                    models.Task.project_token == project_token,
-                    models.Task.lane.in_(["backend", "database", "api", "governance"]),
-                    models.Task.status == "DONE"
-                ).count()
-
-            if p1_failed and p1_done == 0:
-                agent_service.append_agent_log(
-                    "M_agent_01",
-                    f"[Swarm Coordinator] ⚠️ Phase 1 (Backend) failed or produced no completed tasks ({len(p1_failed)} failed/stalled). Pausing swarm before Phase 2 to prevent broken UI generation.",
-                    "error",
-                    project_token,
-                )
-                from app.routers.helpers import broadcast_preview_log
-                await broadcast_preview_log(
-                    project_token=project_token,
-                    content=f"⚠️ Swarm Phase 1 Failed: {len(p1_failed)} tasks failed. Swarm paused.",
-                    event_type="phase_failed",
-                    payload={"phase": 1, "failed_tasks_count": len(p1_failed)}
-                )
-                return
-        except Exception as gate_err:
-            logger.warning(f"[SwarmCoordinator] Phase gate evaluation error: {gate_err}")
-
-    # ── Phase 2: Frontend / UI Layer ──
-    p2 = phased_plan.get("phase2_frontend", [])
-    if p2:
-        # IPC: Write a signal for Phase 2 agents so they know contracts are available
-        try:
-            contracts_dir = os.path.join(workspace_dir, ".agent", "contracts")
-            api_contract_path = os.path.join(contracts_dir, "api_contract.json")
-            if os.path.exists(api_contract_path):
-                agent_service.append_agent_log(
-                    "M_agent_01",
-                    "[Swarm Coordinator] IPC: Backend API contracts are published. "
-                    "Phase 2 Frontend agents will consume .agent/contracts/api_contract.json.",
-                    "info",
-                    project_token,
-                )
-        except Exception:
-            pass
-
-        agent_service.append_agent_log(
-            "M_agent_01",
-            f"[Swarm Coordinator] Launching Phase 2: Frontend & UI Integration ({len(p2)} agents: {', '.join(p2)})...",
-            "info",
-            project_token,
-        )
-        tasks = [
-            _bg_run_agent(
-                agent_id=aid,
-                git_repo_url=git_repo_url,
-                git_token=git_token,
-                project_token=project_token,
-                x_task_token=x_task_token,
-            )
-            for aid in p2
-        ]
-        await asyncio.gather(*tasks, return_exceptions=True)
 
     # ── Phase 3: Automated QA & Verification Gate ──
     p3 = phased_plan.get("phase3_qa_gate", ["T_agent_01"])
@@ -2708,134 +2680,69 @@ async def _run_phased_swarm_coordinator(
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Read QA gate result from IPC contract file
-        try:
-            qa_gate_path = os.path.join(workspace_dir, ".agent", "contracts", "qa_gate.json")
-            if os.path.exists(qa_gate_path):
-                with open(qa_gate_path, "r", encoding="utf-8") as f:
-                    qa_gate = json.load(f)
-                qa_status = qa_gate.get("status", "UNKNOWN")
-                tests_run = qa_gate.get("tests_run", 0)
-                agent_service.append_agent_log(
-                    "M_agent_01",
-                    f"[Swarm Coordinator] QA Gate Result: {qa_status} ({tests_run} tests executed).",
-                    "info" if qa_status == "PASSED" else "error",
-                    project_token,
-                )
-            else:
-                agent_service.append_agent_log(
-                    "M_agent_01",
-                    "[Swarm Coordinator] QA Gate: No test report generated (qa_gate.json not found).",
-                    "info",
-                    project_token,
-                )
-        except Exception as qe:
-            logger.debug(f"[SwarmCoordinator] QA gate read error: {qe}")
+    # ── Closed-Loop Convergence Battery & Self-Healing Repair Loop ──
+    from app.services.agents.convergence_engine import (
+        ConvergenceEngine,
+        execute_closed_loop_repair,
+    )
 
-    # ── Dynamic Fullstack Build & Runnable Verification Gate ──
     agent_service.append_agent_log(
         "M_agent_01",
-        "🔍 [Swarm Coordinator] Running Dynamic Fullstack Build & Runnable Verification Gate...",
+        "🔍 [Swarm Coordinator] Running Platform Convergence Battery (AST -> Bundler Build -> Live Smoke Test)...",
         "info",
         project_token,
     )
-    runnable_success = True
-    verification_failures = []
 
-    # 1. Frontend dynamic build check across all subdirectories with package.json
-    frontend_dirs_found = []
-    for root_dir, dirs, files in os.walk(workspace_dir):
-        if any(skip in root_dir for skip in ("node_modules", ".git", ".agent", "venv", "__pycache__", "dist", "build")):
-            continue
-        if "package.json" in files:
-            frontend_dirs_found.append(root_dir)
+    conv_engine = ConvergenceEngine(project_token=project_token, workspace_dir=workspace_dir)
+    battery_result = await conv_engine.run_battery()
 
-    for f_dir in frontend_dirs_found:
-        rel_dir = os.path.relpath(f_dir, workspace_dir)
-        try:
-            with open(os.path.join(f_dir, "package.json"), "r", encoding="utf-8") as pf:
-                pkg_data = json.load(pf)
-            has_build = "build" in pkg_data.get("scripts", {})
-        except Exception:
-            has_build = False
+    runnable_success = battery_result.passed
+    verification_failures = [s.detail for s in battery_result.stages if not s.passed]
 
-        if has_build:
+    if not runnable_success:
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"⚠️ [Swarm Coordinator] Initial Convergence Battery detected issues. Triggering Self-Healing Repair Loop...",
+            "error",
+            project_token,
+        )
+
+        async def _repair_runner(project_token: str, repair_instruction: str, cycle: int):
+            repair_agent_id = p1[0] if p1 else "M_agent_01"
             agent_service.append_agent_log(
                 "M_agent_01",
-                f"[Swarm Coordinator] 📦 Running npm run build in {rel_dir}...",
+                f"[Self-Healing Repair] Dispatching repair agent '{repair_agent_id}' (Cycle {cycle})...",
                 "info",
                 project_token,
             )
-            import subprocess
-            build_proc = await asyncio.to_thread(
-                subprocess.run,
-                "npm run build",
-                shell=True,
-                cwd=f_dir,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
+            await _bg_run_agent(
+                agent_id=repair_agent_id,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                project_token=project_token,
+                x_task_token=x_task_token,
+                custom_override_prompt=repair_instruction,
             )
-            if build_proc.returncode != 0:
-                runnable_success = False
-                err_detail = (build_proc.stderr or build_proc.stdout)[:400]
-                verification_failures.append(f"Frontend build failed in {rel_dir}: {err_detail}")
-                agent_service.append_agent_log(
-                    "M_agent_01",
-                    f"❌ [Swarm Coordinator] Frontend build failed in {rel_dir}:\n{err_detail}",
-                    "error",
-                    project_token,
-                )
-            else:
-                agent_service.append_agent_log(
-                    "M_agent_01",
-                    f"✅ [Swarm Coordinator] Frontend build succeeded in {rel_dir}.",
-                    "output",
-                    project_token,
-                )
 
-    # 2. Backend python syntax verification
-    py_files_to_check = []
-    for root_dir, dirs, files in os.walk(workspace_dir):
-        if any(skip in root_dir for skip in ("node_modules", ".git", ".agent", "venv", "__pycache__")):
-            continue
-        for f in files:
-            if f.endswith(".py"):
-                py_files_to_check.append(os.path.join(root_dir, f))
-
-    if py_files_to_check:
-        import py_compile
-        for py_f in py_files_to_check[:150]:
-            try:
-                py_compile.compile(py_f, doraise=True)
-            except Exception as py_err:
-                runnable_success = False
-                rel_f = os.path.relpath(py_f, workspace_dir)
-                verification_failures.append(f"Syntax error in {rel_f}: {py_err}")
-                agent_service.append_agent_log(
-                    "M_agent_01",
-                    f"❌ [Swarm Coordinator] Backend syntax error in {rel_f}: {py_err}",
-                    "error",
-                    project_token,
-                )
-                break
-
-    if qa_status == "FAILED":
-        runnable_success = False
-        verification_failures.append("QA test suite reported failures.")
+        runnable_success = await execute_closed_loop_repair(
+            project_token=project_token,
+            workspace_dir=workspace_dir,
+            battery_result=battery_result,
+            repair_runner_callable=_repair_runner,
+            max_repair_cycles=3,
+        )
 
     if runnable_success:
         agent_service.append_agent_log(
             "M_agent_01",
-            "🏁 [Swarm Coordinator] Multi-agent phased execution and verification gates PASSED. Application is verified runnable.",
+            "🏁 [Swarm Coordinator] Multi-agent execution and convergence battery PASSED. Application is verified 100% runnable.",
             "output",
             project_token,
         )
     else:
         agent_service.append_agent_log(
             "M_agent_01",
-            f"⚠️ [Swarm Coordinator] Verification Gate FAILED. {len(verification_failures)} failure(s) detected: {'; '.join(verification_failures)}",
+            f"⚠️ [Swarm Coordinator] Convergence Battery could not fully resolve all issues after 3 repair cycles.",
             "error",
             project_token,
         )

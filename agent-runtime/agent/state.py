@@ -209,6 +209,13 @@ class LangGraphState(TypedDict, total=False):
     fix_attempts: int
     preview_url: Optional[str]
 
+    # Platform verification gate (Gate B) — runnability proof, not agent opinion
+    platform_verified: Optional[bool]
+    verification_report: Optional[dict[str, Any]]
+    verification_signature: Optional[str]   # failure fingerprint for convergence tracking
+    previous_failure_signature: Optional[str]  # signature before the last fix attempt
+    repair_converging: Optional[bool]       # False => stop the fix loop, escalate honestly
+
     # Backend lifecycle (detected port + health after self-heal)
     backend_port: Optional[int]
     backend_healthy: Optional[bool]

@@ -114,8 +114,14 @@ class Orchestrator:
                     print(f"[Orchestrator] Console checking/auto-fixing completed with note: {ce}")
 
                 # Emit session_completed only AFTER browser verification & auto-fix completes
+                # Gate C honesty: completion carries platform verification evidence.
+                # If the platform gate was skipped (not proven), emit "completed_unverified"
+                # so the platform never advertises an unproven app as success.
                 msg = self._last_final_text or "Application is live, validated, and ready to use."
-                self._post_event("session_completed", {
+                v_report = final_state.get("verification_report") or {}
+                gate_skipped = bool(v_report.get("skipped"))
+                completion_event = "completed_unverified" if gate_skipped else "session_completed"
+                self._post_event(completion_event, {
                     "session_id": s.session_id,
                     "task_id": s.task_id,
                     "message": msg,
@@ -125,6 +131,8 @@ class Orchestrator:
                     "model": s.model_name,
                     "backend_healthy": final_state.get("backend_healthy", True),
                     "backend_error": final_state.get("backend_error"),
+                    "platform_verified": bool(final_state.get("platform_verified", False)),
+                    "verification_report": v_report or None,
                 })
 
 

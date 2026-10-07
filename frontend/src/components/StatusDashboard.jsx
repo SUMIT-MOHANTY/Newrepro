@@ -12,6 +12,7 @@ import AgentChatPanel from './AgentChatPanel';
 import VSCodeWorkspaceViewer from './VSCodeWorkspaceViewer';
 import SwarmFlightControl from './SwarmFlightControl';
 import ExecutionStream from './ExecutionStream';
+import InFlightSwarmWorkspaceModal from './InFlightSwarmWorkspaceModal';
 
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
@@ -383,6 +384,7 @@ export default function StatusDashboard({
     const [activeSwarmAgent, setActiveSwarmAgent] = useState(null);
     const [contractInfo, setContractInfo] = useState(null);
     const [showExecutionStream, setShowExecutionStream] = useState(true);
+    const [showInFlightWorkspace, setShowInFlightWorkspace] = useState(false);
     const currentPreviewLogs = (deployLogs && deployLogs.length > 0) ? deployLogs : (previewStatus?.logs || []);
 
 
@@ -2897,6 +2899,20 @@ export default function StatusDashboard({
                                             contractInfo={contractInfo}
                                             isLive={agents.some(a => a.status === 'running') || isDeploying}
                                             onOpenLogs={(agentId) => setShowLogModal(agentId)}
+                                            onOpenWorkspace={() => setShowInFlightWorkspace(true)}
+                                        />
+
+                                        {/* ── In-Flight Swarm Workspace Modal (3-Column View) ── */}
+                                        <InFlightSwarmWorkspaceModal
+                                            isOpen={showInFlightWorkspace}
+                                            onClose={() => setShowInFlightWorkspace(false)}
+                                            agents={orderedAgents}
+                                            activeAgentId={activeSwarmAgent}
+                                            activeFile={activeSwarmFile}
+                                            executionSteps={executionSteps}
+                                            contractInfo={contractInfo}
+                                            previewUrl={previewStatus?.preview_url || 'http://localhost:8085'}
+                                            projectToken={selectedProjectKey}
                                         />
 
                                         {/* ── Live Multi-Agent Execution Stream ── */}

@@ -88,7 +88,25 @@ async def receive_agent_callback(
     import time
     is_success = event_type in ("preview_ready", "session_completed")
     is_error = "fail" in str(event_type).lower() or "error" in str(event_type).lower()
-    status_meta = "success" if is_success else ("error" if is_error else None)
+
+    # ── Gate C: honest completion status ─────────────────────────────────────
+    # "session_completed" without platform proof is downgraded to "completed_unverified".
+    # Only events carrying verification evidence broadcast as true success.
+    # The runtime also emits "completed_unverified" itself when its own gate was
+    # skipped — both paths converge on the same honest status.
+    downgrade_reason: Optional[str] = None
+    if event_type in ("session_completed", "preview_ready"):
+        if not payload.get("platform_verified", False):
+            if payload.get("verification_report", {}).get("skipped"):
+                downgrade_reason = "verification gate was skipped (recorded, not silently passed)"
+            else:
+                downgrade_reason = "no platform runnability verification evidence in payload"
+            event_type = "completed_unverified"
+            is_success = False
+            msg = f"{msg} ⚠️ [not platform-verified: {downgrade_reason}]"
+    status_meta = "warning" if downgrade_reason else (
+        "success" if is_success else ("error" if is_error else None)
+    )
     clean_preview_url = payload.get("preview_url") or (f"/app/{project_id}/" if is_success and project_id else None)
 
     log_entry = {
@@ -105,6 +123,10 @@ async def receive_agent_callback(
             "preview_url": clean_preview_url,
             "event_type": event_type,
             "payload": payload,
+            "verification": {
+                "platform_verified": bool(payload.get("platform_verified", False)),
+                "downgrade_reason": downgrade_reason,
+            },
         },
     }
 

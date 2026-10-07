@@ -104,15 +104,35 @@ def route_follow_up_result(state: LangGraphState) -> Literal["preview", "reconci
 
 
 def route_build_result(state: LangGraphState) -> Literal["preview", "fix", "fail"]:
-    """Route successful build to preview, or failed build to self-healing fix loop (max 2 attempts), or fail."""
+    """Route successful build to preview, or failed build to the self-healing fix loop.
+
+    Anti-loop guard (convergence rule): the fix loop is only worth entering if it
+    can converge. If the failure fingerprint is IDENTICAL to the previous cycle,
+    the last repair changed nothing — retrying would burn tokens and repeat the
+    same broken attempt (the agent_01 infinite-loop failure mode). Escalate to
+    fail immediately with the classified error instead.
+    """
     if state.get("build_success"):
         return "preview"
 
-    if state.get("fix_attempts", 0) < 2:
+    fix_attempts = state.get("fix_attempts", 0)
+    current_sig = state.get("verification_signature") or ""
+    prev_sig = state.get("previous_failure_signature") or ""
+
+    if fix_attempts >= 2:
+        print("[GraphRouter] [FAIL] Exceeded max fix attempts (2) and build still failing — routing to fail_node.")
+        return "fail"
+
+    if current_sig and prev_sig and current_sig == prev_sig:
+        print("[GraphRouter] [FAIL] Repair NOT converging: identical failure signature after last fix. "
+              "Stopping to prevent token waste — routing to fail_node.")
+        return "fail"
+
+    if fix_attempts == 0 and not current_sig:
+        # First failure with no fingerprint yet — allow the fix loop to run.
         return "fix"
 
-    print("[GraphRouter] [FAIL] Exceeded max fix attempts (2) and build still failing — routing to fail_node.")
-    return "fail"
+    return "fix"
 
 
 def create_agent_graph(ctx: NodeContext) -> StateGraph:
