@@ -1978,6 +1978,10 @@ async def get_document_architecture_design(
 
     from app.services.ai.architecture_design_service import architecture_design_service
 
+    if getattr(db_doc, "project_token", None):
+        from app.integrations.llm.llm_gateway import current_project_token_var
+        current_project_token_var.set(db_doc.project_token)
+
     p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
     brd_content = db_doc.full_content or db_doc.content_preview or analysis_data.get("analysis") or ""
     changed = False
@@ -1990,13 +1994,7 @@ async def get_document_architecture_design(
             analysis_data=analysis_data,
             project_name=p_name
         )
-        hld = {
-            "title": f"High-Level Design (HLD) — {p_name}",
-            "markdown": hld_res.get("markdown", ""),
-            "version": "1.0.0",
-            "generated_at": datetime.utcnow().isoformat()
-        }
-        analysis_data["hld"] = hld
+        analysis_data["hld"] = hld_res
         changed = True
 
     # Check or generate LLD via AI architecture design service
@@ -2004,17 +2002,11 @@ async def get_document_architecture_design(
     if not lld or not isinstance(lld, dict) or not lld.get("markdown"):
         lld_res = await architecture_design_service.generate_low_level_design(
             brd_content=brd_content,
-            hld_content=hld.get("markdown"),
+            hld_content=(analysis_data.get("hld") or {}).get("markdown"),
             analysis_data=analysis_data,
             project_name=p_name
         )
-        lld = {
-            "title": f"Low-Level Design (LLD) — {p_name}",
-            "markdown": lld_res.get("markdown", ""),
-            "version": "1.0.0",
-            "generated_at": datetime.utcnow().isoformat()
-        }
-        analysis_data["lld"] = lld
+        analysis_data["lld"] = lld_res
         changed = True
 
     if changed:
@@ -2057,6 +2049,10 @@ async def generate_document_architecture_design(
         except Exception:
             analysis_data = {}
 
+    if getattr(db_doc, "project_token", None):
+        from app.integrations.llm.llm_gateway import current_project_token_var
+        current_project_token_var.set(db_doc.project_token)
+
     p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
     brd_content = db_doc.full_content or analysis_data.get("analysis") or ""
 
@@ -2091,6 +2087,7 @@ async def generate_document_architecture_design(
         )
         analysis_data["hld"] = suite.get("hld")
         analysis_data["lld"] = suite.get("lld")
+        analysis_data["architecture_summary"] = suite.get("summary")
 
     db_doc.analysis_result = json.dumps(analysis_data)
     db.add(db_doc)
@@ -2102,7 +2099,8 @@ async def generate_document_architecture_design(
         "document_id": document_id,
         "filename": db_doc.filename,
         "hld": analysis_data.get("hld"),
-        "lld": analysis_data.get("lld")
+        "lld": analysis_data.get("lld"),
+        "architecture_summary": analysis_data.get("architecture_summary")
     }
 
 

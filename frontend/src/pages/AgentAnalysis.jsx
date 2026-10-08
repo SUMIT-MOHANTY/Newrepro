@@ -1243,7 +1243,9 @@ export default function AgentAnalysis({
                 ...(newResult.analysis || {}),
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
-                stages: completedStages || {},  // Include completed stages
+                stages: (completedStages && Object.keys(completedStages).length > 0)
+                    ? completedStages
+                    : (newResult?.analysis?.stages || {}),  // Preserve existing analysis stages
                 sections: newResult.extraction?.sections || [],  // Preserve all input tab sections
                 projectMeta: {
                     project_name: project?.name || governanceContext?.project_name || 'Project',
@@ -1364,7 +1366,7 @@ export default function AgentAnalysis({
                     // Merge updated stages (from targeted update) preserving previous
                     stages: isTargetedUpdate && data.stages
                         ? { ...(existingAnalysis.stages || {}), ...data.stages }
-                        : (data.stages || existingAnalysis.stages || {}),
+                        : (data.stages || existingAnalysis.stages || ((completedStages && Object.keys(completedStages).length > 0) ? completedStages : {})),
                 }
             };
 
@@ -1381,6 +1383,10 @@ export default function AgentAnalysis({
                     },
                     body: JSON.stringify({ project_type: normalizedPt })
                 }).catch(err => console.error("Failed to save project type from analysis:", err));
+            }
+
+            if (finalResult.analysis?.stages && Object.keys(finalResult.analysis.stages).length > 0) {
+                setCompletedStages(finalResult.analysis.stages);
             }
 
             setResult(finalResult);
@@ -1490,7 +1496,7 @@ export default function AgentAnalysis({
                     affected_sections: data.affected_sections || [],
                     stages: isTargetedUpdate && data.stages
                         ? { ...(existingAnalysis.stages || {}), ...data.stages }
-                        : (data.stages || existingAnalysis.stages || {}),
+                        : (data.stages || existingAnalysis.stages || ((completedStages && Object.keys(completedStages).length > 0) ? completedStages : {})),
                 }
             };
 
@@ -1506,6 +1512,10 @@ export default function AgentAnalysis({
                     },
                     body: JSON.stringify({ project_type: normalizedPt })
                 }).catch(err => console.error("Failed to save project type from analysis:", err));
+            }
+
+            if (finalResult.analysis?.stages && Object.keys(finalResult.analysis.stages).length > 0) {
+                setCompletedStages(finalResult.analysis.stages);
             }
 
             setResult(finalResult);
@@ -1649,10 +1659,12 @@ export default function AgentAnalysis({
             const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
             const finalFilename = title || (initialContext || result)?.filename;
 
+            const existingAnalysis = (initialContext || result)?.analysis || {};
             const finalResult = {
                 ...(initialContext || result),
                 filename: finalFilename,
                 analysis: {
+                    ...existingAnalysis,
                     analysis: report,
                     questions: questions,
                     metrics: metrics,
@@ -1663,7 +1675,10 @@ export default function AgentAnalysis({
                     governanceContext: effectiveGovernanceContext,
                     repoContextMeta: buildRepoContextMeta(effectiveRepoContext),
                     reasoning: aiReasoning,
-                    model: payload.model || 'Streaming...'
+                    model: payload.model || 'Streaming...',
+                    stages: (existingAnalysis.stages && Object.keys(existingAnalysis.stages).length > 0)
+                        ? existingAnalysis.stages
+                        : ((completedStages && Object.keys(completedStages).length > 0) ? completedStages : {}),
                 }
             };
 
@@ -4772,6 +4787,64 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                     </div>
                                                 </div>
 
+                                                {/* Architecture Validation & Traceability Indicators */}
+                                                {(hldDesign?.validation || hldDesign?.coverage || lldDesign?.consistency) && (
+                                                    <div className="flex flex-wrap items-center gap-2 p-3 bg-gradient-to-r from-blue-50/70 via-indigo-50/50 to-slate-50/70 border border-blue-100 rounded-lg text-xs">
+                                                        {hldDesign?.coverage && (
+                                                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-blue-200/80 rounded-md font-semibold text-blue-800 shadow-xs">
+                                                                <span className="text-gray-500 font-normal">Architecture Coverage:</span>
+                                                                <span className="font-bold text-blue-700">{hldDesign.coverage.coverage_percentage}%</span>
+                                                                <span className="text-[10px] text-gray-400">({hldDesign.coverage.covered_requirements}/{hldDesign.coverage.total_requirements})</span>
+                                                            </div>
+                                                        )}
+
+                                                        {hldDesign?.validation && (
+                                                            <div className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-md font-semibold shadow-xs ${
+                                                                hldDesign.validation.status === 'PASS' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'
+                                                            }`}>
+                                                                <span className="text-gray-500 font-normal">HLD Validation:</span>
+                                                                <span className="font-bold">{hldDesign.validation.status}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {lldDesign?.consistency && (
+                                                            <div className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-md font-semibold shadow-xs ${
+                                                                lldDesign.consistency.status === 'PASS' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'
+                                                            }`}>
+                                                                <span className="text-gray-500 font-normal">HLD ↔ LLD:</span>
+                                                                <span className="font-bold">{lldDesign.consistency.status}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {(() => {
+                                                            const warnCount = (hldDesign?.validation?.warnings?.length || 0) + (lldDesign?.consistency?.warnings?.length || 0);
+                                                            return (
+                                                                <div className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-gray-200 rounded-md font-medium text-gray-600 shadow-xs">
+                                                                    <span className="text-gray-400">Warnings:</span>
+                                                                    <span className="font-bold text-gray-700">{warnCount}</span>
+                                                                </div>
+                                                            );
+                                                        })()}
+
+                                                        {hldDesign?.coverage?.uncovered_items?.length > 0 ? (
+                                                            <div className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-50 border border-amber-300 rounded-md font-medium text-amber-800 shadow-xs" title={hldDesign.coverage.uncovered_items.map(u => `${u.id}: ${u.requirement}`).join('\n')}>
+                                                                <span>Uncovered Requirements:</span>
+                                                                <span className="font-bold">{hldDesign.coverage.uncovered_items.length}</span>
+                                                            </div>
+                                                        ) : hldDesign?.coverage ? (
+                                                            <div className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-emerald-600 font-medium">
+                                                                <span>All Requirements Covered</span>
+                                                            </div>
+                                                        ) : null}
+
+                                                        {hldDesign?.generation_source && (
+                                                            <div className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-slate-100 text-slate-600 border border-slate-200">
+                                                                <span>Source: {hldDesign.generation_source}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+
                                                 {/* HLD Content */}
                                                 {designLoading || designGenerating ? (
                                                     <div className="py-20 flex flex-col items-center justify-center space-y-3">
@@ -4799,7 +4872,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
                                                     <div>
                                                         <h2 className="text-xl font-extrabold text-gray-900">
-                                                            {lldDesign?.title || `Low-Level Design Specification`}
+                                                             {lldDesign?.title || `Low-Level Design Specification`}
                                                         </h2>
                                                         <p className="text-xs text-gray-500 mt-0.5">
                                                             Layered module contracts, ER diagram, database dictionary, SQL migration DDL, state machines, and file tree.
@@ -4830,6 +4903,45 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                         </button>
                                                     </div>
                                                 </div>
+
+                                                {/* Architecture Validation & Traceability Indicators (LLD View) */}
+                                                {(lldDesign?.validation || lldDesign?.consistency || lldDesign?.traceability) && (
+                                                    <div className="flex flex-wrap items-center gap-2 p-3 bg-gradient-to-r from-indigo-50/70 via-purple-50/50 to-slate-50/70 border border-indigo-100 rounded-lg text-xs">
+                                                        {lldDesign?.validation && (
+                                                            <div className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-md font-semibold shadow-xs ${
+                                                                lldDesign.validation.status === 'PASS' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'
+                                                            }`}>
+                                                                <span className="text-gray-500 font-normal">LLD Quality:</span>
+                                                                <span className="font-bold">{lldDesign.validation.status}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {lldDesign?.consistency && (
+                                                            <div className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-md font-semibold shadow-xs ${
+                                                                lldDesign.consistency.status === 'PASS' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'
+                                                            }`}>
+                                                                <span className="text-gray-500 font-normal">HLD ↔ LLD:</span>
+                                                                <span className="font-bold">{lldDesign.consistency.status}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {lldDesign?.traceability && (
+                                                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-indigo-200/80 rounded-md font-semibold text-indigo-800 shadow-xs">
+                                                                <span className="text-gray-500 font-normal">Traceability:</span>
+                                                                <span className="font-bold text-indigo-700 uppercase">{lldDesign.traceability.status}</span>
+                                                                {lldDesign.traceability.total_traced ? (
+                                                                    <span className="text-[10px] text-gray-400">({lldDesign.traceability.total_traced} mapped)</span>
+                                                                ) : null}
+                                                            </div>
+                                                        )}
+
+                                                        {lldDesign?.generation_source && (
+                                                            <div className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-slate-100 text-slate-600 border border-slate-200">
+                                                                <span>Source: {lldDesign.generation_source}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
 
                                                 {/* LLD Content */}
                                                 {designLoading || designGenerating ? (

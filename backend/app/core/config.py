@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     brn_temperature: float = 0.7
     use_chunked_analysis: bool = True
     use_direct_ai_ingestion: bool = True
+    architecture_lld_timeout: float = 300.0
 
     # GitHub OAuth
     github_client_id: Optional[str] = None
