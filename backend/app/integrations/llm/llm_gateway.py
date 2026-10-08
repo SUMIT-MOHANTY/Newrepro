@@ -198,6 +198,8 @@ def _build_openai_payload(
         payload["temperature"] = extra["temperature"]
     if "response_format" in extra:
         payload["response_format"] = extra["response_format"]
+    if "max_tokens" in extra and extra["max_tokens"] is not None:
+        payload["max_tokens"] = extra["max_tokens"]
     return payload
 
 

@@ -760,6 +760,7 @@ async def analyze_document_chunked(
         )
         
         stage4_data = _extract_json_from_response(stage4_result)
+        stage4_data = _normalize_stage4_schema(stage4_data)
         logger.info(f"Stage 4 complete: Created {len(stage4_data.get('file_creation_plan', []))} file specifications")
         
         # Save stage 4 result to job
@@ -922,8 +923,34 @@ def _extract_json_from_response(text: str) -> dict:
     
     # Remove think tags
     text = re.sub(r"ქ.*?ქ", "", text, flags=re.DOTALL)
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+
+    # 1. First try: clean outer markdown code fences if response is wrapped as ```json ... ```
+    cleaned = text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:].strip()
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:].strip()
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3].strip()
+
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            pass
+
+    # 2. Try greedy extraction between outermost { and }
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        candidate = cleaned[first_brace:last_brace + 1].strip()
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
     
-    # Try to find JSON in markdown fence
+    # 3. Try to find JSON in markdown fence
     fenced_regex = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
     for match in fenced_regex.finditer(text):
         candidate = match.group(1).strip()
@@ -933,7 +960,7 @@ def _extract_json_from_response(text: str) -> dict:
             except:
                 continue
     
-    # Try to find trailing JSON object
+    # 4. Try to find trailing JSON object
     trimmed = text.strip()
     for i in range(len(trimmed) - 1, -1, -1):
         if trimmed[i] == "{":
@@ -944,6 +971,81 @@ def _extract_json_from_response(text: str) -> dict:
                 continue
     
     return {}
+
+
+def _normalize_stage4_schema(stage4_data: dict) -> dict:
+    """
+    P1.5-02: Normalize Stage 4 implementation plan output keys to canonical schema.
+    Canonical key: file_creation_plan
+    Supported aliases: implementation_files, files, file_plan, implementation_plan, file_list
+    """
+    if not isinstance(stage4_data, dict):
+        return {}
+    
+    normalized = dict(stage4_data)
+    
+    # Check canonical key first
+    files_list = normalized.get("file_creation_plan")
+    
+    # If missing or empty or not a list, check supported aliases
+    if not files_list or not isinstance(files_list, list) or len(files_list) == 0:
+        known_aliases = [
+            "implementation_files",
+            "files",
+            "file_plan",
+            "implementation_plan",
+            "file_list"
+        ]
+        for alias in known_aliases:
+            candidate = normalized.get(alias)
+            if candidate:
+                if isinstance(candidate, list) and len(candidate) > 0:
+                    files_list = candidate
+                    logger.info(f"Normalized Stage 4 key '{alias}' to canonical 'file_creation_plan' ({len(candidate)} items)")
+                    break
+                elif isinstance(candidate, dict):
+                    flattened = []
+                    for cat, items in candidate.items():
+                        if isinstance(items, list):
+                            for item in items:
+                                if isinstance(item, dict):
+                                    if "phase" not in item:
+                                        item["phase"] = str(cat)
+                                    flattened.append(item)
+                                elif isinstance(item, str):
+                                    flattened.append({
+                                        "file_path": item,
+                                        "purpose": f"Implementation file for {cat}",
+                                        "content_type": "source",
+                                        "priority": "high",
+                                        "phase": str(cat)
+                                    })
+                    if flattened:
+                        files_list = flattened
+                        logger.info(f"Normalized nested Stage 4 key '{alias}' to canonical 'file_creation_plan' ({len(flattened)} items)")
+                        break
+
+    # Normalize file items inside file_creation_plan
+    canonical_files = []
+    if isinstance(files_list, list):
+        for item in files_list:
+            if isinstance(item, dict):
+                f_path = item.get("file_path") or item.get("path") or item.get("file") or item.get("filename") or ""
+                normalized_item = dict(item)
+                if f_path:
+                    normalized_item["file_path"] = str(f_path)
+                canonical_files.append(normalized_item)
+            elif isinstance(item, str) and item.strip():
+                canonical_files.append({
+                    "file_path": item.strip(),
+                    "purpose": "Implementation file",
+                    "content_type": "source",
+                    "priority": "high",
+                    "phase": "Implementation"
+                })
+
+    normalized["file_creation_plan"] = canonical_files
+    return normalized
 
 
 def _format_governance_context(governance_context: Optional[Dict[str, Any]]) -> str:

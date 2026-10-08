@@ -6,6 +6,7 @@ following C4 Model, OpenAPI 3.1, and ANSI SQL best practices.
 All diagrams, schemas, DDL, data dictionaries, and contracts are 100% dynamically generated
 from the project's extracted BRD requirements and domain architecture.
 """
+import os
 import json
 import re
 import logging
@@ -13,6 +14,13 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Tuple
 
 from app.integrations.llm import llm_client
+from app.services.ai.architecture_validator import (
+    validate_hld_quality,
+    validate_lld_quality,
+    calculate_requirements_coverage,
+    validate_hld_lld_consistency,
+    build_architecture_traceability
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +53,13 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
 - Every Mermaid diagram MUST be syntactically valid and use FULL, UN-TRUNCATED words for all node titles and edge text labels (e.g. write "Administrator", NOT "Administratc"; write "Interacts via HTTPS", NOT "Interacts via H").
 - Keep arrow text labels concise and clean (e.g. "|HTTPS Request|", "|Validate Identity|", "|Dispatch Alert|").
 - Use double quotes around node titles with line breaks <br/> if title text is long (e.g. Node["Core System Boundary<br/>(AI-Assisted Workbench)"]).
+
+3. AUTHORITATIVE CONTEXT, TRACEABILITY & CONSISTENCY RULES:
+- Treat the provided Stage 1-4 analysis as the authoritative canonical source of truth for all requirements, data models, and services.
+- Architect strictly for the actual domain requirements; avoid generic templates or inventing unrequested microservices.
+- Where possible, annotate architectural components and workflows with requirement references (e.g. [REQ-001] or capability names).
+- Distinguish confirmed BRD requirements from architectural recommendations.
+- Establish clean, named components and service boundaries that can be directly elaborated in Low-Level Design (LLD).
 
 ## REQUIRED DOCUMENT STRUCTURE
 
@@ -143,6 +158,13 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
 - The SQL DDL must be syntactically valid and runnable (ANSI SQL / PostgreSQL compatible) with UUID primary keys (`gen_random_uuid()`), foreign keys with `ON DELETE CASCADE/SET NULL`, check constraints, composite B-Tree indexes, and automated `updated_at` trigger functions.
 - The OpenAPI specification MUST detail actual domain endpoints with request headers, body schemas, field validation rules, and full 200/201/400/401/403/404/409/422/500 JSON response payloads with realistic domain values.
 - Every Mermaid diagram (ER Diagram, State Machine, Sequence Flow) MUST be syntactically valid and use FULL, UN-TRUNCATED words for all node titles and edge text labels.
+
+3. AUTHORITATIVE CONTEXT, HLD CONSISTENCY & IMPLEMENTATION FIDELITY:
+- Treat the provided HLD and Stage 1-4 analysis as authoritative; the LLD must directly elaborate the HLD without contradicting it.
+- Maintain strict naming alignment: every service, module, and database model in LLD must correspond to components defined in the HLD.
+- Do not introduce conflicting persistence engines, protocols, or architectures that contradict the HLD decisions.
+- Where possible, link implementation classes, APIs, and tables to requirement identifiers [REQ-xxx].
+- Detail real domain logic, validation constraints, and contracts derived from the BRD.
 
 ## REQUIRED DOCUMENT STRUCTURE
 
@@ -504,7 +526,86 @@ def _is_informational_site(stage1: Dict[str, Any], prod_name: str) -> bool:
         "brochure", "portfolio", "company website", "corporate website", "static website",
         "showcase website", "blog site", "docs site", "content site", "informational"
     ]
-    return any(kw in text_corpus for kw in informational_keywords)
+def _extract_domain_services_from_stages(
+    stage1: Dict[str, Any],
+    stage2: Dict[str, Any],
+    stage3: Dict[str, Any],
+    stage4: Dict[str, Any],
+    prod_name: str
+) -> List[Dict[str, str]]:
+    """
+    Extract 3-4 project-specific domain services from Stage 1-4 data
+    instead of using generic CoreAPI / WorkerPool placeholders.
+    """
+    services: List[Dict[str, str]] = []
+    seen: set = set()
+
+    # Check if Stage 2 explicitly defines backend technology
+    backend_tech = "Application Service (Architecture Recommendation)"
+    if isinstance(stage2, dict):
+        for t in stage2.get("tech_stack", []):
+            if isinstance(t, dict) and any(b in t.get("layer", "").lower() for b in ["backend", "api", "service"]):
+                backend_tech = t.get("technology", backend_tech)
+                break
+
+    # 1. From Stage 3 API endpoints (domain tags)
+    endpoints = stage3.get("api_endpoints", [])
+    if isinstance(endpoints, list):
+        for ep in endpoints:
+            if isinstance(ep, dict):
+                domain = ep.get("domain") or ""
+                if domain and domain.lower() not in seen and domain.lower() not in {"auth", "security", "core"}:
+                    clean_d = re.sub(r'[^A-Za-z0-9]', '', domain)
+                    svc_name = f"{clean_d}Service"
+                    services.append({
+                        "name": svc_name,
+                        "desc": f"{domain} domain operations & management",
+                        "tech": backend_tech
+                    })
+                    seen.add(domain.lower())
+
+    # 2. From Stage 1 functional requirements
+    freqs = stage1.get("functional_requirements", [])
+    if isinstance(freqs, list):
+        for req in freqs:
+            text = str(req)
+            words = [w for w in re.findall(r"[A-Za-z]+", text) if len(w) > 3 and w.lower() not in {"user", "system", "platform", "service", "allow", "enable", "support"}]
+            if words:
+                domain_key = words[0].capitalize() + (words[1].capitalize() if len(words) > 1 else "")
+                if domain_key.lower() not in seen and len(services) < 4:
+                    services.append({
+                        "name": f"{domain_key}Service",
+                        "desc": f"Handles {text[:55].strip()}",
+                        "tech": backend_tech
+                    })
+                    seen.add(domain_key.lower())
+
+    # 3. From Stage 4 repository structure
+    repo = stage4.get("repository_structure", "")
+    if repo and len(services) < 3:
+        for line in repo.split("\n"):
+            folder_match = re.search(r"├──\s*([a-zA-Z0-9_-]+)/?", line)
+            if folder_match:
+                folder = folder_match.group(1)
+                if folder.lower() not in seen and folder.lower() not in {"tests", "docs", "scripts", "config", "shared"}:
+                    clean_f = "".join([w.capitalize() for w in re.split(r"[_-]", folder)])
+                    services.append({
+                        "name": f"{clean_f}Service",
+                        "desc": f"Processes {folder} application logic and workflows",
+                        "tech": backend_tech
+                    })
+                    seen.add(folder.lower())
+
+    # 4. Fallback if stages are minimal: construct from prod_name
+    if not services:
+        clean_name = re.sub(r'[^A-Za-z0-9]', '', prod_name) or "Enterprise"
+        services = [
+            {"name": f"{clean_name}CoreService", "desc": f"Core domain processing for {prod_name}", "tech": backend_tech},
+            {"name": f"{clean_name}WorkflowService", "desc": f"Transaction orchestration for {prod_name}", "tech": "Workflow Engine (Architecture Recommendation)"},
+            {"name": "DomainEventService", "desc": "Async domain events and background worker", "tech": "Task Engine (Architecture Recommendation)"}
+        ]
+
+    return services[:4]
 
 
 def synthesize_hld_from_analysis(analysis_data: Dict[str, Any], project_name: str = "Enterprise Solution") -> str:
@@ -513,11 +614,13 @@ def synthesize_hld_from_analysis(analysis_data: Dict[str, Any], project_name: st
     actual Stage 1-4 analysis data, adapting to the project archetype
     (informational website vs full-stack application).
     """
-    stages = analysis_data.get("stages", {})
-    stage1 = stages.get("stage1_requirements", {})
-    stage2 = stages.get("stage2_architecture", {})
-    stage3 = stages.get("stage3_data_api", {})
-    stage4 = stages.get("stage4_implementation", {})
+    stages = analysis_data.get("stages") or {}
+    if not isinstance(stages, dict):
+        stages = {}
+    stage1 = stages.get("stage1_requirements") or analysis_data.get("stage1_requirements") or {}
+    stage2 = stages.get("stage2_architecture") or analysis_data.get("stage2_architecture") or {}
+    stage3 = stages.get("stage3_data_api") or analysis_data.get("stage3_data_api") or {}
+    stage4 = stages.get("stage4_implementation") or analysis_data.get("stage4_implementation") or {}
 
     prod_name = stage1.get("product_name") or analysis_data.get("title") or project_name
     safe_prod_name = re.sub(r'["\r\n]', '', prod_name).strip()
@@ -716,6 +819,19 @@ sequenceDiagram
 - **SEO & Discoverability:** Perfect 100 Lighthouse SEO audit score with pre-rendered OpenGraph and Twitter Card metadata."""
 
     else:
+        domain_services = _extract_domain_services_from_stages(stage1, stage2, stage3, stage4, prod_name)
+        svc_nodes = []
+        svc_links = []
+        for i, s in enumerate(domain_services):
+            nid = f"SvcNode{i+1}"
+            s_name = s["name"]
+            s_desc = s["desc"].replace('"', '')
+            svc_nodes.append(f'        {nid}["{s_name}\\n({s_desc})"]')
+            svc_links.append(f"    Gateway -->|Route API Requests| {nid}")
+            svc_links.append(f"    {nid} -->|ACID Transactions| RelationalDB")
+        svc_nodes_str = "\n".join(svc_nodes)
+        svc_links_str = "\n".join(svc_links)
+
         c4_container_diagram = f"""```mermaid
 flowchart TB
     subgraph ClientTier["Presentation Tier"]
@@ -727,9 +843,8 @@ flowchart TB
     end
 
     subgraph AppTier["Application Services Tier"]
-        CoreAPI["Core Backend API\\nDomain Controllers & Business Logic"]
+{svc_nodes_str}
         AuthModule["Security & Auth Engine\\nJWT Validation & RBAC Guard"]
-        WorkerPool["Background Worker / Task Engine\\nAsync Job Processing"]
     end
 
     subgraph DataTier["Persistence & Caching Tier"]
@@ -738,19 +853,18 @@ flowchart TB
     end
 
     ClientApp -->|HTTPS / JSON REST| Gateway
-    Gateway -->|Forward Requests| CoreAPI
-    CoreAPI -->|Enforce Auth| AuthModule
-    CoreAPI -->|Read / Write Transactions| RelationalDB
-    CoreAPI -->|Cache Reads / Writes| CacheStore
-    CoreAPI -->|Enqueue Async Jobs| WorkerPool
-    WorkerPool -->|Persist Output| RelationalDB
+{svc_links_str}
+    Gateway -->|Enforce Auth| AuthModule
+    Gateway -->|Cache Reads / Writes| CacheStore
 ```"""
-        interaction_matrix = """| Source Component | Target Component | Protocol | Security | Payload Type | Typical Latency Target |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| Client Browser | API Gateway | HTTPS (TLS 1.3) | WAF + Rate Limit | JSON | < 120 ms |
-| API Gateway | Core Application API | HTTP/2 (Internal) | VPC Private Net | JSON | < 15 ms |
-| Core Application | Primary Relational DB | TCP / Unix Socket | SSL + Connection Pool | Relational SQL | < 10 ms |
-| Core Application | Background Worker | Async Queue / In-Process | Memory / Redis | Binary / JSON | < 5 ms |"""
+        matrix_rows = [
+            "| Client Browser | API Gateway | HTTPS (TLS 1.3) | WAF + Rate Limit | JSON | < 120 ms |",
+            "| API Gateway | Security & Auth Engine | In-Memory / HTTP | Zero-Trust Token | Claims JSON | < 5 ms |"
+        ]
+        for s in domain_services:
+            matrix_rows.append(f"| API Gateway | {s['name']} | HTTP/2 (Internal) | VPC Private Net | JSON | < 15 ms |")
+            matrix_rows.append(f"| {s['name']} | Primary Relational DB | TCP / Unix Socket | SSL + Connection Pool | Relational SQL | < 10 ms |")
+        interaction_matrix = "| Source Component | Target Component | Protocol | Security | Payload Type | Typical Latency Target |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n" + "\n".join(matrix_rows)
 
         # Dynamic RBAC table based on project personas
         rbac_rows = []
@@ -771,6 +885,9 @@ flowchart TB
         clean_actor = re.sub(r'[^A-Za-z0-9 _-]', '', personas[0]).strip() if personas else "Domain User"
         if not clean_actor:
             clean_actor = "Domain User"
+
+        async_svc = domain_services[-1]["name"] if domain_services else "DomainWorker"
+        async_desc = domain_services[-1]["desc"] if domain_services else "Execute analysis and computation"
 
         sequence_workflows = f"""### 4.1 Authentication & Token Lifecycle Workflow
 ```mermaid
@@ -800,26 +917,26 @@ sequenceDiagram
 ### 4.2 Primary Domain Business Workflow ({prod_name})
 {user_flow_diagram}
 
-### 4.3 Asynchronous Job & Processing Sequence
+### 4.3 Asynchronous Domain Job & Processing Sequence
 ```mermaid
 sequenceDiagram
     autonumber
     actor Client as Client App
-    participant API as Core Backend API
-    participant Worker as Background Task Worker
+    participant Gateway as API Gateway
+    participant Worker as {async_svc}
     participant DB as System Database
 
-    Client->>API: POST /api/tasks/run (Task Parameters)
-    API->>DB: Record Task State = 'PENDING'
-    API->>Worker: Enqueue background execution job
-    API-->>Client: HTTP 202 Accepted (job_id, status='PENDING')
+    Client->>Gateway: POST /api/v1/jobs/async-dispatch
+    Gateway->>Worker: Enqueue background execution job
+    Worker->>DB: Record Task State = 'PENDING'
+    Gateway-->>Client: HTTP 202 Accepted (job_id, status='PENDING')
     Worker->>DB: Update Task State = 'PROCESSING'
-    Worker->>Worker: Execute analysis and computation
+    Worker->>Worker: {async_desc}
     Worker->>DB: Persist Task Outputs & State = 'COMPLETED'
-    Client->>API: GET /api/tasks/{{job_id}}/status
-    API->>DB: Fetch latest status
-    DB-->>API: Return Task Record
-    API-->>Client: HTTP 200 OK (Task Results)
+    Client->>Gateway: GET /api/v1/jobs/{{job_id}}/status
+    Gateway->>DB: Fetch latest status
+    DB-->>Gateway: Return Task Record
+    Gateway-->>Client: HTTP 200 OK (Task Results)
 ```"""
 
         security_section = f"""### 5.1 Identity & Access Management (IAM)
@@ -943,11 +1060,13 @@ def synthesize_lld_from_analysis(analysis_data: Dict[str, Any], project_name: st
     Dynamically synthesizes an exhaustive LLD document by extracting the
     actual domain entities, attributes, and endpoints from the project's Stage 3 analysis.
     """
-    stages = analysis_data.get("stages", {})
-    stage1 = stages.get("stage1_requirements", {})
-    stage2 = stages.get("stage2_architecture", {})
-    stage3 = stages.get("stage3_data_api", {})
-    stage4 = stages.get("stage4_implementation", {})
+    stages = analysis_data.get("stages") or {}
+    if not isinstance(stages, dict):
+        stages = {}
+    stage1 = stages.get("stage1_requirements") or analysis_data.get("stage1_requirements") or {}
+    stage2 = stages.get("stage2_architecture") or analysis_data.get("stage2_architecture") or {}
+    stage3 = stages.get("stage3_data_api") or analysis_data.get("stage3_data_api") or {}
+    stage4 = stages.get("stage4_implementation") or analysis_data.get("stage4_implementation") or {}
 
     prod_name = stage1.get("product_name") or analysis_data.get("title") or project_name
     prod_code = re.sub(r"[^A-Za-z0-9]", "", prod_name).upper()[:8] or "PROJECT"
@@ -1231,12 +1350,29 @@ class ArchitectureDesignService:
         p_name = project_name or analysis_data.get("title") or "Enterprise Solution"
         p_code = re.sub(r"[^A-Za-z0-9]", "", p_name).upper()[:8] or "PROJECT"
 
+        stages_data = analysis_data.get("stages") or {}
+        if not isinstance(stages_data, dict):
+            stages_data = {}
+        stage1 = stages_data.get("stage1_requirements") or analysis_data.get("stage1_requirements")
+        stage2 = stages_data.get("stage2_architecture") or analysis_data.get("stage2_architecture")
+        stage3 = stages_data.get("stage3_data_api") or analysis_data.get("stage3_data_api")
+        stage4 = stages_data.get("stage4_implementation") or analysis_data.get("stage4_implementation")
+
+        has_s1 = bool(stage1)
+        has_s2 = bool(stage2)
+        has_s3 = bool(stage3)
+        has_s4 = bool(stage4)
+        logger.info(
+            f"Generating HLD for project '{p_name}'. "
+            f"Analysis stages available: stage1={has_s1}, stage2={has_s2}, stage3={has_s3}, stage4={has_s4}"
+        )
+
         context = {
             "project_name": p_name,
             "project_code": p_code,
             "brd_content": brd_content[:10000] if brd_content else "",
-            "stage1_requirements": (analysis_data.get("stages") or {}).get("stage1_requirements"),
-            "stage2_architecture": (analysis_data.get("stages") or {}).get("stage2_architecture"),
+            "stage1_requirements": stage1,
+            "stage2_architecture": stage2,
             "user_preferences": user_preferences or ""
         }
 
@@ -1253,8 +1389,11 @@ class ArchitectureDesignService:
         ]
 
         markdown_result = None
+        generation_source = "llm"
+        fallback_reason = None
+
         try:
-            logger.info(f"Generating HLD for project '{p_name}' via LLM Gateway...")
+            logger.info(f"Calling LLM Gateway for HLD generation (project '{p_name}')...")
             markdown_result = await llm_client.complete(
                 messages=messages,
                 purpose="architecture_hld_generation",
@@ -1263,19 +1402,65 @@ class ArchitectureDesignService:
                 temperature=0.2,
                 max_tokens=6000
             )
+            if markdown_result and len(markdown_result.strip()) >= 500:
+                logger.info(f"LLM generation successful for HLD (project '{p_name}', {len(markdown_result)} chars).")
+            else:
+                fallback_reason = "INSUFFICIENT_LLM_OUTPUT"
         except Exception as e:
-            logger.warning(f"LLM call for HLD encountered issue: {e}. Falling back to dynamic synthesis.")
+            fallback_reason = type(e).__name__
+            logger.warning(f"HLD LLM generation failed for project '{p_name}': {e}. Using fallback synthesis.")
 
         # Fallback to dynamic schema synthesis if LLM returned insufficient content
         if not markdown_result or len(markdown_result.strip()) < 500:
-            logger.info("Using dynamic structured synthesis for HLD.")
+            generation_source = "fallback"
+            logger.info(f"Using dynamic structured synthesis for HLD (project '{p_name}').")
             markdown_result = synthesize_hld_from_analysis(analysis_data, project_name=p_name)
+
+        # Validation & Coverage Analysis
+        logger.info(f"Validating HLD quality and requirements coverage for '{p_name}'...")
+        hld_validation = validate_hld_quality(markdown_result, analysis_data, project_name=p_name)
+        coverage = calculate_requirements_coverage(markdown_result, analysis_data)
+        logger.info(
+            f"HLD Quality: {hld_validation['status']} (score {hld_validation['score']}%). "
+            f"Requirements Coverage: {coverage['coverage_percentage']}% ({coverage['covered_requirements']}/{coverage['total_requirements']})."
+        )
+
+        # Bounded Remediation: If real LLM output had material structural issues, attempt at most ONE remediation call
+        if generation_source == "llm" and hld_validation.get("status") == "WARNING" and hld_validation.get("issues"):
+            logger.info(f"HLD validation flagged issues: {hld_validation['issues']}. Attempting single bounded remediation...")
+            try:
+                remediation_messages = list(messages) + [
+                    {"role": "assistant", "content": markdown_result},
+                    {"role": "user", "content": f"The HLD requires the following specific fixes: {', '.join(hld_validation['issues'])}. Please provide the corrected, complete HLD specification."}
+                ]
+                remedied = await llm_client.complete(
+                    messages=remediation_messages,
+                    purpose="architecture_hld_remediation",
+                    project_name=p_name,
+                    timeout=timeout,
+                    temperature=0.2,
+                    max_tokens=6000
+                )
+                if remedied and len(remedied.strip()) >= 500:
+                    remedied_val = validate_hld_quality(remedied, analysis_data, project_name=p_name)
+                    if remedied_val["score"] >= hld_validation["score"]:
+                        markdown_result = remedied
+                        hld_validation = remedied_val
+                        coverage = calculate_requirements_coverage(remedied, analysis_data)
+                        generation_source = "remediation"
+                        logger.info(f"HLD remediation successful (new score: {remedied_val['score']}%).")
+            except Exception as rem_err:
+                logger.warning(f"HLD remediation attempt failed: {rem_err}. Preserving best generated HLD.")
 
         return {
             "title": f"High-Level Design (HLD) — {p_name}",
             "markdown": markdown_result.strip(),
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "version": "1.0.0"
+            "version": "1.0.0",
+            "generation_source": generation_source,
+            "fallback_reason": fallback_reason,
+            "validation": hld_validation,
+            "coverage": coverage
         }
 
     async def generate_low_level_design(
@@ -1285,23 +1470,44 @@ class ArchitectureDesignService:
         analysis_data: Optional[Dict[str, Any]] = None,
         project_name: Optional[str] = None,
         user_preferences: Optional[str] = None,
-        timeout: float = 120.0
+        timeout: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Generate a comprehensive, production-grade Low-Level Design (LLD)
         dynamically customized to the project BRD.
         """
+        if timeout is None or timeout <= 0:
+            from app.core.config import settings
+            timeout = float(os.getenv("ARCHITECTURE_LLD_TIMEOUT", getattr(settings, "architecture_lld_timeout", 300.0)))
+
         analysis_data = analysis_data or {}
         p_name = project_name or analysis_data.get("title") or "Enterprise Solution"
         p_code = re.sub(r"[^A-Za-z0-9]", "", p_name).upper()[:8] or "PROJECT"
+
+        stages_data = analysis_data.get("stages") or {}
+        if not isinstance(stages_data, dict):
+            stages_data = {}
+        stage1 = stages_data.get("stage1_requirements") or analysis_data.get("stage1_requirements")
+        stage2 = stages_data.get("stage2_architecture") or analysis_data.get("stage2_architecture")
+        stage3 = stages_data.get("stage3_data_api") or analysis_data.get("stage3_data_api")
+        stage4 = stages_data.get("stage4_implementation") or analysis_data.get("stage4_implementation")
+
+        has_s1 = bool(stage1)
+        has_s2 = bool(stage2)
+        has_s3 = bool(stage3)
+        has_s4 = bool(stage4)
+        logger.info(
+            f"Generating LLD for project '{p_name}'. "
+            f"Analysis stages available: stage1={has_s1}, stage2={has_s2}, stage3={has_s3}, stage4={has_s4}"
+        )
 
         context = {
             "project_name": p_name,
             "project_code": p_code,
             "brd_content": brd_content[:8000] if brd_content else "",
             "hld_excerpt": (hld_content[:3000] if hld_content else ""),
-            "stage3_data_api": (analysis_data.get("stages") or {}).get("stage3_data_api"),
-            "stage4_implementation": (analysis_data.get("stages") or {}).get("stage4_implementation"),
+            "stage3_data_api": stage3,
+            "stage4_implementation": stage4,
             "user_preferences": user_preferences or ""
         }
 
@@ -1317,8 +1523,11 @@ class ArchitectureDesignService:
         ]
 
         markdown_result = None
+        generation_source = "llm"
+        fallback_reason = None
+
         try:
-            logger.info(f"Generating LLD for project '{p_name}' via LLM Gateway...")
+            logger.info(f"Calling LLM Gateway for LLD generation (project '{p_name}', timeout={timeout}s)...")
             markdown_result = await llm_client.complete(
                 messages=messages,
                 purpose="architecture_lld_generation",
@@ -1327,18 +1536,41 @@ class ArchitectureDesignService:
                 temperature=0.2,
                 max_tokens=9000
             )
+            if markdown_result and len(markdown_result.strip()) >= 500:
+                logger.info(f"LLM generation successful for LLD (project '{p_name}', {len(markdown_result)} chars).")
+            else:
+                fallback_reason = "INSUFFICIENT_LLM_OUTPUT"
         except Exception as e:
-            logger.warning(f"LLM call for LLD encountered issue: {e}. Falling back to dynamic synthesis.")
+            fallback_reason = type(e).__name__
+            logger.warning(f"LLD LLM generation failed for project '{p_name}': {e}. Using fallback synthesis.")
 
         if not markdown_result or len(markdown_result.strip()) < 500:
-            logger.info("Using dynamic structured synthesis for LLD.")
+            generation_source = "fallback"
+            logger.info(f"Using dynamic structured synthesis for LLD (project '{p_name}').")
             markdown_result = synthesize_lld_from_analysis(analysis_data, project_name=p_name)
+
+        # Validation, Consistency & Traceability Analysis
+        logger.info(f"Validating LLD quality, HLD consistency, and traceability for '{p_name}'...")
+        lld_validation = validate_lld_quality(markdown_result, analysis_data, project_name=p_name)
+        consistency = validate_hld_lld_consistency(hld_content or "", markdown_result, analysis_data)
+        traceability = build_architecture_traceability(analysis_data, hld_content or "", markdown_result)
+
+        logger.info(
+            f"LLD Quality: {lld_validation['status']} (score {lld_validation['score']}%). "
+            f"HLD ↔ LLD Consistency: {consistency['status']} (score {consistency['score']}%). "
+            f"Traceability status: {traceability['status']} ({traceability.get('total_traced', 0)} requirements mapped)."
+        )
 
         return {
             "title": f"Low-Level Design (LLD) — {p_name}",
             "markdown": markdown_result.strip(),
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "version": "1.0.0"
+            "version": "1.0.0",
+            "generation_source": generation_source,
+            "fallback_reason": fallback_reason,
+            "validation": lld_validation,
+            "consistency": consistency,
+            "traceability": traceability
         }
 
     async def generate_complete_design_suite(
@@ -1349,7 +1581,8 @@ class ArchitectureDesignService:
         user_preferences: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Generate both HLD and LLD in sequence and package them together.
+        Generate both HLD and LLD in sequence and package them together
+        with consolidated validation, coverage, and consistency metrics.
         """
         hld = await self.generate_high_level_design(
             brd_content=brd_content,
@@ -1366,9 +1599,31 @@ class ArchitectureDesignService:
             user_preferences=user_preferences
         )
 
+        cov = hld.get("coverage", {})
+        h_val = hld.get("validation", {})
+        l_val = lld.get("validation", {})
+        c_val = lld.get("consistency", {})
+
+        total_warnings = (
+            len(h_val.get("warnings", [])) +
+            len(l_val.get("warnings", [])) +
+            len(c_val.get("warnings", []))
+        )
+
         return {
             "hld": hld,
-            "lld": lld
+            "lld": lld,
+            "summary": {
+                "coverage_percentage": cov.get("coverage_percentage", 100.0),
+                "total_requirements": cov.get("total_requirements", 0),
+                "covered_requirements": cov.get("covered_requirements", 0),
+                "uncovered_requirements_count": len(cov.get("uncovered_items", [])),
+                "hld_status": h_val.get("status", "PASS"),
+                "lld_status": l_val.get("status", "PASS"),
+                "consistency_status": c_val.get("status", "PASS"),
+                "total_warnings": total_warnings,
+                "generation_source": hld.get("generation_source", "llm")
+            }
         }
 
 

@@ -2,6 +2,7 @@
 backend/venv/
 backend/.env
 backend/uploads/
+backend/app/services/ai/uploads/
 backend/*.db
 __pycache__/
 *.pyc
