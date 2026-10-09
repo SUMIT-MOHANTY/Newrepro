@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import os
 import json
-from typing import Any, TYPE_CHECKING
+import time
+from typing import Any, Optional, TYPE_CHECKING
 
 from agent.tools.tool_registry import ToolRegistry
 
@@ -186,8 +187,24 @@ class ToolExecutor:
         # Translate tool input args to MCP call args
         mcp_args = self._translate_args(tool_name, mcp_module, mcp_method, tool_input)
 
+        # ── Cross-Agent File Claim (advisory, conflict-enforced) ─────────────
+        # Write tools claim target paths in .agent/locks.json before mutating.
+        # Single-agent runs pay zero overhead (no live peer claims exist).
+        # On a real conflict (another agent holds a live claim) we wait briefly,
+        # then report honestly instead of silently racing the peer's edit.
+        claim_paths: list[str] = []
+        if tool_name in self._FILE_WRITE_TOOLS:
+            claim_paths = self._extract_write_paths(tool_name, tool_input)
+            claim_conflict = self._acquire_file_claims(claim_paths)
+            if claim_conflict:
+                return self._error_result(claim_conflict)
+
         # Execute through MCP (sandbox policies enforced here)
-        result = self._mcp.call_tool(mcp_module, mcp_method, mcp_args)
+        try:
+            result = self._mcp.call_tool(mcp_module, mcp_method, mcp_args)
+        finally:
+            if claim_paths:
+                self._release_file_claims(claim_paths)
 
         # Track file changes
         self._track_changes(tool_name, tool_input, result)
@@ -433,6 +450,154 @@ class ToolExecutor:
         return success_result
 
 
+
+    # ------------------------------------------------------------------
+    # Cross-agent file claims (advisory, conflict-enforced)
+    # ------------------------------------------------------------------
+    # Same .agent/locks.json format consumed by the platform's
+    # SwarmBlackboard (claim_file_lock / release_file_lock), so runtime
+    # agents and host-side services agree on who holds which file.
+    _FILE_WRITE_TOOLS = (
+        "write_file",
+        "write_files",
+        "replace_file_content",
+        "find_and_replace",
+        "batch_replace_file_content",
+    )
+    _CLAIM_TTL_SECONDS = 180
+    _CLAIM_WAIT_SECONDS = 5.0
+
+    def _workspace_root(self) -> str:
+        return (
+            getattr(self._mcp, "_workspace_path", None)
+            or os.environ.get("WORKSPACE_PATH", "/workspace")
+        )
+
+    @staticmethod
+    def _norm_claim_path(p: str) -> str:
+        return str(p).replace("\\", "/").strip().lstrip("/")
+
+    def _extract_write_paths(self, tool_name: str, tool_input: Any) -> list[str]:
+        """Derive the target file paths a write-tool call will mutate."""
+        paths: list[str] = []
+        if not isinstance(tool_input, dict):
+            return paths
+        if tool_name == "write_files":
+            items = tool_input.get("files") or []
+        elif tool_name == "batch_replace_file_content":
+            items = tool_input.get("edits") or []
+        else:
+            items = [tool_input]
+        for item in items:
+            if isinstance(item, dict):
+                p = item.get("path") or item.get("file_path") or item.get("file")
+                if p:
+                    norm = self._norm_claim_path(p)
+                    if norm and norm not in paths:
+                        paths.append(norm)
+        return paths
+
+    def _read_locks_safe(self) -> dict[str, Any]:
+        locks_file = os.path.join(self._workspace_root(), ".agent", "locks.json")
+        try:
+            with open(locks_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _write_locks_atomic(self, locks: dict[str, Any]) -> None:
+        import tempfile
+
+        locks_file = os.path.join(self._workspace_root(), ".agent", "locks.json")
+        try:
+            os.makedirs(os.path.dirname(locks_file), exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(locks_file), suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(locks, f, indent=2)
+                os.replace(tmp_path, locks_file)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception:
+            # Claims are advisory — never fail the tool call over bookkeeping.
+            pass
+
+    def _acquire_file_claims(self, paths: list[str]) -> Optional[str]:
+        """Claim all target paths for this agent.
+
+        Returns None on success (or when no live peer claims exist), or an
+        error message naming the conflicting holder. Expired claims are taken
+        over automatically. A short bounded wait absorbs transient overlaps.
+        """
+        if not paths:
+            return None
+        agent_id = os.environ.get("AGENT_ID", "unknown_agent")
+        deadline = time.time() + self._CLAIM_WAIT_SECONDS
+
+        while True:
+            now = time.time()
+            locks = self._read_locks_safe()
+            conflicts: list[tuple[str, dict[str, Any]]] = []
+            for p in paths:
+                existing = locks.get(p)
+                if isinstance(existing, dict) and existing.get("agent_id") != agent_id:
+                    if now < float(existing.get("expires_at", 0) or 0):
+                        conflicts.append((p, existing))
+
+            if not conflicts:
+                for p in paths:
+                    locks[p] = {
+                        "agent_id": agent_id,
+                        "filepath": p,
+                        "reason": "Runtime write claim",
+                        "acquired_at": now,
+                        "expires_at": now + self._CLAIM_TTL_SECONDS,
+                    }
+                self._write_locks_atomic(locks)
+                return None
+
+            if time.time() >= deadline:
+                held = ", ".join(
+                    f"`{p}` (held by {meta.get('agent_id')}, expires in "
+                    f"{max(0, int(float(meta.get('expires_at', 0) or 0) - now))}s)"
+                    for p, meta in conflicts
+                )
+                _safe_print(
+                    f"[ToolExecutor] 🔒 Write claim conflict: {held}"
+                )
+                return (
+                    f"File claim conflict: {held}. "
+                    "Another agent is actively editing these file(s). "
+                    "Do NOT rewrite them blindly from memory — work on other "
+                    "files now, then re-read and retry this one shortly."
+                )
+
+            time.sleep(0.25)
+
+    def _release_file_claims(self, paths: list[str]) -> None:
+        """Best-effort release of this agent's claims (never raises)."""
+        if not paths:
+            return
+        agent_id = os.environ.get("AGENT_ID", "unknown_agent")
+        try:
+            locks = self._read_locks_safe()
+            changed = False
+            for p in paths:
+                entry = locks.get(p)
+                if isinstance(entry, dict) and entry.get("agent_id") == agent_id:
+                    del locks[p]
+                    changed = True
+            if changed:
+                self._write_locks_atomic(locks)
+        except Exception:
+            pass
 
     def _translate_args(
         self,

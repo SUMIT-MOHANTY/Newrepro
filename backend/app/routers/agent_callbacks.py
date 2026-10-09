@@ -83,6 +83,17 @@ async def receive_agent_callback(
         except Exception as e:
             logger.warning(f"[AgentCallback] Failed to record event in DB: {e}")
 
+    # ── Live DB progress sync: runtime task lifecycle events update the local
+    # task ownership rows so UI progress reflects real execution state.
+    # (Root cause of "progress stuck at 0/10% even though the app is live":
+    # task_completed events were recorded as logs but never applied to the
+    # AgentTaskOwnership rows the task-list endpoint reads.)
+    if task_id and project_id and event_type in ("task_started", "task_completed", "task_failed"):
+        try:
+            _sync_task_progress_to_db(db, str(project_id), str(task_id), event_type, payload)
+        except Exception as e:
+            logger.warning(f"[AgentCallback] Task progress sync error: {e}")
+
     # Build human-readable live log message
     msg = payload.get("message") or payload.get("label") or payload.get("final_text") or event_type
     import time
@@ -165,6 +176,79 @@ async def receive_agent_callback(
                     ws_list.remove(d)
 
     return {"status": "ok", "event_type": event_type}
+
+
+def _sync_task_progress_to_db(
+    db: Session,
+    project_id: str,
+    task_id: str,
+    event_type: str,
+    payload: Dict[str, Any],
+) -> None:
+    """Apply a runtime task lifecycle event to the local DB task ownership row.
+
+    Status mapping (dynamic — derived from the event itself, no hardcoded
+    project/task ids):
+      task_started  -> in_progress (progress 10 floor matches the UI mapping)
+      task_completed-> done / 100 when the runtime proved the task
+                       (platform_verified), else in_review / 75 (honest:
+                       agent says done, platform has not proven it)
+      task_failed   -> failed / 0
+    """
+    from datetime import datetime
+
+    task = db.query(models.Task).filter(models.Task.task_id == task_id).first()
+    if not task:
+        # The runtime may use a differently-qualified id; match on the clean
+        # suffix (same normalization _format_local_tasks_as_nxdune uses).
+        clean = task_id.split("_", 1)[-1] if "_" in task_id else task_id
+        if clean and clean != task_id:
+            task = db.query(models.Task).filter(
+                models.Task.project_token == project_id,
+                models.Task.task_id.like(f"%{clean}"),
+            ).first()
+    if not task:
+        return
+
+    now = datetime.utcnow()
+    ow = db.query(models.AgentTaskOwnership).filter(
+        models.AgentTaskOwnership.project_token == project_id,
+        models.AgentTaskOwnership.task_id == task.task_id,
+    ).first()
+    if not ow:
+        ow = models.AgentTaskOwnership(
+            project_token=project_id,
+            task_id=task.task_id,
+            agent_id=str(payload.get("agent_id") or payload.get("agent") or "runtime"),
+            status="in_progress",
+            claimed_at=now,
+            started_at=now,
+        )
+        db.add(ow)
+        db.flush()
+
+    if event_type == "task_started":
+        new_status, progress = "in_progress", 10
+    elif event_type == "task_completed":
+        verified = bool(payload.get("platform_verified", False))
+        new_status, progress = ("done", 100) if verified else ("in_review", 75)
+    else:  # task_failed
+        new_status, progress = "failed", 0
+
+    data = dict(ow.task_data) if isinstance(ow.task_data, dict) else {}
+    changed = (
+        ow.status != new_status
+        or data.get("task_progress") != progress
+        or data.get("last_runtime_event") != event_type
+    )
+    if not changed:
+        return
+
+    ow.status = new_status
+    data["task_progress"] = progress
+    data["last_runtime_event"] = event_type
+    ow.task_data = data
+    db.commit()
 
 
 @router.get("/api/v1/sessions/{session_id}")

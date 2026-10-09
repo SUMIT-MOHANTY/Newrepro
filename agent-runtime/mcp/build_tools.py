@@ -283,8 +283,11 @@ class BuildTools:
         return result
 
     def run_build(self, workspace: str | None = None) -> ToolResult:
-        """Run npm run build in the workspace."""
+        """Run build in the workspace with multi-stack awareness."""
         target_path = self._resolve_target_dir(workspace)
+        # If target has no package.json but is a Python project, delegate to stack-aware verification
+        if not (target_path / "package.json").exists() and ((target_path / "pyproject.toml").exists() or (target_path / "requirements.txt").exists() or any(target_path.glob("*.py"))):
+            return self.install_and_build(workspace)
         cwd = str(target_path)
         print(f"[BuildTools] Running npm run build in {cwd}...")
         result = self._exec.run_command(
@@ -295,10 +298,59 @@ class BuildTools:
         return result
 
     def install_and_build(self, workspace: str | None = None) -> ToolResult:
-        """Combined install + build. Returns unified error if either step fails."""
+        """Combined install + build. Multi-stack aware: Node.js, Python, or multi-language."""
         target_path = self._resolve_target_dir(workspace)
         cwd = str(target_path)
         root = target_path
+
+        # Determine stack dynamically from manifests
+        has_pkg_json = (target_path / "package.json").exists()
+        has_python = (target_path / "pyproject.toml").exists() or (target_path / "requirements.txt").exists() or (target_path / "setup.py").exists()
+
+        # If neither directly in target_path, check subdirectories (e.g. frontend/ or backend/)
+        if not has_pkg_json and not has_python:
+            try:
+                for child in target_path.iterdir():
+                    if child.is_dir() and not child.name.startswith(".") and child.name not in ("node_modules", "venv", "__pycache__"):
+                        if (child / "package.json").exists():
+                            target_path = child
+                            cwd = str(child)
+                            root = child
+                            has_pkg_json = True
+                            break
+                        elif (child / "pyproject.toml").exists() or (child / "requirements.txt").exists():
+                            target_path = child
+                            cwd = str(child)
+                            root = child
+                            has_python = True
+                            break
+            except Exception:
+                pass
+
+        # Python-only stack verification (no package.json)
+        if has_python and not has_pkg_json:
+            import py_compile
+            py_files = [f for f in target_path.rglob("*.py") if "venv" not in f.parts and ".git" not in f.parts and "__pycache__" not in f.parts]
+            errors = []
+            for pf in py_files:
+                try:
+                    py_compile.compile(str(pf), doraise=True)
+                except py_compile.PyCompileError as pe:
+                    errors.append(str(pe))
+            if errors:
+                return ToolResult(
+                    success=False,
+                    error="Python backend compilation failed with syntax errors:\n" + "\n".join(errors[:10]),
+                )
+            return ToolResult(
+                success=True,
+                data={
+                    "message": f"Python backend verification passed: {len(py_files)} Python file(s) compiled cleanly with zero syntax errors.",
+                    "workspace": cwd,
+                },
+            )
+
+        # Node / Frontend / Full-stack verification
         install = self.install_dependencies(cwd)
         if not install.success:
             return ToolResult(success=False,
@@ -379,6 +431,9 @@ class BuildTools:
 
     def check_syntax(self, path: str, workspace: str | None = None) -> ToolResult:
         """Instant (<100ms) syntax and parse validation on a specific file."""
+        import ast
+        import shutil
+
         root = Path(workspace) if workspace else self._workspace
         target = Path(path) if Path(path).is_absolute() else (root / path)
 
@@ -388,7 +443,31 @@ class BuildTools:
         ext = target.suffix.lower()
         cwd = str(root)
 
-        # 1. Plain JS/Node syntax check
+        # 1. Python syntax check via native AST parse (exact line and column)
+        if ext == ".py":
+            try:
+                code = target.read_text(encoding="utf-8", errors="replace")
+                ast.parse(code, filename=str(target))
+                return ToolResult(success=True, data={"status": "valid", "file": path, "message": "Python syntax valid"})
+            except SyntaxError as se:
+                return ToolResult(
+                    success=False,
+                    error=f"Python syntax error in {path} at line {se.lineno}, column {se.offset}:\n  {se.text or ''}\n{se.msg}"
+                )
+            except Exception as e:
+                return ToolResult(success=False, error=f"Python parse error in {path}: {e}")
+
+        # 2. JSON syntax check
+        if ext == ".json":
+            try:
+                code = target.read_text(encoding="utf-8", errors="replace")
+                import json
+                json.loads(code)
+                return ToolResult(success=True, data={"status": "valid", "file": path, "message": "JSON valid"})
+            except Exception as e:
+                return ToolResult(success=False, error=f"JSON parse error in {path}: {e}")
+
+        # 3. Plain JS/Node syntax check
         if ext in (".js", ".mjs", ".cjs"):
             res = self._exec.run_command(["node", "--check", str(target)], cwd=cwd, timeout_seconds=5)
             if not res.success:
@@ -396,43 +475,94 @@ class BuildTools:
                 return ToolResult(success=False, error=f"Syntax error in {path}:\n{err}")
             return ToolResult(success=True, data={"status": "valid", "file": path, "message": "Syntax valid"})
 
-        # 2. JSX/TSX/TS syntax check via local esbuild
-        esbuild_bin = root / "node_modules" / ".bin" / "esbuild"
-        if not esbuild_bin.exists():
-            template_esbuild = Path("/template_workspace/node_modules/.bin/esbuild")
-            if template_esbuild.exists():
-                esbuild_bin = template_esbuild
-            else:
-                candidates = list((root / "node_modules" / "@esbuild").glob("**/bin/esbuild*"))
-                if candidates:
-                    esbuild_bin = candidates[0]
+        # 4. JSX/TSX/TS syntax check via nearest project esbuild
+        if ext in (".ts", ".tsx", ".jsx", ".vue", ".svelte"):
+            esbuild_bin = None
+            curr = target.parent
+            while curr != curr.parent:
+                cand = curr / "node_modules" / ".bin" / "esbuild"
+                if cand.exists():
+                    esbuild_bin = cand
+                    break
+                if (curr / "node_modules" / "@esbuild").exists():
+                    cand_glob = list((curr / "node_modules" / "@esbuild").glob("**/bin/esbuild*"))
+                    if cand_glob:
+                        esbuild_bin = cand_glob[0]
+                        break
+                if curr == root or (curr / ".git").exists():
+                    break
+                curr = curr.parent
 
-        if esbuild_bin.exists():
-            # Use --outfile=/dev/null to discard output in 3ms while strictly validating syntax
-            cmd = [str(esbuild_bin), str(target), "--outfile=/dev/null"]
-            res = self._exec.run_command(cmd, cwd=cwd, timeout_seconds=5)
-            if not res.success:
-                err = res.data.get("stderr", "") if isinstance(res.data, dict) else res.error
-                return ToolResult(success=False, error=f"Syntax error in {path}:\n{err}")
-            return ToolResult(success=True, data={"status": "valid", "file": path, "message": "Syntax valid"})
+            if not esbuild_bin:
+                for p in (root / "node_modules" / ".bin" / "esbuild",
+                          Path("/template_workspace/node_modules/.bin/esbuild")):
+                    if p.exists():
+                        esbuild_bin = p
+                        break
 
-        # Quick fallback syntax check: parse basic bracket balance and common unassigned literals
-        try:
-            code = target.read_text(encoding="utf-8", errors="replace")
-            # Check for orphaned object keys outside objects
-            lines = code.splitlines()
-            for idx, l in enumerate(lines, 1):
-                stripped = l.strip()
-                if re.match(r'^(metric|sources|transformations|reports|dataWarehouse)\s*:\s*(\'|\[|\{)', stripped):
-                    # Check if line before is inside object
-                    prev = lines[idx - 2].strip() if idx >= 2 else ""
-                    if prev.endswith(";") and not prev.endswith("{"):
-                        return ToolResult(
-                            success=False,
-                            error=f"Syntax error in {path} at line {idx}: unassigned property '{stripped[:40]}' following a statement terminator."
-                        )
-        except Exception:
-            pass
+            if not esbuild_bin:
+                which_eb = shutil.which("esbuild")
+                if which_eb:
+                    esbuild_bin = Path(which_eb)
+
+            if esbuild_bin and esbuild_bin.exists():
+                loader_arg = "--loader=tsx" if ext in (".tsx", ".jsx") else ("--loader=ts" if ext == ".ts" else None)
+                cmd = [str(esbuild_bin), str(target), "--outfile=/dev/null"]
+                if loader_arg:
+                    cmd.append(loader_arg)
+                res = self._exec.run_command(cmd, cwd=str(target.parent), timeout_seconds=5)
+                if not res.success:
+                    err = res.data.get("stderr", "") if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Syntax error in {path}:\n{err}")
+                return ToolResult(success=True, data={"status": "valid", "file": path, "message": "Syntax valid"})
+
+            # Delimiter and bracket balance validator if esbuild binary is missing
+            try:
+                code = target.read_text(encoding="utf-8", errors="replace")
+                lines = code.splitlines()
+                stack = []
+                delims = {'(': ')', '{': '}', '[': ']'}
+                in_str = False
+                str_char = None
+                escape = False
+                for line_idx, line in enumerate(lines, 1):
+                    for col_idx, char in enumerate(line, 1):
+                        if escape:
+                            escape = False
+                            continue
+                        if char == '\\':
+                            escape = True
+                            continue
+                        if in_str:
+                            if char == str_char:
+                                in_str = False
+                            continue
+                        if char in ('"', "'", '`'):
+                            in_str = True
+                            str_char = char
+                            continue
+                        if char in delims:
+                            stack.append((char, line_idx, col_idx))
+                        elif char in delims.values():
+                            if not stack:
+                                return ToolResult(
+                                    success=False,
+                                    error=f"Syntax error in {path} at line {line_idx}, col {col_idx}: Unexpected closing '{char}' with no opening match."
+                                )
+                            open_c, o_line, o_col = stack.pop()
+                            if delims[open_c] != char:
+                                return ToolResult(
+                                    success=False,
+                                    error=f"Syntax error in {path} at line {line_idx}, col {col_idx}: Mismatched bracket '{char}' (expected '{delims[open_c]}' opened at line {o_line})."
+                                )
+                if stack:
+                    open_c, o_line, o_col = stack[-1]
+                    return ToolResult(
+                        success=False,
+                        error=f"Syntax error in {path}: Unclosed '{open_c}' from line {o_line}, column {o_col}."
+                    )
+            except Exception:
+                pass
 
         return ToolResult(success=True, data={"status": "valid", "file": path, "message": "File parsed successfully"})
 

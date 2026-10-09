@@ -146,10 +146,13 @@ export default function SwarmFlightControl({
           {onOpenWorkspace && (
             <button
               onClick={onOpenWorkspace}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-sky-600 hover:from-indigo-500 hover:via-purple-500 hover:to-sky-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 border border-indigo-400/30 transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+              className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-sky-600 hover:from-indigo-500 hover:via-purple-500 hover:to-sky-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/30 border border-indigo-400/40 transition-all transform hover:scale-[1.03] active:scale-[0.98] ring-2 ring-indigo-500/20"
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>In-Flight Workspace (3-Col)</span>
+              <Sparkles className="w-4 h-4 text-amber-300 animate-spin" />
+              <span>Launch Swarm Flight Deck</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-mono border border-emerald-500/30">
+                :8085 Live
+              </span>
             </button>
           )}
 

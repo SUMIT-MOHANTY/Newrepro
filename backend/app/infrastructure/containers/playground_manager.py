@@ -167,12 +167,25 @@ class PlaygroundContainerManager:
                 if os.path.isdir(runtime_dir):
                     vols[runtime_dir] = {"bind": "/app", "mode": "rw"}
 
+                # Check if host preview port 8085 is available for seamless UI preview
+                import socket
+                preview_port_free = False
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        preview_port_free = (s.connect_ex(('127.0.0.1', 8085)) != 0)
+                except Exception:
+                    preview_port_free = False
+
+                ports_dict = {"80/tcp": ("0.0.0.0", 8085)} if preview_port_free else None
+                cli_port_args = ["-p", "8085:80"] if preview_port_free else []
+
                 if self._docker_client:
                     c = self._docker_client.containers.run(
                         image=image,
                         name=container_name,
                         detach=True,
                         volumes=vols,
+                        ports=ports_dict,
                         working_dir="/workspace",
                         entrypoint="/bin/sh",
                         command=["-c", "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null"],
@@ -192,6 +205,8 @@ class PlaygroundContainerManager:
                         "--name", container_name,
                         "-v", f"{os.path.abspath(workspace_host_path)}:/workspace",
                     ]
+                    if cli_port_args:
+                        cmd.extend(cli_port_args)
                     if os.path.isdir(runtime_dir):
                         cmd.extend(["-v", f"{runtime_dir}:/app"])
                     cmd.extend([

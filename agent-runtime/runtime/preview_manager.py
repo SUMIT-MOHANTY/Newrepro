@@ -624,7 +624,7 @@ class PreviewManager:
                 frontend_err = f"Frontend server exited with code {self._frontend_process.returncode}"
             print(f"[PreviewManager] [ERROR] Frontend dev server failed: {frontend_err[:300]}")
         else:
-            fe_ok, probe_err = self._wait_for_port_health(fe_spec.port, timeout=8.0)
+            fe_ok, probe_err = self._wait_for_frontend_health(fe_spec.port, timeout=8.0)
             if not fe_ok:
                 log_handle.flush()
                 try:

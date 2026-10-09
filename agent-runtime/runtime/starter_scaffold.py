@@ -564,10 +564,16 @@ def _compute_deps_hash(package_json_path: str) -> str:
 
 
 def seed_starter_scaffold(workspace_path: str) -> None:
-    """Seed the workspace with starter files and pre-cached node_modules if package.json does not exist."""
+    """Seed the workspace with starter files and pre-cached node_modules only if the workspace is empty."""
     package_json_path = os.path.join(workspace_path, "package.json")
     if os.path.exists(package_json_path):
         return
+
+    # If the workspace already has decoupled structure (frontend/, backend/, client/, web/), do NOT overwrite or pollute with a root scaffold!
+    for sub in ("frontend", "client", "ui", "web", "backend"):
+        if os.path.isdir(os.path.join(workspace_path, sub)):
+            print(f"[StarterScaffold] Decoupled folder structure detected (`{sub}/`). Skipping root starter scaffold.")
+            return
 
     os.makedirs(workspace_path, exist_ok=True)
     src_dir = os.path.join(workspace_path, "src")

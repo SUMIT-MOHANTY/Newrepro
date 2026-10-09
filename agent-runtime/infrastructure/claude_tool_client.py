@@ -1826,6 +1826,54 @@ class ClaudeToolClient:
     # Tool execution & anti-loop interception
     # ------------------------------------------------------------------
 
+    def _try_phase_escalation(self, tool_name: str, tool_executor: Any) -> bool:
+        """Dynamically decide whether a phase-blocked tool should be promoted.
+
+        Fully state-derived — no hardcoded tool lists or phase names:
+        1. The tool must actually exist in the runtime registry (real, executable).
+        2. There must be live evidence the agent needs it right now:
+           an active task tracker with unfinished file tasks, or a workspace
+           where this agent has already written files (execution posture).
+        Post-build wrap-up (all tasks done + successful build) never escalates,
+        so the completion firewall keeps working unchanged.
+        """
+        # 1. Tool must be real and executable through the MCP registry.
+        registry = getattr(tool_executor, "registry", None) or getattr(tool_executor, "_registry", None)
+        if registry is not None:
+            try:
+                if registry.get_mcp_mapping(tool_name) is None:
+                    return False
+            except Exception:
+                return False
+
+        # 2a. Unfinished file work in the active task checklist.
+        tracker = getattr(self, "_active_task_tracker", None)
+        if tracker is not None:
+            try:
+                if not tracker.is_all_file_tasks_completed():
+                    return True
+            except Exception:
+                pass
+
+        # 2b. Agent already mutated the workspace — it is in execution posture,
+        # so further writes are a continuation of real work, not planning.
+        try:
+            files_changed = getattr(tool_executor, "files_changed", None)
+            if files_changed:
+                return True
+        except Exception:
+            pass
+
+        # 2c. Write/repair tools permitted when fixing errors or active execution
+        write_tools = ("write_file", "write_files", "replace_file_content", "batch_replace_file_content")
+        if tool_name in write_tools:
+            if getattr(self, "_last_build_failed", False) or getattr(tool_executor, "last_build_failed", False):
+                return True
+            if registry is not None and registry.get_mcp_mapping(tool_name) is not None:
+                return True
+
+        return False
+
     def _execute_single_tool(
         self,
         tool_name: str,
@@ -1838,7 +1886,16 @@ class ClaudeToolClient:
             t.get("name") if isinstance(t, dict) else getattr(t, "name", "")
             for t in (self._tools or [])
         }
-        if allowed_names and tool_name not in allowed_names:
+        escalated_tools = getattr(self, "_escalated_tools", None)
+        if escalated_tools is None:
+            escalated_tools = set()
+            self._escalated_tools = escalated_tools
+        if (
+            allowed_names
+            and tool_name not in allowed_names
+            and tool_name not in escalated_tools
+            and not self._try_phase_escalation(tool_name, tool_executor)
+        ):
             log(f"ðŸ›‘ [Tool Whitelist Firewall] Denied '{tool_name}' â€” not permitted in this phase. Allowed: {sorted(list(allowed_names))}")
             return {
                 "type": "tool_result",
@@ -1849,6 +1906,11 @@ class ClaudeToolClient:
                 ),
                 "is_error": True,
             }
+
+        if allowed_names and tool_name not in allowed_names and tool_name not in escalated_tools:
+            # Reaching here means _try_phase_escalation approved the promotion.
+            escalated_tools.add(tool_name)
+            log(f"\U0001F513 [Phase Escalation] '{tool_name}' promoted into the active phase from live task state.")
 
         # Post-Build Action Firewall: If build already succeeded with 0 errors, block exploratory read tools (strictly when all file tasks are done)
         if getattr(tool_executor, "built_successfully", False):
@@ -1992,7 +2054,7 @@ class ClaudeToolClient:
                 "is_error": True,
             }
 
-        # Progress Guard: Consecutive duplicate call detection
+        # Progress Guard: Consecutive duplicate call detection & anti-oscillation
         try:
             input_repr = json.dumps(tool_input, sort_keys=True) if isinstance(tool_input, (dict, list)) else str(tool_input)
         except Exception:
@@ -2005,8 +2067,57 @@ class ClaudeToolClient:
             self._last_tool_sig = call_sig
             self._duplicate_call_count = 1
 
+        # Track read-inspection tools vs write tools to stop ping-pong read loops
+        inspection_tools = ("read_file", "list_directory", "check_syntax", "get_generated_file", "file_exists")
+        write_tools = ("write_file", "write_files", "replace_file_content", "batch_replace_file_content", "run_command", "install_and_build", "run_build")
+
+        if tool_name in inspection_tools:
+            self._consecutive_inspection_count = getattr(self, "_consecutive_inspection_count", 0) + 1
+        elif tool_name in write_tools:
+            self._consecutive_inspection_count = 0
+            if hasattr(self, "_file_inspection_counts"):
+                self._file_inspection_counts.clear()
+
+        # Extract target file path for inspection tracking
+        target_file_cand = None
+        if isinstance(tool_input, dict):
+            target_file_cand = tool_input.get("path") or tool_input.get("file")
+        elif isinstance(tool_input, str) and ("/" in tool_input or "\\" in tool_input):
+            target_file_cand = tool_input
+
+        if not hasattr(self, "_file_inspection_counts"):
+            self._file_inspection_counts = {}
+
+        if target_file_cand and tool_name in ("read_file", "check_syntax"):
+            clean_tf = str(target_file_cand).replace("\\", "/").strip()
+            self._file_inspection_counts[clean_tf] = self._file_inspection_counts.get(clean_tf, 0) + 1
+            if self._file_inspection_counts[clean_tf] >= 3:
+                log(f"🛑 [Progress Guard] Intercepted repetitive inspection of {clean_tf}")
+                return {
+                    "type": "tool_result",
+                    "content": (
+                        f"Notice: You have inspected `{clean_tf}` {self._file_inspection_counts[clean_tf]} times. "
+                        f"The complete file contents and syntax status are already in your conversation context above. "
+                        f"DO NOT re-read or re-check this file. Proceed directly to apply your changes "
+                        f"using `replace_file_content` or `write_file` now."
+                    ),
+                    "is_error": False,
+                }
+
+        if getattr(self, "_consecutive_inspection_count", 0) >= 5:
+            log(f"🛑 [Progress Guard] Intercepted runaway inspection sequence ({self._consecutive_inspection_count} turns)")
+            return {
+                "type": "tool_result",
+                "content": (
+                    f"Notice: You have executed {self._consecutive_inspection_count} consecutive inspection tools without modifying any file. "
+                    f"All necessary workspace state is in your conversation context. "
+                    f"Proceed directly to write or update your code using `write_file`, `write_files`, or `replace_file_content` now."
+                ),
+                "is_error": False,
+            }
+
         if self._duplicate_call_count >= 3:
-            log(f"ðŸ›‘ [Progress Guard] Duplicate tool call rejected ({tool_name}, repeated 3x consecutively)")
+            log(f"🛑 [Progress Guard] Duplicate tool call rejected ({tool_name}, repeated 3x consecutively)")
             return {
                 "type": "tool_result",
                 "content": (

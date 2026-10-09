@@ -116,12 +116,13 @@ class DAGScheduler:
                 return task
         return None
 
-    def _is_external_dependency_completed(self, dep_id: str) -> bool:
-        """Check if a dependency assigned to another agent in the swarm has completed."""
+    def _is_external_dependency_finished(self, dep_id: str) -> bool:
+        """Check if a dependency assigned to another agent in the swarm has finished execution."""
         clean_dep = dep_id.strip()
         workspace_agent_dir = os.path.dirname(self.task_config_path) if self.task_config_path else "/workspace/.agent"
         if not os.path.exists(workspace_agent_dir):
             return False
+        terminal_statuses = ("completed", "done", "passed", "failed", "error")
         try:
             for fname in os.listdir(workspace_agent_dir):
                 fpath = os.path.join(workspace_agent_dir, fname)
@@ -135,9 +136,8 @@ class DAGScheduler:
                             tasks_map = s_data.get("tasks") or s_data.get("task_results") or {}
                             for t_id, res in tasks_map.items():
                                 if t_id == clean_dep or t_id.endswith(f"_{clean_dep}") or t_id.endswith(f"-{clean_dep}"):
-                                    if isinstance(res, dict) and str(res.get("status", "")).lower() in ("completed", "done", "passed"):
-                                        return True
-                                    elif isinstance(res, str) and res.lower() in ("completed", "done", "passed"):
+                                    status_str = str(res.get("status", "") if isinstance(res, dict) else res).lower()
+                                    if status_str in terminal_statuses:
                                         return True
                     except Exception:
                         pass
@@ -151,13 +151,18 @@ class DAGScheduler:
                                 if isinstance(item, dict):
                                     t_id = str(item.get("task_id") or item.get("id") or "")
                                     if t_id == clean_dep or t_id.endswith(f"_{clean_dep}") or t_id.endswith(f"-{clean_dep}"):
-                                        if str(item.get("status", "")).lower() in ("completed", "done", "passed"):
+                                        status_str = str(item.get("status", "")).lower()
+                                        if status_str in terminal_statuses:
                                             return True
                     except Exception:
                         pass
         except Exception:
             pass
         return False
+
+    def _is_external_dependency_completed(self, dep_id: str) -> bool:
+        """Backward compatibility alias for _is_external_dependency_finished."""
+        return self._is_external_dependency_finished(dep_id)
 
     def get_ready_tasks(self) -> List[Task]:
         ready_tasks = []
@@ -167,12 +172,14 @@ class DAGScheduler:
                 for dep in task.depends_on:
                     dep_task = self._find_task_by_id(dep)
                     if dep_task:
-                        if dep_task.status != TaskStatus.COMPLETED:
+                        # Internal task: cannot run while dependency is actively PENDING or RUNNING.
+                        # Once dependency has completed or failed, it has terminated so downstream can proceed.
+                        if dep_task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
                             can_run = False
                             break
                     else:
                         # Dependency is external (assigned to another agent in the swarm)
-                        if not self._is_external_dependency_completed(dep):
+                        if not self._is_external_dependency_finished(dep):
                             can_run = False
                             break
                 if can_run:

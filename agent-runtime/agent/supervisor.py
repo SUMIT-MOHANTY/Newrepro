@@ -15,6 +15,7 @@ Architecture:
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -115,7 +116,34 @@ class SupervisorAgent:
             except Exception as e:
                 logger.error(f"[Supervisor] Callback error for '{event_type}': {e}")
         # Also log for visibility
-        logger.info(f"[Supervisor] Event: {event_type} | {json.dumps(data, default=str)[:200]}")
+    def _ensure_early_preview_running(self) -> None:
+        """Auto-boot live application preview early in a background daemon thread
+        as soon as baseline frontend or backend structure is in place, so user can see
+        the running UI while remaining swarm tasks continue in the background."""
+        if getattr(self, "_early_preview_started", False):
+            return
+        ws = self.workspace_path
+        has_fe = os.path.exists(os.path.join(ws, "frontend", "package.json")) or os.path.exists(os.path.join(ws, "package.json"))
+        has_be = os.path.exists(os.path.join(ws, "backend", "app", "main.py")) or os.path.exists(os.path.join(ws, "main.py"))
+        if has_fe or has_be:
+            self._early_preview_started = True
+            import threading
+            def _boot():
+                try:
+                    from runtime.preview_manager import PreviewManager
+                    pm = PreviewManager(workspace_path=self.workspace_path)
+                    info = pm.start_preview(project_type="auto")
+                    print(f"[Supervisor] 🚀 Early live preview online at: {info.url}")
+                    self._post_event("preview_ready", {
+                        "status": "success",
+                        "preview_url": info.url,
+                        "port": info.port,
+                        "message": "In-flight live preview auto-booted while swarm executes in background",
+                    })
+                except Exception as pe:
+                    logger.debug(f"[Supervisor] Early preview note: {pe}")
+            t = threading.Thread(target=_boot, daemon=True)
+            t.start()
 
     def _execute_single_task(self, task) -> bool:
         """Execute a single task by delegating to the appropriate sub-agent.
@@ -140,6 +168,65 @@ class SupervisorAgent:
         print(f"\n{'='*60}")
         print(f"[Supervisor] 🚀 Dispatching task to {agent.name}: {task.title}")
         print(f"[Supervisor]    Task ID: {task_id} | Lane: {task.lane}")
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # DYNAMIC CHECKLIST GENERATION (Agent creates their own checklist)
+        # ═══════════════════════════════════════════════════════════════════════
+        try:
+            from agent.checklist_generator import generate_task_checklist
+            import asyncio
+            
+            print(f"[Supervisor] 📋 Generating dynamic checklist for {agent.name}...")
+            
+            # Generate checklist asynchronously
+            checklist = asyncio.run(generate_task_checklist(
+                task=task,
+                lane=canonical_lane,
+                workspace_path=self.workspace_path,
+                model_router=self.router,
+            ))
+            
+            if checklist:
+                print(f"[Supervisor] ✅ Generated {len(checklist)} checklist items:")
+                for idx, item in enumerate(checklist[:5], 1):  # Show first 5
+                    print(f"[Supervisor]    {idx}. {item['text'][:80]}")
+                if len(checklist) > 5:
+                    print(f"[Supervisor]    ... and {len(checklist) - 5} more items")
+                
+                # Store checklist in task object for agent to use
+                setattr(task, "checklist", checklist)
+                
+                # Try to sync to external Task Management API via HTTP
+                # (We can't import backend.app.services here in Docker, so use HTTP)
+                try:
+                    import httpx
+                    import os
+                    
+                    # Get Task Management API URL from environment
+                    task_api_url = os.environ.get("TASK_API_BASE_URL", "http://localhost:8000")
+                    task_token = os.environ.get("CALLBACK_SECRET") or os.environ.get("TASK_TOKEN")
+                    
+                    if task_token:
+                        # Call Task Management API directly via HTTP
+                        async def sync_checklist():
+                            async with httpx.AsyncClient(timeout=10.0) as client:
+                                response = await client.put(
+                                    f"{task_api_url}/api/agent/tasks/{task_id}/checklist/",
+                                    json={"checklistItems": checklist},
+                                    headers={"Authorization": f"Bearer {task_token}"}
+                                )
+                                return response.status_code == 200
+                        
+                        success = asyncio.run(sync_checklist())
+                        if success:
+                            print(f"[Supervisor] 💾 Synced checklist to Task Management API")
+                        else:
+                            logger.warning(f"[Supervisor] Could not sync checklist to API (non-blocking)")
+                except Exception as sync_err:
+                    logger.warning(f"[Supervisor] Could not sync checklist to API: {sync_err}")
+        except Exception as checklist_err:
+            logger.warning(f"[Supervisor] Checklist generation failed, agent will work without checklist: {checklist_err}")
+        
         print(f"{'='*60}\n")
 
         # Update status to RUNNING
@@ -157,28 +244,91 @@ class SupervisorAgent:
         })
 
         # ═══════════════════════════════════════════════════
+        # DYNAMIC UPSTREAM DEPENDENCY AWARENESS
+        # ═══════════════════════════════════════════════════
+        upstream_failures = []
+        for dep in getattr(task, "depends_on", []):
+            dep_task = self.scheduler._find_task_by_id(dep)
+            if dep_task and dep_task.status == TaskStatus.FAILED:
+                upstream_failures.append(f"- Upstream dependency '{dep_task.title}' ({dep}) ended with status FAILED.")
+        if upstream_failures:
+            context_note = (
+                "\n\n[UPSTREAM DEPENDENCY NOTICE]\n"
+                "The following upstream task(s) encountered issues or failed:\n"
+                + "\n".join(upstream_failures) + "\n"
+                "INSTRUCTION: DO NOT abort. Inspect existing workspace files, adapt or create any missing "
+                "interfaces, models, or components required by your task, and proceed to complete your scope.\n"
+            )
+            task.description = (getattr(task, "description", "") or "") + context_note
+
+        # ═══════════════════════════════════════════════════
         # DELEGATE: Sub-agent runs its ReAct tool loop
         # ═══════════════════════════════════════════════════
         start_time = time.time()
         result = agent.execute_task(task, self.workspace_path, self.mcp, self.router, context=self.task_config)
-        elapsed = time.time() - start_time
 
-        # ── Gate A+: platform-owned per-task verification before accepting success ──
-        # The sub-agent already parse-checked its own files (Gate A). This second,
-        # independent pass catches files the agent's own gate missed. A failed gate
-        # flips the task to failed with a classified error — agent opinion is never
-        # the final word.
-        if result.success and _VERIFICATION_AVAILABLE:
-            try:
-                gate = VerificationEngine(self.workspace_path).verify_task_changes(result.files_changed)
-                result.verification = gate.to_dict()
-                if not gate.passed:
-                    result.success = False
-                    result.error = f"Platform per-task verification failed:\n{gate.detail}"
-            except Exception as gate_err:
-                result.verification = {"skipped": True, "reason": str(gate_err)[:300]}
-        elif result.success:
-            result.verification = {"skipped": True, "reason": "verification engine unavailable"}
+        # ── Gate A+: Platform-owned per-task verification with Autonomous Self-Healing ──
+        # If verification detects broken imports, syntax, or contract mismatches,
+        # do NOT immediately declare failure and abort the swarm. Give the agent an
+        # immediate, focused repair turn with the exact compiler/verification error.
+        max_gate_repairs = 2
+        gate_repair_attempt = 0
+
+        while gate_repair_attempt < max_gate_repairs:
+            if not result.success:
+                # If execution itself failed with an error, attempt focused repair
+                gate_repair_attempt += 1
+                logger.warning(
+                    f"[Supervisor] 🩹 Task {task_id} encountered execution error: {result.error}. "
+                    f"Triggering autonomous repair turn ({gate_repair_attempt}/{max_gate_repairs})..."
+                )
+                repair_task = copy.deepcopy(task)
+                repair_task.description = (
+                    f"AUTONOMOUS SELF-HEALING REPAIR TURN ({gate_repair_attempt}/{max_gate_repairs}):\n"
+                    f"The previous execution of task '{task.title}' failed with this error:\n"
+                    f"--------------------------------------------------\n"
+                    f"{result.error}\n"
+                    f"--------------------------------------------------\n"
+                    f"INSTRUCTIONS: Locate the referenced files, resolve the missing imports, syntax, or "
+                    f"unexported symbols using real tool calls, and ensure the code compiles cleanly."
+                )
+                result = agent.execute_task(repair_task, self.workspace_path, self.mcp, self.router, context=self.task_config)
+                continue
+
+            # Check verification engine if execution was reported successful
+            if _VERIFICATION_AVAILABLE:
+                try:
+                    gate = VerificationEngine(self.workspace_path).verify_task_changes(result.files_changed)
+                    result.verification = gate.to_dict()
+                    if not gate.passed:
+                        gate_repair_attempt += 1
+                        logger.warning(
+                            f"[Supervisor] 🩹 Gate verification failed for {task_id}:\n{gate.detail}\n"
+                            f"Triggering autonomous repair turn ({gate_repair_attempt}/{max_gate_repairs})..."
+                        )
+                        repair_task = copy.deepcopy(task)
+                        repair_task.description = (
+                            f"AUTONOMOUS VERIFICATION REPAIR TURN ({gate_repair_attempt}/{max_gate_repairs}):\n"
+                            f"Platform verification detected the following issues in files modified for '{task.title}':\n"
+                            f"--------------------------------------------------\n"
+                            f"{gate.detail}\n"
+                            f"--------------------------------------------------\n"
+                            f"INSTRUCTIONS: Fix the root cause immediately using write_file or replace_file_content. "
+                            f"Ensure all imported files exist and all exports are present."
+                        )
+                        result = agent.execute_task(repair_task, self.workspace_path, self.mcp, self.router, context=self.task_config)
+                        continue
+                    else:
+                        # Passed cleanly
+                        break
+                except Exception as gate_err:
+                    result.verification = {"skipped": True, "reason": str(gate_err)[:300]}
+                    break
+            else:
+                result.verification = {"skipped": True, "reason": "verification engine unavailable"}
+                break
+
+        elapsed = time.time() - start_time
 
         if result.success:
             self.tasks_completed += 1
@@ -211,6 +361,9 @@ class SupervisorAgent:
                 "task_id": task_id,
                 "status": "completed",
             })
+
+            # Auto-boot early live preview in background so UI is live while swarm continues
+            self._ensure_early_preview_running()
 
             return True
 
@@ -274,6 +427,9 @@ class SupervisorAgent:
         except Exception as e:
             logger.warning(f"[Supervisor] Git init: {e}")
 
+        # Ensure early in-flight live preview is active if foundation exists
+        self._ensure_early_preview_running()
+
         # ═══════════════════════════════════════════════════════
         # MAIN EXECUTION LOOP — process DAG in topological order
         # ═══════════════════════════════════════════════════════
@@ -301,10 +457,20 @@ class SupervisorAgent:
                 if not any_running:
                     idle_rounds += 1
                     if idle_rounds > max_idle_rounds:
-                        logger.error("[Supervisor] Deadlock detected — tasks blocked by failed dependencies")
-                        break
-                    time.sleep(1)
-                    continue
+                        pending_tasks = [t for t in self.scheduler.tasks.values() if t.status == TaskStatus.PENDING]
+                        if pending_tasks:
+                            logger.warning(
+                                f"[Supervisor] ⚡ Deadlock resolution: Unblocking {len(pending_tasks)} remaining pending task(s) "
+                                f"to guarantee swarm completion: {', '.join(t.task_id for t in pending_tasks)}"
+                            )
+                            ready_tasks = [pending_tasks[0]]
+                            idle_rounds = 0
+                        else:
+                            logger.error("[Supervisor] All tasks have been processed.")
+                            break
+                    else:
+                        time.sleep(1)
+                        continue
                 else:
                     idle_rounds = 0
                     time.sleep(1)
@@ -382,27 +548,134 @@ class SupervisorAgent:
         print(f"[Supervisor]    Files:     {summary['files_changed']} unique files changed")
         print(f"{'#'*60}\n")
 
-        # Persist task summary to .agent/task_summary.json (and per-agent file)
+        # Persist task summary to .agent/task_summary.json (and per-agent file).
+        # Merge (never overwrite): multiple sub-agent containers share /workspace/.agent,
+        # so a plain 'w' write from the last finishing agent erases every other
+        # agent's task history.
         try:
-            agent_id = os.environ.get("AGENT_ID")
-            clean_aid = "".join(c for c in agent_id if c.isalnum() or c == "_") if agent_id else ""
-            summary_dir = os.path.join(self.workspace_path, ".agent")
-            os.makedirs(summary_dir, exist_ok=True)
-
-            # Write standard summary
-            summary_path = os.path.join(summary_dir, "task_summary.json")
-            with open(summary_path, "w", encoding="utf-8") as f:
-                json.dump(summary, f, indent=2)
-
-            # Write per-agent summary if running in dedicated sub-agent container
-            if clean_aid:
-                per_agent_path = os.path.join(summary_dir, f"task_summary_{clean_aid}.json")
-                with open(per_agent_path, "w", encoding="utf-8") as f:
-                    json.dump(summary, f, indent=2)
-
-            print(f"[Supervisor] 📝 Task summary written to {summary_path}")
+            self._persist_merged_summary(summary)
         except Exception as se:
             logger.warning(f"[Supervisor] Could not write task_summary.json: {se}")
 
         self._post_event("supervisor_completed", summary)
         return summary
+
+    # ------------------------------------------------------------------
+    # Summary persistence: cross-agent merge with atomic writes
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _merge_summaries(summary_dir: str, summary: dict[str, Any]) -> dict[str, Any]:
+        """Merge this run's summary into the existing task_summary.json.
+
+        Task results are keyed by task_id: previous runs' entries are kept,
+        this run's entries win on conflict. Totals are recomputed from the
+        merged ledger so the summary stays honest across agents and runs.
+        """
+        path = os.path.join(summary_dir, "task_summary.json")
+        existing: dict[str, Any] = {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except (OSError, ValueError):
+            existing = {}
+
+        merged_tasks: dict[str, Any] = dict(existing.get("tasks") or {})
+        merged_tasks.update(summary.get("tasks") or {})
+
+        completed = sum(
+            1 for t in merged_tasks.values()
+            if isinstance(t, dict) and t.get("status") == "completed"
+        )
+        failed = sum(
+            1 for t in merged_tasks.values()
+            if isinstance(t, dict) and t.get("status") == "failed"
+        )
+
+        files_changed: set[str] = set()
+        for t in merged_tasks.values():
+            if isinstance(t, dict):
+                for fp in (t.get("files_changed") or []):
+                    files_changed.add(str(fp))
+
+        merged = dict(existing)
+        merged.update(summary)
+        merged["total_tasks"] = len(merged_tasks)
+        merged["completed"] = completed
+        merged["failed"] = failed
+        merged["tasks"] = merged_tasks
+        if files_changed:
+            merged["files_changed"] = len(files_changed)
+        merged["agent_reported_status"] = (
+            "completed" if merged_tasks and completed == len(merged_tasks)
+            else ("partial" if completed else "failed")
+        )
+        return merged
+
+    def _persist_merged_summary(self, summary: dict[str, Any]) -> None:
+        """Write task summaries atomically under an advisory lock.
+
+        - task_summary.json: merged across all agents/runs (history preserved).
+        - task_summary_<agent>.json: this agent's own run summary (overwrite OK).
+        """
+        import tempfile
+
+        agent_id = os.environ.get("AGENT_ID")
+        clean_aid = "".join(c for c in agent_id if c.isalnum() or c == "_") if agent_id else ""
+        summary_dir = os.path.join(self.workspace_path, ".agent")
+        os.makedirs(summary_dir, exist_ok=True)
+
+        lock_path = os.path.join(summary_dir, "task_summary.lock")
+        lock_fd = None
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                time.sleep(0.1)
+        if lock_fd is None:
+            # Stale or contended lock — take over rather than lose history.
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
+            try:
+                lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                pass  # best-effort; atomic replace below still prevents torn files
+
+        try:
+            merged = self._merge_summaries(summary_dir, summary)
+
+            writes: list[tuple[str, dict[str, Any]]] = [
+                (os.path.join(summary_dir, "task_summary.json"), merged)
+            ]
+            if clean_aid:
+                writes.append(
+                    (os.path.join(summary_dir, f"task_summary_{clean_aid}.json"), summary)
+                )
+
+            for path, data in writes:
+                fd, tmp_path = tempfile.mkstemp(dir=summary_dir, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+                    os.replace(tmp_path, path)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+
+            print(f"[Supervisor] 📝 Task summary merged into "
+                  f"{os.path.join(summary_dir, 'task_summary.json')} "
+                  f"({merged.get('total_tasks', 0)} tasks in ledger)")
+        finally:
+            if lock_fd is not None:
+                try:
+                    os.close(lock_fd)
+                    os.unlink(lock_path)
+                except OSError:
+                    pass

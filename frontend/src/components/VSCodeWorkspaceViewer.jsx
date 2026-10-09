@@ -699,29 +699,38 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
                         </div>
                     </div>
 
-                    {/* Center: Live Agent Working Bar */}
-                    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+                    {/* Center: Live Agent Working Bar (Responsive & Truncated) */}
+                    <div className="hidden sm:flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1 max-w-[45vw] lg:max-w-[55vw] justify-center overflow-hidden">
                         {activeAgents.length > 0 ? (
-                            <div className="flex items-center gap-1.5 bg-[#252526] px-2 sm:px-3 py-1 rounded-full border border-gray-700">
+                            <div className="flex items-center gap-1.5 bg-[#252526] px-2 sm:px-3 py-1 rounded-full border border-gray-700 min-w-0 max-w-full">
                                 <span className="relative flex h-2 w-2 shrink-0">
                                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
                                     <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
                                 </span>
                                 <span className="text-[11px] font-medium text-cyan-300 shrink-0">
-                                    <span className="inline md:hidden">{activeAgents.length} Active</span>
-                                    <span className="hidden md:inline">{activeAgents.length} Agents Working:</span>
+                                    <span className="inline lg:hidden">{activeAgents.length} Active</span>
+                                    <span className="hidden lg:inline">{activeAgents.length} Agents Working:</span>
                                 </span>
-                                <div className="hidden md:flex items-center gap-1.5">
-                                    {activeAgents.map(a => (
-                                        <span
-                                            key={a.id}
-                                            className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-[#37373d] text-gray-200 border border-gray-600 flex items-center gap-1"
-                                        >
-                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                                            {a.name || a.id}
-                                            {a.progress ? ` (${a.progress}%)` : ''}
-                                        </span>
-                                    ))}
+                                <div className="hidden lg:flex items-center gap-1 overflow-x-auto no-scrollbar max-w-full">
+                                    {activeAgents.map(a => {
+                                        const shortName = (a.name || a.id)
+                                            .replace(/Frontend & UI Agent/gi, 'Frontend')
+                                            .replace(/Backend & Domain Logic Agent/gi, 'Backend')
+                                            .replace(/QA & Test Automation Agent/gi, 'QA')
+                                            .replace(/\(Shared #(\d+)\)/gi, '#$1')
+                                            .replace(/\(agent_\d+\)/gi, '');
+                                        return (
+                                            <span
+                                                key={a.id}
+                                                className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-[#37373d] text-gray-200 border border-gray-600 flex items-center gap-1 shrink-0 whitespace-nowrap"
+                                                title={a.name || a.id}
+                                            >
+                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                                {shortName.trim()}
+                                                {a.progress ? ` (${a.progress}%)` : ''}
+                                            </span>
+                                        );
+                                    })}
                                 </div>
                             </div>
                         ) : (
@@ -732,11 +741,11 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
                         )}
                     </div>
 
-                    {/* Right: Controls */}
-                    <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                    {/* Right: Controls (Pinned & Never Clipped) */}
+                    <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 ml-auto z-10">
                         <button
                             onClick={() => setAutoPoll(!autoPoll)}
-                            className={`flex items-center gap-1 text-[10px] sm:text-[11px] px-2 sm:px-2.5 py-1 rounded font-mono transition-colors ${
+                            className={`hidden sm:flex items-center gap-1 text-[10px] sm:text-[11px] px-2 sm:px-2.5 py-1 rounded font-mono transition-colors shrink-0 ${
                                 autoPoll
                                     ? 'bg-emerald-950/70 text-emerald-400 border border-emerald-800/80 hover:bg-emerald-900/80'
                                     : 'bg-gray-800 text-gray-400 border border-gray-700 hover:bg-gray-700'
@@ -744,12 +753,12 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
                             title="Auto sync file changes every 2.5 seconds"
                         >
                             <Radio className={`w-3 h-3 ${autoPoll ? 'animate-pulse text-emerald-400' : 'text-gray-500'}`} />
-                            <span className="hidden sm:inline">{autoPoll ? 'SYNC ON' : 'PAUSED'}</span>
+                            <span className="hidden md:inline">{autoPoll ? 'SYNC ON' : 'PAUSED'}</span>
                         </button>
 
                         <button
                             onClick={() => fetchWorkspaceFiles(false)}
-                            className="p-1 sm:p-1.5 hover:bg-[#3c3c3c] text-gray-400 hover:text-white rounded transition-colors"
+                            className="p-1 sm:p-1.5 hover:bg-[#3c3c3c] text-gray-400 hover:text-white rounded transition-colors shrink-0"
                             title="Refresh workspace files now"
                         >
                             <RefreshCw className={`w-3.5 h-3.5 ${loadingFiles ? 'animate-spin text-[#007acc]' : ''}`} />
@@ -757,7 +766,7 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
 
                         <button
                             onClick={() => setIsFullscreen(!isFullscreen)}
-                            className="hidden sm:block p-1 sm:p-1.5 hover:bg-[#3c3c3c] text-gray-400 hover:text-white rounded transition-colors"
+                            className="hidden sm:block p-1 sm:p-1.5 hover:bg-[#3c3c3c] text-gray-400 hover:text-white rounded transition-colors shrink-0"
                             title={isFullscreen ? 'Exit full screen' : 'Full screen'}
                         >
                             {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
@@ -765,11 +774,11 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
 
                         <button
                             onClick={onClose}
-                            className="flex items-center gap-1.5 px-3 py-1 bg-red-600/90 hover:bg-red-600 text-white rounded text-xs font-semibold shadow transition-colors ml-1"
+                            className="flex items-center gap-1 px-2.5 sm:px-3 py-1 bg-red-600 hover:bg-red-500 text-white rounded text-xs font-semibold shadow-md transition-colors shrink-0 cursor-pointer ml-1"
                             title="Close Workspace (Esc)"
                         >
                             <X className="w-4 h-4" />
-                            <span className="font-mono text-[11px] hidden xs:inline">Close (Esc)</span>
+                            <span className="font-mono text-[11px]">Close</span>
                         </button>
                     </div>
                 </div>
@@ -1213,8 +1222,8 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
                             <span className="hidden sm:inline">Swarm Sync: {autoPoll ? 'Active' : 'Paused'}</span>
                         </div>
                         {activeFileMeta?.attributed_agent && (
-                            <div className="hidden sm:flex items-center gap-1 bg-[#0066aa] px-2 py-0.5 rounded text-[11px] shrink-0">
-                                <span>Agent: {activeFileMeta.attributed_agent}</span>
+                            <div className="hidden sm:flex items-center gap-1 bg-[#0066aa] px-2 py-0.5 rounded text-[11px] shrink-0 max-w-[220px]" title={activeFileMeta.attributed_agent}>
+                                <span className="truncate">Agent: {activeFileMeta.attributed_agent.replace(/Frontend & UI Agent/gi, 'Frontend').replace(/Backend & Domain Logic Agent/gi, 'Backend')}</span>
                             </div>
                         )}
                     </div>
@@ -1233,11 +1242,11 @@ export default function VSCodeWorkspaceViewer({ isOpen, onClose, projectToken = 
                         )}
                         <button
                             onClick={onClose}
-                            className="hover:bg-red-700/90 px-2 py-0.5 rounded text-[11px] font-mono flex items-center gap-1 text-white bg-[#005a9e] transition-colors ml-1 cursor-pointer"
+                            className="hover:bg-red-600 px-2.5 py-0.5 rounded text-[11px] font-mono flex items-center gap-1 text-white bg-red-700/90 transition-colors ml-1 cursor-pointer font-semibold shadow-xs"
                             title="Close Workspace (Esc)"
                         >
-                            <X className="w-3 h-3" />
-                            <span>Close</span>
+                            <X className="w-3.5 h-3.5" />
+                            <span>Close (Esc)</span>
                         </button>
                     </div>
                 </div>

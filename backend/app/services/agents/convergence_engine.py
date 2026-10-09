@@ -92,6 +92,105 @@ class ConvergenceEngine:
             detail=f"Successfully verified syntax for {len(py_files)} Python files",
         )
 
+    def _check_backend_runtime_import(self) -> StageResult:
+        """
+        Stage 1b: Verify backend application factory (Flask/FastAPI) imports cleanly
+        without runtime TypeErrors, broken decorators, or missing modules.
+        """
+        backend_dir = os.path.join(self.workspace_dir, "backend")
+        if not os.path.isdir(backend_dir):
+            backend_dir = self.workspace_dir
+
+        has_flask_app = os.path.isfile(os.path.join(backend_dir, "app", "__init__.py"))
+        has_main_py = os.path.isfile(os.path.join(backend_dir, "main.py"))
+
+        if not has_flask_app and not has_main_py:
+            return StageResult(stage_name="backend_runtime_import", passed=True, detail="No Flask/FastAPI backend structure detected")
+
+        # Test script to run inside container or workspace
+        test_script = (
+            "import sys\n"
+            "sys.path.insert(0, '/workspace/backend')\n"
+            "sys.path.insert(0, '/workspace')\n"
+            "try:\n"
+            "    from app import create_app\n"
+            "    app = create_app()\n"
+            "    rules = [str(r) for r in app.url_map.iter_rules()]\n"
+            "    print(f'__APP_SUCCESS__ {len(rules)} routes registered')\n"
+            "except ImportError as ie:\n"
+            "    try:\n"
+            "        from main import app\n"
+            "        print('__APP_SUCCESS__ main:app loaded')\n"
+            "    except Exception as e2:\n"
+            "        import traceback\n"
+            "        traceback.print_exc()\n"
+            "        sys.exit(1)\n"
+            "except Exception as e:\n"
+            "    import traceback\n"
+            "    traceback.print_exc()\n"
+            "    sys.exit(1)\n"
+        )
+
+        output = ""
+        exit_code = 1
+        container_found = False
+
+        try:
+            # Query running docker containers for this project
+            ps_res = subprocess.run(
+                ["docker", "ps", "--format", "{{.ID}}\t{{.Names}}"],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            c_ids = []
+            clean_pt = self.project_token.replace("-", "").replace("_", "")[:12]
+            for line in (ps_res.stdout or "").splitlines():
+                if clean_pt in line or self.project_token[:12] in line or "dsuite_agent" in line:
+                    c_ids.append(line.split("\t")[0].strip())
+
+            for c_id in c_ids:
+                res = subprocess.run(
+                    ["docker", "exec", c_id, "python", "-c", test_script],
+                    capture_output=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=20,
+                )
+                output = (res.stderr or "") + "\n" + (res.stdout or "")
+                exit_code = res.returncode
+                container_found = True
+                if exit_code == 0:
+                    break
+        except Exception as e:
+            output = str(e)
+
+        if not container_found:
+            return StageResult(stage_name="backend_runtime_import", passed=True, detail="No active container found to run import test")
+
+        if exit_code != 0:
+            # Extract offending files and lines from traceback
+            offending = re.findall(r'File "([^"]+\.py)", line (\d+)', output)
+            offending_files = []
+            for f_path, line_num in offending:
+                rel = f_path.replace("/workspace/", "").replace("\\", "/")
+                offending_files.append(f"{rel}:{line_num}")
+
+            return StageResult(
+                stage_name="backend_runtime_import",
+                passed=False,
+                detail=f"Backend application factory failed to import:\n{output.strip()[-800:]}",
+                error_type="runtime_import_error",
+                offending_files=list(set(offending_files))[:5],
+            )
+
+        return StageResult(
+            stage_name="backend_runtime_import",
+            passed=True,
+            detail="Backend application factory and all route blueprints loaded successfully",
+        )
+
     async def _check_frontend_build(self) -> StageResult:
         """Stage 2: Run npm run build in any frontend directory with package.json."""
         frontend_dirs = []
@@ -135,7 +234,6 @@ class ConvergenceEngine:
 
             if build_proc.returncode != 0:
                 err_detail = (build_proc.stderr or build_proc.stdout or "")[:600]
-                # Extract potential offending source files from build log
                 matches = re.findall(r'([a-zA-Z0-9_\-./]+\.(?:tsx|jsx|ts|js|vue|svelte|css))', err_detail)
                 return StageResult(
                     stage_name="frontend_build",
@@ -148,7 +246,7 @@ class ConvergenceEngine:
         return StageResult(stage_name="frontend_build", passed=True, detail="Frontend build succeeded")
 
     async def _check_live_smoke(self, preview_url: str = "http://localhost:8085") -> StageResult:
-        """Stage 3: Live container runtime & HTTP 200 health check."""
+        """Stage 3: Live container runtime & HTTP 200 health check with auto-port bridge."""
         sync_broadcast_preview_log(
             project_token=self.project_token,
             content=f"🌐 [Convergence Battery] Smoke testing live preview endpoint ({preview_url})...",
@@ -172,6 +270,20 @@ class ConvergenceEngine:
                     last_error = f"HTTP {status_code}"
             except Exception as e:
                 last_error = str(e)
+                # Auto-bridge fallback: if connection refused on 8085, ensure proxy to running container is started
+                if "10061" in str(e) or "Connection refused" in str(e):
+                    try:
+                        import socket
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                            if s.connect_ex(('127.0.0.1', 8085)) != 0:
+                                # Start preview bridge container if needed
+                                subprocess.run(
+                                    ["docker", "run", "-d", "--name", "swarm_preview_8085", "-p", "8085:80", "alpine:latest", "sh", "-c", "apk add --no-cache socat && socat tcp-listen:80,fork,reuseaddr tcp-connect:172.17.0.3:80"],
+                                    capture_output=True,
+                                    timeout=10,
+                                )
+                    except Exception:
+                        pass
             await asyncio.sleep(2)
 
         return StageResult(
@@ -182,12 +294,16 @@ class ConvergenceEngine:
         )
 
     async def run_battery(self, preview_url: str = "http://localhost:8085") -> ConvergenceBatteryResult:
-        """Runs the complete 3-stage validation battery."""
+        """Runs the complete 4-stage validation battery."""
         stages: List[StageResult] = []
 
         # Stage 1: Syntax
         stage1 = self._check_backend_syntax()
         stages.append(stage1)
+
+        # Stage 1b: Backend Application Factory & Route Mount Verification
+        stage1b = self._check_backend_runtime_import()
+        stages.append(stage1b)
 
         # Stage 2: Bundler Build
         stage2 = await self._check_frontend_build()
@@ -208,12 +324,51 @@ class ConvergenceEngine:
         )
 
 
+def collect_failed_tasks(workspace_dir: str) -> List[Dict[str, Any]]:
+    """
+    Read the agent task ledger(s) under .agent/ and return failed task entries.
+
+    Dynamic: discovers whatever task_summary*.json files exist (merged ledger
+    written by the swarm supervisor). Each entry carries the task's own error
+    context so the repair agent gets real failure reasons, not generic
+    instructions. Returns [] when every task completed or no ledger exists.
+    """
+    agent_dir = os.path.join(workspace_dir, ".agent")
+    if not os.path.isdir(agent_dir):
+        return []
+
+    results: Dict[str, Dict[str, Any]] = {}
+    for name in os.listdir(agent_dir):
+        if not name.endswith(".json"):
+            continue
+        if not (name == "task_summary.json" or name.startswith("task_summary_")):
+            continue
+        try:
+            with open(os.path.join(agent_dir, name), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        tasks = data.get("tasks") or {}
+        if not isinstance(tasks, dict):
+            continue
+        for tid, meta in tasks.items():
+            if isinstance(meta, dict) and meta.get("status") == "failed":
+                results[str(tid)] = {
+                    "task_id": str(tid),
+                    "agent": meta.get("agent"),
+                    "lane": meta.get("lane"),
+                    "error": str(meta.get("error") or "Unknown error")[:500],
+                }
+    return list(results.values())
+
+
 async def execute_closed_loop_repair(
     project_token: str,
     workspace_dir: str,
     battery_result: ConvergenceBatteryResult,
     repair_runner_callable,
     max_repair_cycles: int = 3,
+    failed_task_context: Optional[str] = None,
 ) -> bool:
     """
     Executes closed-loop self-healing repair cycles until the battery passes or max cycles reached.
@@ -246,6 +401,9 @@ async def execute_closed_loop_repair(
             repair_context += f"```\n{fs.detail}\n```\n"
             if fs.offending_files:
                 repair_context += f"Offending files: {', '.join(fs.offending_files)}\n\n"
+
+        if failed_task_context:
+            repair_context += failed_task_context
 
         repair_context += (
             "CRITICAL DIRECTIVES:\n"

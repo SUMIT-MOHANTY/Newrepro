@@ -142,13 +142,14 @@ class SubAgent(ABC):
             "1. **Tasks Are Milestones, Not Cages**: The current task title and subtasks guide your focus, "
             "but they do NOT restrict you. Your ultimate job is to fulfill the BRD and deliver a 100% working, "
             "connected, and RUNNABLE application.\n"
-            "2. **Fix Missing Foundations**: If foundational files needed for your code to run are missing "
-            "(e.g., package.json, entry points like main.tsx/main.py, root App router, layouts, styles, or configs), "
-            "you HAVE FULL AUTHORITY AND DUTY to create or repair them. Never leave code unrunnable because a prerequisite "
-            "wasn't explicitly listed in the subtask checklist.\n"
-            "3. **Zero Orphaned Features**: Every screen or feature you create MUST be wired into the application router "
-            "and navigation (sidebar/navbar) so users can reach it. Unrendered or unrouted components are failures.\n"
-            "4. **Real End-to-End Connections**: Connect frontend code to real backend endpoints or `.agent/contracts/api_contract.json`. "
+            "2. **Dynamic Architectural Awareness**: Inspect the workspace layout and existing manifests autonomously. "
+            "Maintain consistency with the project's chosen architecture, structure, and conventions.\n"
+            "3. **Fix Missing Foundations**: If foundational files needed for your code to run are missing "
+            "(e.g., package.json, entry points, routers, layouts, styles, or configs), "
+            "you HAVE FULL AUTHORITY AND DUTY to create or repair them.\n"
+            "4. **Zero Orphaned Features**: Every screen or feature you create MUST be wired into the application router "
+            "and navigation so users can reach it. Unrendered or unrouted components are failures.\n"
+            "5. **Real End-to-End Connections**: Connect frontend code to real backend endpoints or `.agent/contracts/api_contract.json`. "
             "Never leave calls to unbuilt routes that return 404; use the project's mock data store if an API is pending.\n\n"
         )
 
@@ -253,13 +254,13 @@ class BaseReActAgent(SubAgent):
                     max_iterations=40,
                 )
 
-                # Verify physical disk state: ensure no imported files are missing
-                valid_imports, err_msg = reality_guard.verify_pre_build()
-                if not valid_imports:
-                    raise RuntimeError(f"Missing imported files detected after task execution:\n{err_msg}")
-
                 elapsed = time.time() - start_time
                 files = list(executor.files_changed) if hasattr(executor, "files_changed") else []
+
+                # Verify physical disk state: ensure no imported files are missing in files modified by this task
+                valid_imports, err_msg = reality_guard.verify_pre_build(target_files=files if files else None)
+                if not valid_imports:
+                    raise RuntimeError(f"Missing imported files detected after task execution:\n{err_msg}")
 
                 if not files:
                     raise RuntimeError(

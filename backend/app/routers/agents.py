@@ -1469,6 +1469,92 @@ async def get_workspace_file_content(
     }
 
 
+@router.get("/agents/swarm/blackboard/{project_token}")
+async def get_swarm_blackboard_state(
+    project_token: str,
+    db: Session = Depends(get_db),
+):
+    """Return real-time Swarm Blackboard state: locks, thoughts, tasks, and API contracts."""
+    from app.services.agents.swarm_blackboard import get_swarm_blackboard
+    from app.core.config import get_settings
+    settings = get_settings()
+    clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
+    workspace_dir = os.path.join(settings.project_storage_root, clean_token)
+    
+    bb = get_swarm_blackboard(clean_token, workspace_dir=workspace_dir)
+    locks = bb.get_active_locks()
+    contract = bb.get_published_contract()
+    
+    feed = []
+    feed_path = os.path.join(workspace_dir, ".agent", "collaboration_feed.json")
+    if os.path.exists(feed_path):
+        try:
+            with open(feed_path, "r", encoding="utf-8") as f:
+                feed = json.load(f)
+        except Exception:
+            pass
+
+    task_summary = {}
+    summary_path = os.path.join(workspace_dir, ".agent", "task_summary.json")
+    if os.path.exists(summary_path):
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                task_summary = json.load(f)
+        except Exception:
+            pass
+
+    tasks = []
+    cfg_path = os.path.join(workspace_dir, ".agent", "task_config.json")
+    if not os.path.exists(cfg_path):
+        cfg_path = os.path.join(workspace_dir, "task_config.json")
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg_data = json.load(f)
+                if isinstance(cfg_data, dict):
+                    prompt_text = cfg_data.get("prompt", "")
+                    t_matches = re.findall(
+                        r'(\d+)\.\s+\*\*\[([A-Z]+)\]\s+([^*]+)\*\*\s+\(ID:\s*([^,\)]+)(?:,\s*Lane:\s*([^\)]+))?\)',
+                        prompt_text
+                    )
+                    summary_tasks = task_summary.get("tasks", {})
+                    for num, kind, title, tid, lane in t_matches:
+                        tid_clean = tid.strip()
+                        task_stat = "pending"
+                        if tid_clean in summary_tasks:
+                            task_stat = summary_tasks[tid_clean].get("status", "pending")
+                        tasks.append({
+                            "id": tid_clean,
+                            "index": int(num),
+                            "kind": kind.strip(),
+                            "title": title.strip(),
+                            "lane": (lane or "core").strip(),
+                            "status": task_stat,
+                        })
+        except Exception:
+            pass
+
+    # Read active workspace file stats
+    total_files = 0
+    if os.path.exists(workspace_dir):
+        for root, dirs, files in os.walk(workspace_dir):
+            if any(d in root for d in [".git", "node_modules", "__pycache__", "venv"]):
+                continue
+            total_files += len(files)
+
+    return {
+        "project_token": project_token,
+        "locks": locks,
+        "contract": contract,
+        "feed": feed,
+        "task_summary": task_summary,
+        "tasks": tasks,
+        "total_workspace_files": total_files,
+        "preview_url": "http://localhost:8085",
+    }
+
+
+
 # --- Extracted Block (Lines 13034-14595) ---
 @router.get("/agents/{agent_id}/status")
 async def get_agent_status(
@@ -2699,6 +2785,54 @@ async def _run_phased_swarm_coordinator(
     runnable_success = battery_result.passed
     verification_failures = [s.detail for s in battery_result.stages if not s.passed]
 
+    # ── Task-Level Failure Feedback: the agent task ledger drives targeted re-work.
+    # The battery proves the app is runnable; the ledger proves each task was done.
+    # Failed tasks carry their own error context — no hardcoded repair text.
+    from app.services.agents.convergence_engine import collect_failed_tasks
+    try:
+        failed_tasks = collect_failed_tasks(workspace_dir)
+    except Exception as ft_err:
+        logger.warning(f"[SwarmCoordinator] Failed-task ledger collection error: {ft_err}")
+        failed_tasks = []
+
+    failed_task_context = ""
+    if failed_tasks:
+        failed_task_context = "### FAILED TASK LEDGER (from merged agent summaries)\n"
+        for ft in failed_tasks[:20]:
+            failed_task_context += (
+                f"- {ft['task_id']} (agent={ft.get('agent')}, lane={ft.get('lane')}): "
+                f"{ft.get('error', 'Unknown error')}\n"
+            )
+        failed_task_context += (
+            "\nRe-execute each failed task: read the current workspace state first, "
+            "fix the root cause (not the symptom), and verify the task's own "
+            "acceptance criteria before marking it complete.\n"
+        )
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"🧩 [Swarm Coordinator] Agent task ledger reports {len(failed_tasks)} failed task(s): "
+            f"{[ft['task_id'] for ft in failed_tasks[:10]]}",
+            "error",
+            project_token,
+        )
+
+    async def _repair_runner(project_token: str, repair_instruction: str, cycle: int):
+        repair_agent_id = p1[0] if p1 else "M_agent_01"
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"[Self-Healing Repair] Dispatching repair agent '{repair_agent_id}' (Cycle {cycle})...",
+            "info",
+            project_token,
+        )
+        await _bg_run_agent(
+            agent_id=repair_agent_id,
+            git_repo_url=git_repo_url,
+            git_token=git_token,
+            project_token=project_token,
+            x_task_token=x_task_token,
+            custom_override_prompt=repair_instruction,
+        )
+
     if not runnable_success:
         agent_service.append_agent_log(
             "M_agent_01",
@@ -2707,30 +2841,41 @@ async def _run_phased_swarm_coordinator(
             project_token,
         )
 
-        async def _repair_runner(project_token: str, repair_instruction: str, cycle: int):
-            repair_agent_id = p1[0] if p1 else "M_agent_01"
-            agent_service.append_agent_log(
-                "M_agent_01",
-                f"[Self-Healing Repair] Dispatching repair agent '{repair_agent_id}' (Cycle {cycle})...",
-                "info",
-                project_token,
-            )
-            await _bg_run_agent(
-                agent_id=repair_agent_id,
-                git_repo_url=git_repo_url,
-                git_token=git_token,
-                project_token=project_token,
-                x_task_token=x_task_token,
-                custom_override_prompt=repair_instruction,
-            )
-
         runnable_success = await execute_closed_loop_repair(
             project_token=project_token,
             workspace_dir=workspace_dir,
             battery_result=battery_result,
             repair_runner_callable=_repair_runner,
             max_repair_cycles=3,
+            failed_task_context=failed_task_context,
         )
+    elif failed_tasks:
+        # Battery passed (app is runnable) but the task ledger has failures.
+        # Dispatch ONE bounded targeted task-repair pass, then re-verify the
+        # app is still runnable — honestly, via the same battery.
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"🛠️ [Swarm Coordinator] Battery passed but {len(failed_tasks)} task(s) failed. Dispatching targeted task-repair pass...",
+            "info",
+            project_token,
+        )
+        try:
+            await _repair_runner(
+                project_token=project_token,
+                repair_instruction=failed_task_context,
+                cycle=1,
+            )
+            recheck = await conv_engine.run_battery()
+            runnable_success = recheck.passed
+            if not runnable_success:
+                agent_service.append_agent_log(
+                    "M_agent_01",
+                    "⚠️ [Swarm Coordinator] Task repair pass left the application failing the convergence battery.",
+                    "error",
+                    project_token,
+                )
+        except Exception as task_repair_err:
+            logger.error(f"[SwarmCoordinator] Task-level repair dispatch error: {task_repair_err}")
 
     if runnable_success:
         agent_service.append_agent_log(
@@ -4849,7 +4994,103 @@ def _get_local_status_and_progress(ow_status: Optional[str], checklist_str: Opti
         return "To Do", 0
 
 
+def _reconcile_progress_from_ledger(db: Session, db_tasks: List[models.Task], project_token: str) -> None:
+    """
+    Reconcile stale task ownership rows from the runtime's merged task ledger
+    (.agent/task_summary.json — merged across agents by the supervisor).
+
+    Root cause of "progress stuck at 0/10% while the app is live": the UI's
+    progress is derived from AgentTaskOwnership rows that nothing updated after
+    claim time. The ledger is the source of truth for per-task outcomes, so on
+    read we repair the drift — self-healing, no hardcoded ids, and a no-op when
+    the ledger agrees with the DB.
+
+    Honesty mapping:
+      ledger completed + platform_verified  -> done / 100
+      ledger completed, not platform-verified -> in_review / 75
+      ledger failed                         -> failed / 0
+    """
+    try:
+        ledger_path = os.path.join(
+            settings.project_storage_root, project_token, ".agent", "task_summary.json"
+        )
+        if not os.path.isfile(ledger_path):
+            return
+        with open(ledger_path, "r", encoding="utf-8") as lf:
+            ledger = json.load(lf)
+        ledger_tasks = ledger.get("tasks") or {}
+        if not isinstance(ledger_tasks, dict) or not ledger_tasks:
+            return
+
+        from datetime import datetime as _dt
+        now = _dt.utcnow()
+        dirty = False
+        for t in db_tasks:
+            entry = ledger_tasks.get(t.task_id)
+            if entry is None:
+                clean = t.task_id.split("_", 1)[-1] if "_" in t.task_id else t.task_id
+                if clean:
+                    entry = ledger_tasks.get(clean) or next(
+                        (
+                            v for k, v in ledger_tasks.items()
+                            if isinstance(v, dict) and str(k).endswith(clean)
+                        ),
+                        None,
+                    )
+            if not isinstance(entry, dict):
+                continue
+
+            status = entry.get("status")
+            if status == "completed":
+                verified = bool(entry.get("platform_verified", False))
+                new_status, progress = ("done", 100) if verified else ("in_review", 75)
+            elif status == "failed":
+                new_status, progress = "failed", 0
+            else:
+                continue
+
+            ow = db.query(models.AgentTaskOwnership).filter(
+                models.AgentTaskOwnership.project_token == project_token,
+                models.AgentTaskOwnership.task_id == t.task_id,
+            ).first()
+            if not ow:
+                ow = models.AgentTaskOwnership(
+                    project_token=project_token,
+                    task_id=t.task_id,
+                    agent_id=str(entry.get("agent") or "runtime"),
+                    status=new_status,
+                    claimed_at=now,
+                    started_at=now,
+                )
+                db.add(ow)
+                db.flush()
+                dirty = True
+            else:
+                if ow.status != new_status:
+                    ow.status = new_status
+                    dirty = True
+
+            data = dict(ow.task_data) if isinstance(ow.task_data, dict) else {}
+            if data.get("task_progress") != progress:
+                data["task_progress"] = progress
+                data["reconciled_from"] = "runtime_ledger"
+                ow.task_data = data
+                dirty = True
+
+        if dirty:
+            db.commit()
+    except Exception as e:
+        logger.warning(f"[TaskProgress] Ledger reconciliation failed: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
 def _format_local_tasks_as_nxdune(db: Session, db_tasks: List[models.Task], project_token: str) -> List[Dict[str, Any]]:
+    # Self-heal stale progress from the runtime task ledger before reading.
+    _reconcile_progress_from_ledger(db, db_tasks, project_token)
+
     # Get ownerships to determine status and progress
     ownerships = db.query(models.AgentTaskOwnership).filter(
         models.AgentTaskOwnership.project_token == project_token

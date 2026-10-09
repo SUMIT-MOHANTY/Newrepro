@@ -194,8 +194,8 @@ class ImportDependencyVerifier:
     def __init__(self, workspace_state: WorkspaceState) -> None:
         self.state = workspace_state
 
-    def verify_imports(self) -> tuple[bool, list[MissingImport]]:
-        """Scan all JSX/TSX/JS/TS files and verify relative and aliased import targets exist."""
+    def verify_imports(self, target_files: list[str] | None = None) -> tuple[bool, list[MissingImport]]:
+        """Scan JSX/TSX/JS/TS files and verify relative and aliased import targets exist."""
         self.state.refresh()
         missing: list[MissingImport] = []
         workspace_root = Path(self.state.workspace_path)
@@ -208,7 +208,25 @@ class ImportDependencyVerifier:
 
         ignored_segments = {"node_modules", ".git", "dist", "build", ".venv", "venv", "__pycache__"}
 
-        for rel_path in list(self.state.files.keys()):
+        if target_files:
+            files_to_check = []
+            for tf in target_files:
+                tf_clean = str(tf).replace("\\", "/").strip()
+                if not tf_clean:
+                    continue
+                try:
+                    p = Path(tf_clean)
+                    if p.is_absolute():
+                        rel = p.resolve().relative_to(workspace_root.resolve()).as_posix()
+                    else:
+                        rel = tf_clean.lstrip("/")
+                except Exception:
+                    rel = tf_clean.lstrip("/")
+                files_to_check.append(rel)
+        else:
+            files_to_check = list(self.state.files.keys())
+
+        for rel_path in files_to_check:
             parts = set(Path(rel_path).parts)
             if parts & ignored_segments:
                 continue
@@ -225,14 +243,26 @@ class ImportDependencyVerifier:
 
             file_dir = abs_file.parent
 
-            # Find nearest project root (directory with package.json or workspace root)
+            # Dynamically determine project root for this file
             curr = file_dir
-            proj_root = workspace_root
+            proj_root = None
             while curr != workspace_root and curr != curr.parent:
-                if (curr / "package.json").exists():
+                if (curr / "package.json").exists() or (curr / "vite.config.ts").exists() or (curr / "vite.config.js").exists():
                     proj_root = curr
                     break
                 curr = curr.parent
+
+            # If no nested package.json / vite.config, check if file is in a known frontend folder
+            if not proj_root:
+                for segment in ("frontend", "client", "ui", "web"):
+                    if segment in abs_file.parts:
+                        # find that segment directory
+                        idx = abs_file.parts.index(segment)
+                        proj_root = Path(*abs_file.parts[:idx + 1])
+                        break
+
+            if not proj_root:
+                proj_root = workspace_root
 
             for match in import_pattern.finditer(content):
                 import_target = match.group(1).strip()
@@ -243,12 +273,13 @@ class ImportDependencyVerifier:
                 candidate_bases: list[Path] = []
                 if import_target.startswith(("@/", "~/")):
                     clean = import_target[2:]
-                    candidate_bases.extend([
-                        (proj_root / "src" / clean).resolve(),
-                        (proj_root / clean).resolve(),
-                        (workspace_root / "src" / clean).resolve(),
-                        (workspace_root / clean).resolve(),
-                    ])
+                    # Priority 1: resolve inside the file's own project root
+                    candidate_bases.append((proj_root / "src" / clean).resolve())
+                    candidate_bases.append((proj_root / clean).resolve())
+                    # Priority 2: fallback to workspace root only if project root is different
+                    if proj_root != workspace_root:
+                        candidate_bases.append((workspace_root / "src" / clean).resolve())
+                        candidate_bases.append((workspace_root / clean).resolve())
                 elif import_target.startswith("."):
                     candidate_bases.append((file_dir / import_target).resolve())
                 else:
@@ -282,11 +313,18 @@ class ImportDependencyVerifier:
 
                 if not resolved:
                     expected_rel = []
-                    for c in all_candidates[:4]:
+                    # Keep expected hints clean and contextual to the file's own project root
+                    seen_rel = set()
+                    for c in all_candidates:
                         try:
-                            expected_rel.append(os.path.relpath(c, self.state.workspace_path).replace("\\", "/"))
+                            rel_str = os.path.relpath(c, self.state.workspace_path).replace("\\", "/")
                         except Exception:
-                            expected_rel.append(str(c))
+                            rel_str = str(c)
+                        if rel_str not in seen_rel:
+                            seen_rel.add(rel_str)
+                            expected_rel.append(rel_str)
+                        if len(expected_rel) >= 3:
+                            break
                     missing.append(MissingImport(
                         source_file=rel_path,
                         import_path=import_target,
@@ -416,9 +454,9 @@ class AgentRealityGuard:
         self.state.refresh()
         return True, f"Verified: '{norm_path}' exists on physical disk ({stat.st_size:,} bytes)."
 
-    def verify_pre_build(self) -> tuple[bool, str | None]:
+    def verify_pre_build(self, target_files: list[str] | None = None) -> tuple[bool, str | None]:
         """Pre-flight check before npm run build is called."""
-        valid, missing = self.import_verifier.verify_imports()
+        valid, missing = self.import_verifier.verify_imports(target_files=target_files)
         if not valid:
             error_msg = self.import_verifier.format_missing_imports_error(missing)
             return False, error_msg
