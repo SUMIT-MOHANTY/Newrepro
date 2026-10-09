@@ -13,6 +13,34 @@ from app.core.llm_logs import log_llm_interaction_ai_service
 
 logger = logging.getLogger(__name__)
 
+def _get_job(job_id: Optional[str]):
+    if not job_id:
+        return None
+    try:
+        import sys
+        for mod_name in ("analysis_job_manager", "app.workers.analysis_job_manager"):
+            if mod_name in sys.modules:
+                mod = sys.modules[mod_name]
+                if hasattr(mod, "get_job_manager"):
+                    mgr = mod.get_job_manager()
+                    job = mgr.get_job(job_id) if mgr else None
+                    if job:
+                        return job
+        try:
+            import analysis_job_manager
+            mgr = analysis_job_manager.get_job_manager()
+            job = mgr.get_job(job_id) if mgr else None
+            if job:
+                return job
+        except ImportError:
+            pass
+        from app.workers.analysis_job_manager import get_job_manager as _gjm
+        mgr = _gjm()
+        return mgr.get_job(job_id) if mgr else None
+    except Exception as e:
+        logger.warning(f"Failed to lookup analysis job {job_id}: {e}")
+        return None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PREREQUISITES CONFIGURATION & HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -562,15 +590,9 @@ async def analyze_document_chunked(
     
     # Helper to update job progress if job_id is provided
     def update_job_progress(progress: int, message: str):
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_progress(progress, message)
-            except Exception as e:
-                logger.warning(f"Failed to update job progress: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_progress(progress, message)
     
     if not llm_gateway.check_api_key(api_key):
         error = "API key not configured. Please set AI_API_KEY in your environment."
@@ -636,15 +658,9 @@ async def analyze_document_chunked(
         logger.info(f"Stage 1 complete: Extracted {len(stage1_data.get('functional_requirements', []))} functional requirements")
         
         # Save stage 1 result to job
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_stage("stage1_requirements", stage1_data)
-            except Exception as e:
-                logger.warning(f"Failed to save stage 1 result: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_stage("stage1_requirements", stage1_data)
         
         # ─────────────────────────────────────────────────────────────────
         # STAGE 2: Architecture Design
@@ -671,15 +687,9 @@ async def analyze_document_chunked(
         logger.info(f"Stage 2 complete: Architecture pattern = {stage2_data.get('architecture_pattern', 'N/A')}")
         
         # Save stage 2 result to job
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_stage("stage2_architecture", stage2_data)
-            except Exception as e:
-                logger.warning(f"Failed to save stage 2 result: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_stage("stage2_architecture", stage2_data)
         
         # ─────────────────────────────────────────────────────────────────
         # STAGE 3: Data Models & API Design
@@ -717,15 +727,9 @@ async def analyze_document_chunked(
         logger.info(f"Stage 3 complete: Designed {len(stage3_data.get('api_endpoints', []))} API endpoints")
         
         # Save stage 3 result to job
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_stage("stage3_data_api", stage3_data)
-            except Exception as e:
-                logger.warning(f"Failed to save stage 3 result: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_stage("stage3_data_api", stage3_data)
         
         # ─────────────────────────────────────────────────────────────────
         # STAGE 4: Implementation Plan
@@ -764,15 +768,9 @@ async def analyze_document_chunked(
         logger.info(f"Stage 4 complete: Created {len(stage4_data.get('file_creation_plan', []))} file specifications")
         
         # Save stage 4 result to job
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_stage("stage4_implementation", stage4_data)
-            except Exception as e:
-                logger.warning(f"Failed to save stage 4 result: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_stage("stage4_implementation", stage4_data)
 
         # STAGE 5: Final Synthesis
         # ─────────────────────────────────────────────────────────────────
@@ -802,7 +800,7 @@ async def analyze_document_chunked(
         )
         
         logger.info("Stage 5 complete: Final report generated")
-        update_job_progress(95, "Finalizing analysis...")
+        update_job_progress(88, "Stage 5 complete: Processing metrics and architecture...")
         
         # Extract final JSON from the report
         final_json = _extract_json_from_response(stage5_result)
@@ -824,8 +822,6 @@ async def analyze_document_chunked(
             final_json["metrics"]["project_type"] = "greenfield"
             logger.info("Enforced 'greenfield' project_type from Stage 1 intelligent classification")
 
-        update_job_progress(100, "Analysis complete!")
-        
         # Auto-synthesize baseline enterprise HLD and LLD specifications
         hld_data = None
         lld_data = None
@@ -842,12 +838,14 @@ async def analyze_document_chunked(
             }
             project_label = final_json.get("title") or "Enterprise Solution"
             
+            update_job_progress(90, f"Generating High-Level Design (HLD) for {project_label}...")
             logger.info(f"Generating AI HLD and LLD for project '{project_label}'...")
             hld_res = await architecture_design_service.generate_high_level_design(
                 brd_content=document_content,
                 analysis_data=analysis_meta,
                 project_name=project_label
             )
+            update_job_progress(95, f"Generating Low-Level Design (LLD) for {project_label}...")
             lld_res = await architecture_design_service.generate_low_level_design(
                 brd_content=document_content,
                 hld_content=hld_res.get("markdown"),
@@ -869,6 +867,8 @@ async def analyze_document_chunked(
             }
         except Exception as synth_err:
             logger.warning(f"Auto-synthesis of HLD/LLD failed: {synth_err}")
+
+        update_job_progress(100, "Analysis complete!")
 
         return {
             "status": "success",
@@ -896,15 +896,9 @@ async def analyze_document_chunked(
         error_message = str(e) if str(e) else "Unknown error occurred during analysis"
         
         # Update job status if job_id is provided
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.set_failed(error_message)
-            except Exception as job_err:
-                logger.warning(f"Failed to update job failure status: {job_err}")
+        job = _get_job(job_id)
+        if job:
+            job.set_failed(error_message)
         
         return {
             "status": "error",
@@ -1226,9 +1220,7 @@ async def update_analysis_targeted(
     def update_job_progress(progress: int, message: str):
         if job_id:
             try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
+                job = _get_job(job_id)
                 if job:
                     job.update_progress(progress, message)
             except Exception as e:
@@ -1414,15 +1406,9 @@ async def update_analysis_targeted(
         logger.error(f"Targeted update failed: {str(e)}", exc_info=True)
         error_message = str(e) if str(e) else "Unknown error during targeted update"
 
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.set_failed(error_message)
-            except Exception:
-                pass
+        job = _get_job(job_id)
+        if job:
+            job.set_failed(error_message)
 
         return {"status": "error", "error": f"Targeted update failed: {error_message}"}
 
