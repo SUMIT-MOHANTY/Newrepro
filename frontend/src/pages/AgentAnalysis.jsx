@@ -198,7 +198,16 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                 const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
                 const { svg: renderedSvg } = await safeRenderMermaid(id, sanitized);
                 if (!cancelled) {
-                    setSvg(renderedSvg);
+                    // Remove fixed height on root <svg> tag if viewBox is present,
+                    // allowing the browser to scale the height proportionally to the diagram content
+                    // and eliminating massive vertical whitespace/letterboxing above and below.
+                    let cleanSvg = renderedSvg;
+                    if (cleanSvg && /viewBox=/i.test(cleanSvg)) {
+                        cleanSvg = cleanSvg
+                            .replace(/(<svg\b[^>]*?)\sheight="[^"]*"/i, '$1')
+                            .replace(/(<svg\b[^>]*?\sstyle="[^"]*?)height\s*:\s*[^;"]+;?/i, '$1');
+                    }
+                    setSvg(cleanSvg);
                     setError(null);
                     setIsRendering(false);
                 }
@@ -382,7 +391,7 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                         {/* Expanded Diagram Content */}
                         <div className="p-6 bg-gray-50 overflow-auto max-h-[calc(90vh-60px)]">
                             <div
-                                className="flex justify-center"
+                                className="mermaid-diagram-container flex justify-center [&>svg]:max-w-full [&>svg]:!h-auto [&>svg]:w-auto"
                                 dangerouslySetInnerHTML={{ __html: svg }}
                             />
                         </div>
@@ -391,7 +400,7 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
             )}
 
             {/* Normal View */}
-            <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+            <div className="my-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
                 {/* Action Buttons */}
                 <div className="flex justify-end gap-2 mb-2">
                     {/* Expand Button */}
@@ -432,7 +441,7 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                 {/* SVG Diagram with smooth fade-in animation */}
                 <div
                     ref={containerRef}
-                    className="flex justify-center [&>svg]:max-w-full transition-opacity duration-300 ease-out"
+                    className="mermaid-diagram-container flex justify-center [&>svg]:max-w-full [&>svg]:!h-auto [&>svg]:w-auto transition-opacity duration-300 ease-out"
                     style={{ opacity: svg ? 1 : 0 }}
                     dangerouslySetInnerHTML={{ __html: svg }}
                 />
@@ -1241,6 +1250,8 @@ export default function AgentAnalysis({
             const repoContextMeta = newResult?.analysis?.repoContextMeta || buildRepoContextMeta(analysisRepoContext);
             const storedAnalysis = {
                 ...(newResult.analysis || {}),
+                hld: newResult?.analysis?.hld || hldDesign || null,
+                lld: newResult?.analysis?.lld || lldDesign || null,
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
                 stages: (completedStages && Object.keys(completedStages).length > 0)
@@ -1389,10 +1400,18 @@ export default function AgentAnalysis({
                 setCompletedStages(finalResult.analysis.stages);
             }
 
+            if (finalResult.analysis?.hld) setHldDesign(finalResult.analysis.hld);
+            if (finalResult.analysis?.lld) setLldDesign(finalResult.analysis.lld);
+
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            const completedDocId = finalResult?.id || (initialContext || result)?.id;
+            if (completedDocId) {
+                sessionStorage.removeItem(`analysis_started_${completedDocId}`);
+                sessionStorage.removeItem(`analysis_error_${completedDocId}`);
+            }
             return finalResult;
         } catch (err) {
             console.error('Analysis error:', err);
@@ -1431,8 +1450,8 @@ export default function AgentAnalysis({
         if (initialResult?.id) {
             sessionStorage.removeItem(`analysis_error_${initialResult.id}`);
         }
-        setProgress(70);
-        setProgressMessage('Resuming background Agent Analysis...');
+        setProgress(0);
+        setProgressMessage('Connecting to background analysis job...');
         
         if (initialResult) {
             setResult(initialResult);
@@ -1518,10 +1537,18 @@ export default function AgentAnalysis({
                 setCompletedStages(finalResult.analysis.stages);
             }
 
+            if (finalResult.analysis?.hld) setHldDesign(finalResult.analysis.hld);
+            if (finalResult.analysis?.lld) setLldDesign(finalResult.analysis.lld);
+
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            const completedDocId = finalResult?.id || initialResult?.id;
+            if (completedDocId) {
+                sessionStorage.removeItem(`analysis_started_${completedDocId}`);
+                sessionStorage.removeItem(`analysis_error_${completedDocId}`);
+            }
             
             // Clean up localStorage keys
             localStorage.removeItem('active_analysis_job_id');
@@ -1697,11 +1724,19 @@ export default function AgentAnalysis({
                 }).catch(err => console.error("Failed to save project type from stream analysis:", err));
             }
 
+            if (finalResult.analysis?.hld) setHldDesign(finalResult.analysis.hld);
+            if (finalResult.analysis?.lld) setLldDesign(finalResult.analysis.lld);
+
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');
             setAiQuestions(questions?.length ? questions : []);
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            const completedDocId = finalResult?.id || (initialContext || result)?.id;
+            if (completedDocId) {
+                sessionStorage.removeItem(`analysis_started_${completedDocId}`);
+                sessionStorage.removeItem(`analysis_error_${completedDocId}`);
+            }
         } catch (err) {
             const userFriendlyError = formatAnalysisError(err);
             setError(`Stream Error: ${userFriendlyError}`);
@@ -1732,8 +1767,8 @@ export default function AgentAnalysis({
         setAnalysisInProgress(true);
         setProcessing(true);
         setLoading(false);
-        setProgress(70);
-        setProgressMessage('Analyzing repository structure...');
+        setProgress(0);
+        setProgressMessage('Initializing repository analysis...');
         setError('');
         setAiQuestions([]);
         setUserAnswers({});
@@ -1787,8 +1822,8 @@ export default function AgentAnalysis({
                     governanceContext: governanceContext,
                 });
             } else {
-                setProgress(85);
-                setProgressMessage('Generating repository Agent Action Plan... This may take up to 10 minutes.');
+                setProgress(0);
+                setProgressMessage('Submitting repository analysis request...');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: repoContext,
                     governanceContext: governanceContext,
@@ -1819,8 +1854,8 @@ export default function AgentAnalysis({
         setAnalysisInProgress(true);
         setProcessing(true);
         setLoading(false);
-        setProgress(70);
-        setProgressMessage('Governance completed. Starting Agent Analysis...');
+        setProgress(0);
+        setProgressMessage('Governance completed. Initializing Agent Analysis...');
         setError('');
         setAiQuestions([]);
         setUserAnswers({});
@@ -1902,8 +1937,8 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     governanceContext: effectiveGovernanceContext,
                 });
             } else {
-                setProgress(85);
-                setProgressMessage('Generating comprehensive Agent Action Plan... This may take up to 10 minutes.');
+                setProgress(0);
+                setProgressMessage('Submitting analysis request...');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: pendingRepoContext,
                     governanceContext: effectiveGovernanceContext,
@@ -2046,6 +2081,8 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     setUserAnswers(savedAnswers);
                     setUserFeedback(savedFeedback);
                     setCompletedStages(savedStages);  // Restore completed stages
+                    if (storedAnalysis?.hld) setHldDesign(storedAnalysis.hld);
+                    if (storedAnalysis?.lld) setLldDesign(storedAnalysis.lld);
 
                     const loadedResult = {
                         id: latestDocument.id,
@@ -2115,6 +2152,20 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                             const hasResult = hasCompletedDocumentAnalysis(latestDocument);
  
                             if (!hasResult) {
+                                // Guard against race conditions: if component state or project cache already holds
+                                // the completed analysis (e.g. while fetchHistory network request is completing),
+                                // do NOT show the interrupted error banner!
+                                const hasLocalCompletedAnalysis = Boolean(
+                                    result?.analysis?.analysis && (result.id === latestDocument?.id || !result.id)
+                                );
+                                const cachedResult = resultCacheRef.current[selectedProjectKey]?.result;
+                                const hasCachedCompletedAnalysis = Boolean(cachedResult?.analysis?.analysis);
+
+                                if (hasLocalCompletedAnalysis || hasCachedCompletedAnalysis) {
+                                    setLoading(false);
+                                    return;
+                                }
+
                                 const activeJobId = localStorage.getItem('active_analysis_job_id');
                                 if (!activeJobId) {
                                     const savedErr = sessionStorage.getItem(`analysis_error_${latestDocument.id}`);
@@ -4460,16 +4511,27 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
 
                                         {/* Overall Progress Bar */}
                                         <div className="mt-4 space-y-2">
-                                            <div className="flex justify-between items-center text-xs text-app-text-muted">
-                                                <span>{progressMessage}</span>
-                                                <span className="font-semibold">{progress}%</span>
-                                            </div>
-                                            <div className="w-full bg-app-bg-muted rounded-full h-2 overflow-hidden">
-                                                <div
-                                                    className="bg-gradient-to-r from-app-primary to-app-primary-hover h-2 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
-                                                    style={{ width: `${progress}%` }}
-                                                ></div>
-                                            </div>
+                                            {(() => {
+                                                const isFinalizing = processing && progress >= 100 && !result?.analysis?.analysis;
+                                                const displayProgress = isFinalizing ? 98 : progress;
+                                                const displayMessage = isFinalizing
+                                                    ? 'Finalizing analysis and design specifications...'
+                                                    : progressMessage;
+                                                return (
+                                                    <>
+                                                        <div className="flex justify-between items-center text-xs text-app-text-muted">
+                                                            <span>{displayMessage}</span>
+                                                            <span className="font-semibold">{displayProgress}%</span>
+                                                        </div>
+                                                        <div className="w-full bg-app-bg-muted rounded-full h-2 overflow-hidden">
+                                                            <div
+                                                                className="bg-gradient-to-r from-app-primary to-app-primary-hover h-2 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                                                style={{ width: `${displayProgress}%` }}
+                                                            ></div>
+                                                        </div>
+                                                    </>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
                                 )}
@@ -4534,7 +4596,13 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 <button
                                                     onClick={() => {
                                                         setActiveDesignTab('hld');
-                                                        if (!hldDesign && result?.id) fetchArchitectureDesign(result.id);
+                                                        if (!hldDesign) {
+                                                            if (result?.analysis?.hld) {
+                                                                setHldDesign(result.analysis.hld);
+                                                            } else if (result?.id) {
+                                                                fetchArchitectureDesign(result.id);
+                                                            }
+                                                        }
                                                     }}
                                                     className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-all ${
                                                         activeDesignTab === 'hld'
@@ -4549,7 +4617,13 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 <button
                                                     onClick={() => {
                                                         setActiveDesignTab('lld');
-                                                        if (!lldDesign && result?.id) fetchArchitectureDesign(result.id);
+                                                        if (!lldDesign) {
+                                                            if (result?.analysis?.lld) {
+                                                                setLldDesign(result.analysis.lld);
+                                                            } else if (result?.id) {
+                                                                fetchArchitectureDesign(result.id);
+                                                            }
+                                                        }
                                                     }}
                                                     className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-all ${
                                                         activeDesignTab === 'lld'

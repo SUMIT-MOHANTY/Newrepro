@@ -170,10 +170,25 @@ _job_manager: Optional[AnalysisJobManager] = None
 
 
 def get_job_manager() -> AnalysisJobManager:
-    """Get the global job manager instance"""
+    """Get the global job manager instance, ensuring singleton consistency across module paths."""
     global _job_manager
+    import sys
+    # Check if either module entry in sys.modules already instantiated _job_manager
+    for mod_name in ("analysis_job_manager", "app.workers.analysis_job_manager"):
+        if mod_name in sys.modules:
+            existing = getattr(sys.modules[mod_name], "_job_manager", None)
+            if existing is not None:
+                _job_manager = existing
+                return _job_manager
+
     if _job_manager is None:
         _job_manager = AnalysisJobManager()
+
+    # Mirror to all loaded aliases so both point to the exact same instance
+    for mod_name in ("analysis_job_manager", "app.workers.analysis_job_manager"):
+        if mod_name in sys.modules:
+            setattr(sys.modules[mod_name], "_job_manager", _job_manager)
+
     return _job_manager
 
 
