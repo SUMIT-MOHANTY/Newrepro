@@ -2077,11 +2077,11 @@ async def _bg_run_agent(
                 from app.services.agents.master_orchestrator import extract_backend_contracts
                 contracts = extract_backend_contracts(workspace_dir)
                 routes = contracts.get("routes", [])
-                if routes and any(t.get("lane") in ("frontend", "ui", "qa") for t in task_config):
+                if routes and any(t.get("lane") in ("frontend", "ui", "qa") for t in task_config.get("tasks", [])):
                     contract_summary = "\n### LIVE BACKEND API CONTRACT (From Backend Agent):\nYou MUST use these exact endpoint paths and HTTP methods:\n"
                     for r in routes[:35]:
                         contract_summary += f"- {r.get('method')} {r.get('path')}\n"
-                    for t in task_config:
+                    for t in task_config.get("tasks", []):
                         if t.get("lane") in ("frontend", "ui", "qa"):
                             t["description"] = f"{t.get('description', '')}\n{contract_summary}"
             except Exception as c_err:

@@ -58,6 +58,9 @@ class DAGScheduler:
             for t in tasks_data:
                 task = Task(t)
                 if task.task_id:
+                    if task.status == TaskStatus.RUNNING:
+                        logger.info(f"[DAGScheduler] 🔄 Recovered orphaned RUNNING task {task.task_id} back to PENDING on boot.")
+                        task.status = TaskStatus.PENDING
                     self.tasks[task.task_id] = task
         else:
             self._load_tasks()
@@ -78,6 +81,9 @@ class DAGScheduler:
                 for t in task_items:
                     task = Task(t)
                     if task.task_id:
+                        if task.status == TaskStatus.RUNNING:
+                            logger.info(f"[DAGScheduler] 🔄 Recovered orphaned RUNNING task {task.task_id} back to PENDING on boot.")
+                            task.status = TaskStatus.PENDING
                         self.tasks[task.task_id] = task
         except Exception as e:
             logger.error(f"Failed to load tasks from {self.task_config_path}: {e}")
@@ -169,19 +175,33 @@ class DAGScheduler:
         for task in self.tasks.values():
             if task.status == TaskStatus.PENDING:
                 can_run = True
+                task_lane = (getattr(task, "lane", "") or "").lower().strip()
                 for dep in task.depends_on:
                     dep_task = self._find_task_by_id(dep)
                     if dep_task:
-                        # Internal task: cannot run while dependency is actively PENDING or RUNNING.
-                        # Once dependency has completed or failed, it has terminated so downstream can proceed.
-                        if dep_task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
-                            can_run = False
-                            break
+                        dep_lane = (getattr(dep_task, "lane", "") or "").lower().strip()
+                        # Same lane: strictly adhere to dependency ordering
+                        if dep_lane == task_lane:
+                            if dep_task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                                can_run = False
+                                break
+                        else:
+                            # Cross-lane dependency (e.g. frontend depends on backend or vice versa)
+                            # Only block if it is a root gateway task (TASK-00A / TASK-00B) that is still pending
+                            is_root_gateway = any(k in dep.upper() for k in ("TASK-00A", "TASK-00B", "GATEWAY", "INIT"))
+                            if is_root_gateway and dep_task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                                can_run = False
+                                break
+                            # Other cross-lane dependencies are SOFT: downstream can run using contracts/mocks
                     else:
                         # Dependency is external (assigned to another agent in the swarm)
+                        # Only wait if external task has not finished AND is not cross-lane deadlock
                         if not self._is_external_dependency_finished(dep):
-                            can_run = False
-                            break
+                            # If external dependency is a root gateway, wait for it; otherwise soft-unblock
+                            is_root_gateway = any(k in dep.upper() for k in ("TASK-00A", "TASK-00B", "GATEWAY", "INIT"))
+                            if is_root_gateway:
+                                can_run = False
+                                break
                 if can_run:
                     ready_tasks.append(task)
         return ready_tasks

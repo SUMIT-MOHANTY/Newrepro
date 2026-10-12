@@ -1175,10 +1175,66 @@ class ClaudeToolClient:
                     })
                     continue
 
-                # Clean natural exit â€” model responded with text answer, no more tool calls needed
+                # Empty Response Guard: Never exit or freeze silently on empty model turn
+
+
+                if not (assistant_content or "").strip() and not tool_calls and iteration < (max_iterations - 2):
+
+
+                    log(f"⚠️ [Empty Turn Guard] Model returned 0 tokens at step {iteration + 1}. Prompting to resume...")
+
+
+                    conversation.append({
+
+
+                        "role": "user",
+
+
+                        "content": "Action Required: Your previous response was empty. Please proceed immediately to implement the required components using `write_file` or `replace_file_content` now."
+
+
+                    })
+
+
+                    continue
+
+
+
+                # Zero-Write Guard: In a coding task, model cannot stop without creating/modifying files
+
+
+                if has_write_tools and len(tool_executor.files_changed) == 0 and not is_question_mode and iteration < (max_iterations - 2):
+
+
+                    log(f"⚠️ [Zero-Write Guard] Model attempted natural exit with 0 files changed at step {iteration + 1}. Prompting to write code.")
+
+
+                    conversation.append({
+                        "role": "user",
+                        "content": (
+                            "ACTION REQUIRED: You have not created or modified any files on physical disk yet.\n"
+                            "Do not stop with plain text explanations. You MUST issue a structured tool call "
+                            "(`write_file` or `replace_file_content`) to implement the required application code now."
+                        ),
+                    })
+
+
+                    continue
+
+
+
+                # Clean natural exit — model responded with text answer, no more tool calls needed
+
+
                 result.final_text = assistant_content
+
+
                 result.files_changed = tool_executor.files_changed
+
+
                 result.conversation = conversation
+
+
                 result.stop_reason = "natural_completion"
                 log(f"ðŸ [Tool Phase Finished] Model completed naturally at iteration {iteration + 1}. Changed {len(result.files_changed)} file(s).")
                 return result

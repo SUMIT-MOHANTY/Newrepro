@@ -115,8 +115,94 @@ class CodePatcher:
         if non_empty_result is not None:
             return True, non_empty_result, "Non-empty line sequence match"
 
-        # Safe exit: Never perform partial fuzzy replacements that corrupt code!
+        # -------------------------------------------------------------
+        # Strategy 6: Anchor Line Boundary Match
+        # Matches when first and last non-empty lines uniquely identify the block
+        # -------------------------------------------------------------
+        anchor_result = cls._replace_anchor_block(lines, target_clean, replacement_clean)
+        if anchor_result is not None:
+            return True, anchor_result, "Anchor boundary block match"
+
+        # -------------------------------------------------------------
+        # Strategy 7: High-Confidence Sequence Similarity Match (>=80%)
+        # Absorbs minor token typos, comment differences, or slight drift
+        # -------------------------------------------------------------
+        fuzzy_result = cls._replace_fuzzy(lines, target_clean, replacement_clean)
+        if fuzzy_result is not None:
+            return True, fuzzy_result, "High-confidence fuzzy sequence match"
+
+        # Safe exit: Never perform arbitrary low-confidence replacements that corrupt code!
         return False, content, "All deterministic patching strategies exhausted"
+
+    @classmethod
+    def _replace_anchor_block(
+        cls,
+        lines: list[str],
+        target: str,
+        replacement: str,
+    ) -> str | None:
+        """Matches a block when its first and last non-empty lines match uniquely."""
+        target_lines = [l.strip() for l in target.splitlines() if l.strip()]
+        if len(target_lines) < 3:
+            return None
+
+        first_target = target_lines[0]
+        last_target = target_lines[-1]
+        target_span = len(target.splitlines())
+
+        matches = []
+        for i in range(len(lines)):
+            if lines[i].strip() == first_target:
+                for j in range(i + 1, min(len(lines), i + target_span + 8)):
+                    if lines[j].strip() == last_target:
+                        matches.append((i, j + 1))
+                        break
+
+        # Only proceed if there is exactly one unambiguous matching region
+        if len(matches) == 1:
+            s_idx, e_idx = matches[0]
+            repl_lines = [l + "\n" for l in replacement.splitlines()]
+            result_lines = list(lines)
+            result_lines[s_idx:e_idx] = repl_lines
+            return "".join(result_lines)
+        return None
+
+    @classmethod
+    def _replace_fuzzy(
+        cls,
+        lines: list[str],
+        target: str,
+        replacement: str,
+        threshold: float = 0.80,
+    ) -> str | None:
+        """High-confidence fuzzy sliding window match using SequenceMatcher."""
+        import difflib
+        target_str = cls._normalize_ws(target)
+        if len(target_str) < 15:
+            return None
+
+        t_lines_count = len(target.splitlines())
+        best_ratio = 0.0
+        best_span = None
+
+        for i in range(len(lines)):
+            for w in (t_lines_count, t_lines_count + 1, max(1, t_lines_count - 1), t_lines_count + 2):
+                if i + w <= len(lines):
+                    chunk = cls._normalize_ws("".join(lines[i : i + w]))
+                    ratio = difflib.SequenceMatcher(None, target_str, chunk).quick_ratio()
+                    if ratio > best_ratio:
+                        ratio = difflib.SequenceMatcher(None, target_str, chunk).ratio()
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_span = (i, i + w)
+
+        if best_ratio >= threshold and best_span is not None:
+            s_idx, e_idx = best_span
+            repl_lines = [l + "\n" for l in replacement.splitlines()]
+            result_lines = list(lines)
+            result_lines[s_idx:e_idx] = repl_lines
+            return "".join(result_lines)
+        return None
 
     @classmethod
     def _replace_trimmed_lines(

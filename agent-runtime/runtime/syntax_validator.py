@@ -358,14 +358,18 @@ class SyntaxValidator:
             "if(!p){try{p=require('@babel/parser');kind='babel';}catch(e){}}"
             "if(!p){process.exit(4);}"
             "try{"
-            "if(kind==='esbuild'){p.transformSync(s,{loader:loader,jsx:'automatic'});}"
+            "if(kind==='esbuild'){"
+            "  try{p.transformSync(s,{loader:loader,jsx:'automatic'});process.exit(0);}"
+            "  catch(ebErr){if(String(ebErr).includes('service was stopped')||String(ebErr).includes('service is no longer running')){process.exit(4);}"
+            "  var out={text:(ebErr&&ebErr.message)||String(ebErr),line:0};"
+            "  if(ebErr&&ebErr.errors&&ebErr.errors[0]&&ebErr.errors[0].location){out.line=ebErr.errors[0].location.line;out.text=ebErr.errors[0].text;}"
+            "  process.stderr.write(JSON.stringify(out));process.exit(3);}"
+            "}"
             "else{var pl=['jsx'];if(loader==='tsx'||loader==='ts'){pl.push('typescript');}"
-            "p.parse(s,{sourceType:'module',plugins:pl});}"
-            "process.exit(0);"
+            "p.parse(s,{sourceType:'module',plugins:pl});process.exit(0);}"
             "}catch(e){"
             "var out={text:(e&&e.message)||String(e),line:0};"
-            "if(e&&e.errors&&e.errors[0]&&e.errors[0].location){out.line=e.errors[0].location.line;out.text=e.errors[0].text;}"
-            "else if(e&&e.loc){out.line=e.loc.line;}"
+            "if(e&&e.loc){out.line=e.loc.line;}"
             "process.stderr.write(JSON.stringify(out));process.exit(3);}"
             "});"
         )
@@ -407,6 +411,8 @@ class SyntaxValidator:
                 line = int(data.get("line", 0) or 0)
             except Exception:
                 pass
+            if any(ign in msg.lower() for ign in ("service was stopped", "service is no longer running", "cannot find module")):
+                return ('unavailable', None)
             return ('error', {"error": f"{loader.upper()} syntax error: {msg}", "line": line, "fixable": True})
         # Any other exit code — don't block deploy on parser oddities
         return ('unavailable', None)

@@ -449,32 +449,30 @@ class SupervisorAgent:
                     print(f"\n[Supervisor] 🏁 All tasks processed!")
                     break
 
-                # Check for deadlock
-                any_running = any(
-                    t.status == TaskStatus.RUNNING
-                    for t in self.scheduler.tasks.values()
-                )
-                if not any_running:
-                    idle_rounds += 1
-                    if idle_rounds > max_idle_rounds:
-                        pending_tasks = [t for t in self.scheduler.tasks.values() if t.status == TaskStatus.PENDING]
-                        if pending_tasks:
-                            logger.warning(
-                                f"[Supervisor] ⚡ Deadlock resolution: Unblocking {len(pending_tasks)} remaining pending task(s) "
-                                f"to guarantee swarm completion: {', '.join(t.task_id for t in pending_tasks)}"
-                            )
-                            ready_tasks = [pending_tasks[0]]
-                            idle_rounds = 0
-                        else:
-                            logger.error("[Supervisor] All tasks have been processed.")
-                            break
+                # Check for deadlock or stalled tasks
+                idle_rounds += 1
+                if idle_rounds >= 3:
+                    # Recover any stalled RUNNING tasks
+                    stalled_running = [t for t in self.scheduler.tasks.values() if t.status == TaskStatus.RUNNING]
+                    for st in stalled_running:
+                        logger.warning(f"[Supervisor] ⚡ Recovering stalled RUNNING task {st.task_id} ('{st.title}') back to PENDING.")
+                        st.status = TaskStatus.PENDING
+
+                    pending_tasks = [t for t in self.scheduler.tasks.values() if t.status == TaskStatus.PENDING]
+                    if pending_tasks:
+                        logger.warning(
+                            f"[Supervisor] ⚡ Deadlock resolution: Unblocking {len(pending_tasks)} remaining pending task(s) "
+                            f"to guarantee swarm completion: {', '.join(t.task_id for t in pending_tasks)}"
+                        )
+                        ready_tasks = [pending_tasks[0]]
+                        idle_rounds = 0
                     else:
-                        time.sleep(1)
-                        continue
+                        logger.info("[Supervisor] All tasks have been processed.")
+                        break
                 else:
-                    idle_rounds = 0
                     time.sleep(1)
                     continue
+
 
             idle_rounds = 0
 

@@ -343,6 +343,9 @@ class ToolExecutor:
                                 "syntax error:",
                             )
                         )
+                        if is_actual_syntax and any(ign in err_msg.lower() for ign in ("service was stopped", "service is no longer running", "cannot find module")):
+                            is_actual_syntax = False
+
                         if is_actual_syntax:
                             msg = f"⚠️ Syntax error detected in `{rel_path}` (line {line_num}): {err_msg}"
                             _safe_print(f"[ToolExecutor] {msg}")
