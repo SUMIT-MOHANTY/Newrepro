@@ -24435,7 +24435,7 @@ async def deploy_preview(
             "--name", container_name,
             "-p", f"{host_port}:80",
             "--add-host", "host.docker.internal:host-gateway",
-            "--nano-cpus", "200000000",
+            "--cpus", "0.2",
             "--memory", "700m",
             "--memory-swap", "800m",
             "-e", f"GIT_AUTH_URL={auth_url}",
