@@ -4,7 +4,7 @@ import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info } from 'lucide-react';
+import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info, Layers, Database, Code, Copy, Check, Sparkles } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -12,19 +12,72 @@ import dagre from 'dagre';
 import mermaid from 'mermaid';
 
 // Initialize mermaid with configuration
+// Initialize mermaid with optimal responsive configuration
 mermaid.initialize({
     startOnLoad: false,
-    theme: 'default',
+    theme: 'neutral',
     securityLevel: 'loose',
-    fontFamily: 'inherit',
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
     suppressErrorRendering: true,
+    flowchart: {
+        htmlLabels: true,
+        useMaxWidth: false,
+        curve: 'basis',
+        padding: 20,
+        nodeSpacing: 50,
+        rankSpacing: 50
+    },
+    er: {
+        useMaxWidth: false
+    },
+    sequence: {
+        useMaxWidth: false,
+        showSequenceNumbers: true
+    },
+    themeVariables: {
+        fontSize: '13px',
+        fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        primaryColor: '#e0e7ff',
+        primaryTextColor: '#1e1b4b',
+        primaryBorderColor: '#6366f1',
+        lineColor: '#475569',
+        secondaryColor: '#f1f5f9',
+        tertiaryColor: '#ffffff'
+    }
 });
 
 if (typeof mermaid !== 'undefined' && mermaid.parseError) {
     mermaid.parseError = () => {};
 }
 
-// Helper to sanitize and fix common LLM Mermaid syntax errors
+// Global serialization queue to ensure mermaid.render calls execute sequentially.
+// Mermaid relies on singleton DOM manipulation in document.body which causes race conditions
+// and crashes with "Cannot read properties of null (reading 'firstChild')" if multiple diagrams render concurrently.
+let mermaidRenderQueue = Promise.resolve();
+
+const safeRenderMermaid = (id, code) => {
+    return new Promise((resolve, reject) => {
+        mermaidRenderQueue = mermaidRenderQueue
+            .catch(() => {}) // keep queue alive even if a previous diagram failed
+            .then(async () => {
+                try {
+                    const res = await mermaid.render(id, code);
+                    resolve(res);
+                } catch (err) {
+                    // Clean up only THIS diagram's temporary elements from DOM, NEVER all diagrams!
+                    try {
+                        const el = document.getElementById(id);
+                        if (el && el.parentNode) el.parentNode.removeChild(el);
+                        const dEl = document.getElementById('d' + id);
+                        if (dEl && dEl.parentNode) dEl.parentNode.removeChild(dEl);
+                    } catch (e) {}
+                    reject(err);
+                }
+            });
+    });
+};
+
+// Helper to sanitize and fix common LLM Mermaid syntax errors and word truncations
 const sanitizeMermaidCode = (rawCode) => {
     if (!rawCode || typeof rawCode !== 'string') return '';
     let cleaned = rawCode.trim();
@@ -34,18 +87,30 @@ const sanitizeMermaidCode = (rawCode) => {
     cleaned = cleaned.replace(/\s*```$/, '');
     cleaned = cleaned.trim();
 
-    // 2. Fix duplicate diagram headers at the start (e.g. erDiagram\nerDiagram or graph TD\ngraph TD)
+    // 2. Auto-repair common LLM word truncations in node/arrow labels
+    cleaned = cleaned.replace(/\bAdministratc\b/gi, 'Administrator');
+    cleaned = cleaned.replace(/\bStakehold\b/gi, 'Stakeholders');
+    cleaned = cleaned.replace(/\bInteracts via H\b/gi, 'Interacts via HTTPS');
+    cleaned = cleaned.replace(/\bValidates ident\b/gi, 'Validates Identity');
+    cleaned = cleaned.replace(/\bDispatches ale\b/gi, 'Dispatches Alerts');
+    cleaned = cleaned.replace(/\bExchanges dat\b/gi, 'Exchanges Data');
+
+    // 3. Fix duplicate diagram headers at the start (e.g. erDiagram\nerDiagram or graph TD\ngraph TD)
     cleaned = cleaned.replace(/^(erDiagram|graph\s+[A-Z]+|flowchart\s+[A-Z]+|sequenceDiagram|classDiagram|stateDiagram)[\s\n]+\1/i, '$1');
 
-    // 3. Detect if this is an ER diagram
+    // 4. Detect if this is an ER diagram
     const isEr = cleaned.startsWith('erDiagram') ||
                  cleaned.toLowerCase().startsWith('erdiagram') ||
+                 cleaned.toLowerCase().includes('erdiagram') ||
                  cleaned.includes('||--') ||
                  cleaned.includes('}o--') ||
                  cleaned.includes('|o--');
 
     if (isEr) {
-        if (!cleaned.toLowerCase().startsWith('erdiagram')) {
+        const erIdx = cleaned.toLowerCase().indexOf('erdiagram');
+        if (erIdx > 0) {
+            cleaned = cleaned.substring(erIdx);
+        } else if (!cleaned.toLowerCase().startsWith('erdiagram')) {
             cleaned = 'erDiagram\n' + cleaned;
         }
 
@@ -54,9 +119,6 @@ const sanitizeMermaidCode = (rawCode) => {
 
         // Fix ER Diagram attribute lines:
         // LLMs frequently output: "datatype PK column_name" instead of "datatype column_name PK"
-        // E.g. "int PK Id" -> "int Id PK"
-        // E.g. "string FK user_id" -> "string user_id FK"
-        // E.g. "uuid PK,FK org_id" -> "uuid org_id PK,FK"
         const lines = cleaned.split('\n');
         const fixedLines = lines.map(line => {
             const trimmed = line.trim();
@@ -64,7 +126,6 @@ const sanitizeMermaidCode = (rawCode) => {
             if (trimmed.toLowerCase() === 'end') return null;
 
             // Attribute ordering check
-            // Match: indent, datatype, key(s), column_name, rest
             const attrMatch = line.match(/^(\s*)([A-Za-z0-9_\[\]\<\>\.\(\)]+)\s+((?:PK|FK|UK)(?:\s*,?\s*(?:PK|FK|UK))*)\s+([A-Za-z0-9_]+)(.*)$/);
             if (attrMatch) {
                 const [, indent, dataType, keys, attrName, rest] = attrMatch;
@@ -72,7 +133,6 @@ const sanitizeMermaidCode = (rawCode) => {
                 return `${indent}${dataType} ${attrName} ${cleanKeys}${rest}`;
             }
 
-            // Also check if key comes first without datatype, e.g. "PK Id int"
             const attrMatch2 = line.match(/^(\s*)((?:PK|FK|UK)(?:\s*,?\s*(?:PK|FK|UK))*)\s+([A-Za-z0-9_]+)\s+([A-Za-z0-9_\[\]\<\>\.\(\)]+)(.*)$/);
             if (attrMatch2) {
                 const [, indent, keys, attrName, dataType, rest] = attrMatch2;
@@ -85,15 +145,42 @@ const sanitizeMermaidCode = (rawCode) => {
 
         cleaned = fixedLines.filter(l => l !== null).join('\n');
     } else {
-        // Flowchart/graph fixes
-        // Fix unquoted node labels with special characters (brackets, parens)
-        cleaned = cleaned.replace(/(\w+)\[([^"\]\n]*[\(\)\{\}&\/\\#][^"\]\n]*)\]/g, '$1["$2"]');
+        // Flowchart / Graph shape repairs:
+        // Ensure titles and labels with spaces/parentheses/special characters are safely quoted:
+        // Fix unquoted subgraph titles: subgraph ID [Title with special chars] -> subgraph ID ["Title..."]
+        cleaned = cleaned.replace(/subgraph\s+([A-Za-z0-9_]+)\s*\[([^"\]\n]+)\]/g, (m, id, text) => {
+            return `subgraph ${id}["${text.replace(/"/g, "'")}"]`;
+        });
+        // 1. Stadium shape: id([ ... ]) -> id(["..."])
+        cleaned = cleaned.replace(/(\b\w+)\(\[\s*([^"\]\n]*?)\s*\]\)/g, (match, id, text) => {
+            return `${id}(["${text.replace(/"/g, "'")}"])`;
+        });
+        // 2. Cylinder shape: id[( ... )] -> id[("...")]
+        cleaned = cleaned.replace(/(\b\w+)\[\(\s*([^"\]\n]*?)\s*\)\]/g, (match, id, text) => {
+            return `${id}[("${text.replace(/"/g, "'")}")]`;
+        });
+        // 3. Hexagon shape: id{{ ... }} -> id{{"..."}}
+        cleaned = cleaned.replace(/(\b\w+)\{\{\s*([^"\}\n]*?)\s*\}\}/g, (match, id, text) => {
+            return `${id}{{"${text.replace(/"/g, "'")}}"`;
+        });
+        // 4. Circle shape: id(( ... )) -> id(("..."))
+        cleaned = cleaned.replace(/(\b\w+)\(\(\s*([^"\)\n]*?)\s*\)\)/g, (match, id, text) => {
+            return `${id}(("${text.replace(/"/g, "'")}"))`;
+        });
+        // 5. Subroutine shape: id[[ ... ]] -> id[["..."]]
+        cleaned = cleaned.replace(/(\b\w+)\[\[\s*([^"\]\n]*?)\s*\]\]/g, (match, id, text) => {
+            return `${id}[["${text.replace(/"/g, "'")}"]]`;
+        });
+        // 6. Box shape: id[ ... ] -> id["..."]
+        cleaned = cleaned.replace(/(\b\w+)\[([^"\]\n]*[\(\)\{\}&\/\\#][^"\]\n]*)\]/g, (match, id, text) => {
+            return `${id}["${text.replace(/"/g, "'")}"]`;
+        });
     }
 
     return cleaned.trim();
 };
 
-// Improved Mermaid Diagram Component with smooth animation and expand functionality
+// Improved Mermaid Diagram Component with serialized rendering, smooth animation, and expand functionality
 const MermaidDiagram = ({ code, showDownload = true }) => {
     const containerRef = useRef(null);
     const [svg, setSvg] = useState('');
@@ -109,28 +196,23 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
             try {
                 const sanitized = sanitizeMermaidCode(code);
                 const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
-                const { svg: renderedSvg } = await mermaid.render(id, sanitized);
+                const { svg: renderedSvg } = await safeRenderMermaid(id, sanitized);
                 if (!cancelled) {
-                    // Add a small delay for smooth transition effect
-                    setTimeout(() => {
-                        if (!cancelled) {
-                            setSvg(renderedSvg);
-                            setError(null);
-                            setIsRendering(false);
-                        }
-                    }, 150);
+                    // Remove fixed height on root <svg> tag if viewBox is present,
+                    // allowing the browser to scale the height proportionally to the diagram content
+                    // and eliminating massive vertical whitespace/letterboxing above and below.
+                    let cleanSvg = renderedSvg;
+                    if (cleanSvg && /viewBox=/i.test(cleanSvg)) {
+                        cleanSvg = cleanSvg
+                            .replace(/(<svg\b[^>]*?)\sheight="[^"]*"/i, '$1')
+                            .replace(/(<svg\b[^>]*?\sstyle="[^"]*?)height\s*:\s*[^;"]+;?/i, '$1');
+                    }
+                    setSvg(cleanSvg);
+                    setError(null);
+                    setIsRendering(false);
                 }
             } catch (err) {
                 console.warn('Mermaid render error:', err);
-                // Remove any error elements or leftover SVGs injected by Mermaid into body
-                try {
-                    const errorNodes = document.querySelectorAll('[id^="dmermaid"], [id^="mermaid-"], .error-icon');
-                    errorNodes.forEach(el => {
-                        if (el && el.parentNode) el.parentNode.removeChild(el);
-                    });
-                } catch (e) {
-                    // ignore
-                }
                 if (!cancelled) {
                     setError(err.message || 'Failed to render diagram');
                     setSvg('');
@@ -309,7 +391,7 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                         {/* Expanded Diagram Content */}
                         <div className="p-6 bg-gray-50 overflow-auto max-h-[calc(90vh-60px)]">
                             <div
-                                className="flex justify-center"
+                                className="mermaid-diagram-container flex justify-center [&>svg]:max-w-full [&>svg]:!h-auto [&>svg]:w-auto"
                                 dangerouslySetInnerHTML={{ __html: svg }}
                             />
                         </div>
@@ -318,7 +400,7 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
             )}
 
             {/* Normal View */}
-            <div className="my-6 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+            <div className="my-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
                 {/* Action Buttons */}
                 <div className="flex justify-end gap-2 mb-2">
                     {/* Expand Button */}
@@ -359,7 +441,7 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                 {/* SVG Diagram with smooth fade-in animation */}
                 <div
                     ref={containerRef}
-                    className="flex justify-center [&>svg]:max-w-full transition-opacity duration-300 ease-out"
+                    className="mermaid-diagram-container flex justify-center [&>svg]:max-w-full [&>svg]:!h-auto [&>svg]:w-auto transition-opacity duration-300 ease-out"
                     style={{ opacity: svg ? 1 : 0 }}
                     dangerouslySetInnerHTML={{ __html: svg }}
                 />
@@ -738,11 +820,108 @@ export default function AgentAnalysis({
     const [userFeedback, setUserFeedback] = useState('');
     const [governanceContext, setGovernanceContext] = useState(null);
     const [repoContext, setRepoContext] = useState(null);
-    const [isArchModalOpen, setIsArchModalOpen] = useState(false);
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Start closed by default
     const [sidebarTab, setSidebarTab] = useState('chat'); // 'chat' | 'clarification'
     const [analysisInProgress, setAnalysisInProgress] = useState(false); // Track if analysis is running
     const [selectedDocId, setSelectedDocId] = useState(null); // Selected revision document ID for checkpoints
+    const [activeDesignTab, setActiveDesignTab] = useState('executive'); // 'executive' | 'hld' | 'lld'
+    const [hldDesign, setHldDesign] = useState(null);
+    const [lldDesign, setLldDesign] = useState(null);
+    const [designLoading, setDesignLoading] = useState(false);
+    const [designGenerating, setDesignGenerating] = useState(false);
+    const [copiedSnippet, setCopiedSnippet] = useState(null);
+
+    useEffect(() => {
+        if (result?.analysis?.hld) {
+            setHldDesign(result.analysis.hld);
+        }
+        if (result?.analysis?.lld) {
+            setLldDesign(result.analysis.lld);
+        }
+    }, [result]);
+
+    const fetchArchitectureDesign = useCallback(async (docId) => {
+        const targetId = docId || result?.id;
+        if (!targetId) return;
+        setDesignLoading(true);
+        try {
+            const res = await fetch(`${API_BASE_URL}/documents/${targetId}/design`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.hld) setHldDesign(data.hld);
+                if (data.lld) setLldDesign(data.lld);
+            }
+        } catch (err) {
+            console.error('Failed to fetch architecture design:', err);
+        } finally {
+            setDesignLoading(false);
+        }
+    }, [result?.id, token]);
+
+    const handleRegenerateArchitectureDesign = async (type = 'all') => {
+        if (!result?.id) return;
+        setDesignGenerating(true);
+        try {
+            const res = await fetch(`${API_BASE_URL}/documents/${result.id}/design/generate`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ design_type: type, force_regenerate: true })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.hld) setHldDesign(data.hld);
+                if (data.lld) setLldDesign(data.lld);
+            }
+        } catch (err) {
+            console.error('Failed to regenerate architecture design:', err);
+        } finally {
+            setDesignGenerating(false);
+        }
+    };
+
+    const handleDownloadArchitectureMarkdown = (type = 'hld') => {
+        const design = type === 'lld' ? lldDesign : hldDesign;
+        const content = design?.markdown || '';
+        if (!content) return;
+        const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const cleanProj = (result?.filename || 'Enterprise_System').replace(/[^a-zA-Z0-9_-]/g, '_');
+        a.download = `${cleanProj}_${type.toUpperCase()}_Specification.md`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleDownloadArchitecturePDF = async (type = 'hld') => {
+        const design = type === 'lld' ? lldDesign : hldDesign;
+        const content = design?.markdown || '';
+        if (!content) return;
+        const { generateArchitectureDesignPDF } = await import('./architecturePdfGenerator');
+        await generateArchitectureDesignPDF({
+            title: design.title || `${type.toUpperCase()} Specification`,
+            documentType: type.toUpperCase(),
+            markdownContent: content,
+            projectName: result?.filename || 'Enterprise Solution',
+            version: design.version || '1.0.0'
+        });
+    };
+
+    const handleCopyDdl = () => {
+        const content = lldDesign?.markdown || '';
+        const match = content.match(/```sql([\s\S]*?)```/);
+        const ddl = match ? match[1].trim() : content;
+        navigator.clipboard.writeText(ddl);
+        setCopiedSnippet('ddl');
+        setTimeout(() => setCopiedSnippet(null), 2500);
+    };
 
     const handleSelectRevisionDoc = (doc) => {
         if (!doc || !doc.id) return;
@@ -753,6 +932,8 @@ export default function AgentAnalysis({
             setUserAnswers(docAnalysis.userAnswers || {});
             setUserFeedback(docAnalysis.userFeedback || '');
             setCompletedStages(docAnalysis.stages || {});
+            if (docAnalysis.hld) setHldDesign(docAnalysis.hld);
+            if (docAnalysis.lld) setLldDesign(docAnalysis.lld);
             setResult({
                 id: doc.id,
                 filename: doc.filename,
@@ -1069,9 +1250,13 @@ export default function AgentAnalysis({
             const repoContextMeta = newResult?.analysis?.repoContextMeta || buildRepoContextMeta(analysisRepoContext);
             const storedAnalysis = {
                 ...(newResult.analysis || {}),
+                hld: newResult?.analysis?.hld || hldDesign || null,
+                lld: newResult?.analysis?.lld || lldDesign || null,
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
-                stages: completedStages || {},  // Include completed stages
+                stages: (completedStages && Object.keys(completedStages).length > 0)
+                    ? completedStages
+                    : (newResult?.analysis?.stages || {}),  // Preserve existing analysis stages
                 sections: newResult.extraction?.sections || [],  // Preserve all input tab sections
                 projectMeta: {
                     project_name: project?.name || governanceContext?.project_name || 'Project',
@@ -1192,7 +1377,7 @@ export default function AgentAnalysis({
                     // Merge updated stages (from targeted update) preserving previous
                     stages: isTargetedUpdate && data.stages
                         ? { ...(existingAnalysis.stages || {}), ...data.stages }
-                        : (data.stages || existingAnalysis.stages || {}),
+                        : (data.stages || existingAnalysis.stages || ((completedStages && Object.keys(completedStages).length > 0) ? completedStages : {})),
                 }
             };
 
@@ -1211,10 +1396,22 @@ export default function AgentAnalysis({
                 }).catch(err => console.error("Failed to save project type from analysis:", err));
             }
 
+            if (finalResult.analysis?.stages && Object.keys(finalResult.analysis.stages).length > 0) {
+                setCompletedStages(finalResult.analysis.stages);
+            }
+
+            if (finalResult.analysis?.hld) setHldDesign(finalResult.analysis.hld);
+            if (finalResult.analysis?.lld) setLldDesign(finalResult.analysis.lld);
+
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            const completedDocId = finalResult?.id || (initialContext || result)?.id;
+            if (completedDocId) {
+                sessionStorage.removeItem(`analysis_started_${completedDocId}`);
+                sessionStorage.removeItem(`analysis_error_${completedDocId}`);
+            }
             return finalResult;
         } catch (err) {
             console.error('Analysis error:', err);
@@ -1253,8 +1450,8 @@ export default function AgentAnalysis({
         if (initialResult?.id) {
             sessionStorage.removeItem(`analysis_error_${initialResult.id}`);
         }
-        setProgress(70);
-        setProgressMessage('Resuming background Agent Analysis...');
+        setProgress(0);
+        setProgressMessage('Connecting to background analysis job...');
         
         if (initialResult) {
             setResult(initialResult);
@@ -1318,7 +1515,7 @@ export default function AgentAnalysis({
                     affected_sections: data.affected_sections || [],
                     stages: isTargetedUpdate && data.stages
                         ? { ...(existingAnalysis.stages || {}), ...data.stages }
-                        : (data.stages || existingAnalysis.stages || {}),
+                        : (data.stages || existingAnalysis.stages || ((completedStages && Object.keys(completedStages).length > 0) ? completedStages : {})),
                 }
             };
 
@@ -1336,10 +1533,22 @@ export default function AgentAnalysis({
                 }).catch(err => console.error("Failed to save project type from analysis:", err));
             }
 
+            if (finalResult.analysis?.stages && Object.keys(finalResult.analysis.stages).length > 0) {
+                setCompletedStages(finalResult.analysis.stages);
+            }
+
+            if (finalResult.analysis?.hld) setHldDesign(finalResult.analysis.hld);
+            if (finalResult.analysis?.lld) setLldDesign(finalResult.analysis.lld);
+
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            const completedDocId = finalResult?.id || initialResult?.id;
+            if (completedDocId) {
+                sessionStorage.removeItem(`analysis_started_${completedDocId}`);
+                sessionStorage.removeItem(`analysis_error_${completedDocId}`);
+            }
             
             // Clean up localStorage keys
             localStorage.removeItem('active_analysis_job_id');
@@ -1477,10 +1686,12 @@ export default function AgentAnalysis({
             const effectiveRepoContext = analysisOptions.repoContext || repoContext || null;
             const finalFilename = title || (initialContext || result)?.filename;
 
+            const existingAnalysis = (initialContext || result)?.analysis || {};
             const finalResult = {
                 ...(initialContext || result),
                 filename: finalFilename,
                 analysis: {
+                    ...existingAnalysis,
                     analysis: report,
                     questions: questions,
                     metrics: metrics,
@@ -1491,7 +1702,10 @@ export default function AgentAnalysis({
                     governanceContext: effectiveGovernanceContext,
                     repoContextMeta: buildRepoContextMeta(effectiveRepoContext),
                     reasoning: aiReasoning,
-                    model: payload.model || 'Streaming...'
+                    model: payload.model || 'Streaming...',
+                    stages: (existingAnalysis.stages && Object.keys(existingAnalysis.stages).length > 0)
+                        ? existingAnalysis.stages
+                        : ((completedStages && Object.keys(completedStages).length > 0) ? completedStages : {}),
                 }
             };
 
@@ -1510,11 +1724,19 @@ export default function AgentAnalysis({
                 }).catch(err => console.error("Failed to save project type from stream analysis:", err));
             }
 
+            if (finalResult.analysis?.hld) setHldDesign(finalResult.analysis.hld);
+            if (finalResult.analysis?.lld) setLldDesign(finalResult.analysis.lld);
+
             setResult(finalResult);
             setProgress(100);
             setProgressMessage('Analysis complete!');
             setAiQuestions(questions?.length ? questions : []);
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            const completedDocId = finalResult?.id || (initialContext || result)?.id;
+            if (completedDocId) {
+                sessionStorage.removeItem(`analysis_started_${completedDocId}`);
+                sessionStorage.removeItem(`analysis_error_${completedDocId}`);
+            }
         } catch (err) {
             const userFriendlyError = formatAnalysisError(err);
             setError(`Stream Error: ${userFriendlyError}`);
@@ -1545,8 +1767,8 @@ export default function AgentAnalysis({
         setAnalysisInProgress(true);
         setProcessing(true);
         setLoading(false);
-        setProgress(70);
-        setProgressMessage('Analyzing repository structure...');
+        setProgress(0);
+        setProgressMessage('Initializing repository analysis...');
         setError('');
         setAiQuestions([]);
         setUserAnswers({});
@@ -1600,8 +1822,8 @@ export default function AgentAnalysis({
                     governanceContext: governanceContext,
                 });
             } else {
-                setProgress(85);
-                setProgressMessage('Generating repository Agent Action Plan... This may take up to 10 minutes.');
+                setProgress(0);
+                setProgressMessage('Submitting repository analysis request...');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: repoContext,
                     governanceContext: governanceContext,
@@ -1632,8 +1854,8 @@ export default function AgentAnalysis({
         setAnalysisInProgress(true);
         setProcessing(true);
         setLoading(false);
-        setProgress(70);
-        setProgressMessage('Governance completed. Starting Agent Analysis...');
+        setProgress(0);
+        setProgressMessage('Governance completed. Initializing Agent Analysis...');
         setError('');
         setAiQuestions([]);
         setUserAnswers({});
@@ -1715,8 +1937,8 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     governanceContext: effectiveGovernanceContext,
                 });
             } else {
-                setProgress(85);
-                setProgressMessage('Generating comprehensive Agent Action Plan... This may take up to 10 minutes.');
+                setProgress(0);
+                setProgressMessage('Submitting analysis request...');
                 await fetchAnalysisRef.current(aiPayload, token, initialResult, {
                     repoContext: pendingRepoContext,
                     governanceContext: effectiveGovernanceContext,
@@ -1859,6 +2081,8 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     setUserAnswers(savedAnswers);
                     setUserFeedback(savedFeedback);
                     setCompletedStages(savedStages);  // Restore completed stages
+                    if (storedAnalysis?.hld) setHldDesign(storedAnalysis.hld);
+                    if (storedAnalysis?.lld) setLldDesign(storedAnalysis.lld);
 
                     const loadedResult = {
                         id: latestDocument.id,
@@ -1928,6 +2152,20 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                             const hasResult = hasCompletedDocumentAnalysis(latestDocument);
  
                             if (!hasResult) {
+                                // Guard against race conditions: if component state or project cache already holds
+                                // the completed analysis (e.g. while fetchHistory network request is completing),
+                                // do NOT show the interrupted error banner!
+                                const hasLocalCompletedAnalysis = Boolean(
+                                    result?.analysis?.analysis && (result.id === latestDocument?.id || !result.id)
+                                );
+                                const cachedResult = resultCacheRef.current[selectedProjectKey]?.result;
+                                const hasCachedCompletedAnalysis = Boolean(cachedResult?.analysis?.analysis);
+
+                                if (hasLocalCompletedAnalysis || hasCachedCompletedAnalysis) {
+                                    setLoading(false);
+                                    return;
+                                }
+
                                 const activeJobId = localStorage.getItem('active_analysis_job_id');
                                 if (!activeJobId) {
                                     const savedErr = sessionStorage.getItem(`analysis_error_${latestDocument.id}`);
@@ -2595,36 +2833,43 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             if (inline) {
                 return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
             }
-            const codeContent = String(children || '').trim();
-            const isMermaid = codeContent.startsWith('graph') ||
+            const extractText = (elem) => {
+                if (!elem) return '';
+                if (typeof elem === 'string') return elem;
+                if (Array.isArray(elem)) return elem.map(extractText).join('');
+                if (elem?.props?.children) return extractText(elem.props.children);
+                return String(elem || '');
+            };
+            const codeContent = extractText(children).trim();
+            const lang = (className || '').toLowerCase();
+
+            const isMermaid = lang.includes('mermaid') ||
+                codeContent.startsWith('graph') ||
                 codeContent.includes('flowchart') ||
                 codeContent.includes('sequenceDiagram') ||
                 codeContent.includes('classDiagram') ||
-                codeContent.includes('stateDiagram');
+                codeContent.includes('stateDiagram') ||
+                codeContent.includes('stateDiagram-v2') ||
+                codeContent.includes('erDiagram') ||
+                codeContent.toLowerCase().includes('erdiagram') ||
+                codeContent.includes('||--') ||
+                codeContent.includes('}o--') ||
+                codeContent.includes('|o--');
 
-            const isErDiagram = codeContent.startsWith('erDiagram') ||
-                (codeContent.toLowerCase().startsWith('erdiagram'));
-
-            if (isMermaid || isErDiagram) {
+            if (isMermaid) {
                 return <MermaidDiagram code={codeContent} showDownload={true} />;
             }
 
-            return <code className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs font-mono" {...props}>{children}</code>;
+            return (
+                <div className="my-4 rounded-xl border border-gray-800 bg-gray-900 overflow-hidden shadow-sm">
+                    <pre className="p-4 text-gray-100 text-xs font-mono overflow-x-auto whitespace-pre leading-relaxed">
+                        <code className="text-gray-100 font-mono whitespace-pre" {...props}>{children}</code>
+                    </pre>
+                </div>
+            );
         },
         pre: ({ node, children, ...props }) => {
-            const preContent = String(children || '');
-            const codeMatch = preContent.match(/<code[^>]*>([\s\S]*?)<\/code>/);
-            const codeContent = codeMatch ? codeMatch[1] : preContent;
-
-            if (codeContent.includes('graph') ||
-                codeContent.includes('flowchart') ||
-                codeContent.includes('sequenceDiagram') ||
-                codeContent.includes('classDiagram') ||
-                codeContent.includes('stateDiagram')) {
-                return <MermaidDiagram code={codeContent} />;
-            }
-
-            return <pre className="bg-gray-900 rounded-lg my-4" {...props}>{children}</pre>;
+            return <>{children}</>;
         },
         blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
         a: ({ node, ...props }) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
@@ -2636,7 +2881,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
         try {
             const sanitized = sanitizeMermaidCode(mermaidCode);
             const uniqueId = `pdf-mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-            const { svg } = await mermaid.render(uniqueId, sanitized);
+            const { svg } = await safeRenderMermaid(uniqueId, sanitized);
 
             return await new Promise((resolve) => {
                 // Parse SVG and force high-resolution dimensions before rasterizing
@@ -2724,14 +2969,6 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             });
         } catch (err) {
             console.warn('Mermaid→PNG render failed:', err);
-            try {
-                const errorNodes = document.querySelectorAll('[id^="dmermaid"], [id^="mermaid-"], .error-icon');
-                errorNodes.forEach(el => {
-                    if (el && el.parentNode) el.parentNode.removeChild(el);
-                });
-            } catch (e) {
-                // ignore
-            }
             return null;
         }
     };
@@ -4274,16 +4511,27 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
 
                                         {/* Overall Progress Bar */}
                                         <div className="mt-4 space-y-2">
-                                            <div className="flex justify-between items-center text-xs text-app-text-muted">
-                                                <span>{progressMessage}</span>
-                                                <span className="font-semibold">{progress}%</span>
-                                            </div>
-                                            <div className="w-full bg-app-bg-muted rounded-full h-2 overflow-hidden">
-                                                <div
-                                                    className="bg-gradient-to-r from-app-primary to-app-primary-hover h-2 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
-                                                    style={{ width: `${progress}%` }}
-                                                ></div>
-                                            </div>
+                                            {(() => {
+                                                const isFinalizing = processing && progress >= 100 && !result?.analysis?.analysis;
+                                                const displayProgress = isFinalizing ? 98 : progress;
+                                                const displayMessage = isFinalizing
+                                                    ? 'Finalizing analysis and design specifications...'
+                                                    : progressMessage;
+                                                return (
+                                                    <>
+                                                        <div className="flex justify-between items-center text-xs text-app-text-muted">
+                                                            <span>{displayMessage}</span>
+                                                            <span className="font-semibold">{displayProgress}%</span>
+                                                        </div>
+                                                        <div className="w-full bg-app-bg-muted rounded-full h-2 overflow-hidden">
+                                                            <div
+                                                                className="bg-gradient-to-r from-app-primary to-app-primary-hover h-2 rounded-full transition-all duration-500 ease-out shadow-[0_0_10px_rgba(37,99,235,0.5)]"
+                                                                style={{ width: `${displayProgress}%` }}
+                                                            ></div>
+                                                        </div>
+                                                    </>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
                                 )}
@@ -4329,157 +4577,465 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                 <div className="relative">
                                     {/* Main Content Area - Add right margin when sidebar is open */}
                                     <div>
-                                        <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
-                                            <h3 className="text-lg font-bold text-app-text-main mb-4 pb-2 border-b-2 border-app-border-light">
-                                                Executive Summary & Agent Analysis
-                                            </h3>
-                                            <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
-                                                {(() => {
-                                                    const analysisContent = result.analysis?.analysis || '';
-                                                    const explicitHtml = result.analysis?.html;
-                                                    const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
+                                        {/* Design & Analysis Tab Switcher Bar */}
+                                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200/80 pb-3 mb-5">
+                                            {/* Tab Buttons */}
+                                            <div className="flex items-center gap-1.5 p-1 bg-gray-100/90 rounded-xl border border-gray-200/60 shadow-inner">
+                                                <button
+                                                    onClick={() => setActiveDesignTab('executive')}
+                                                    className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                                                        activeDesignTab === 'executive'
+                                                            ? 'bg-white text-blue-600 shadow-sm ring-1 ring-black/5'
+                                                            : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                                                    }`}
+                                                >
+                                                    <FileText className="w-3.5 h-3.5" />
+                                                    <span>Executive Summary</span>
+                                                </button>
 
-                                                    // Function to filter content for frontend display (hide ER diagrams and API sections)
-                                                    const filterContentForDisplay = (content) => {
-                                                        if (!content) return '';
-
-                                                        const lines = content.split('\n');
-                                                        const result = [];
-                                                        let inCodeBlock = false;
-                                                        let codeBlockType = '';
-                                                        let skipSection = false;
-                                                        let sectionLevel = 0;
-
-                                                        for (let i = 0; i < lines.length; i++) {
-                                                            const line = lines[i];
-                                                            const trimmed = line.trim();
-
-                                                            // Detect section headers to skip
-                                                            const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
-                                                            if (headerMatch) {
-                                                                const level = headerMatch[1].length;
-                                                                const headerText = headerMatch[2].toLowerCase();
-
-                                                                // Check if this is a section we want to hide
-                                                                const shouldHide =
-                                                                    headerText.includes('api specification') ||
-                                                                    headerText.includes('api endpoint') ||
-                                                                    headerText.includes('core api') ||
-                                                                    headerText.includes('deliverable mapping') ||
-                                                                    headerText.includes('files to create') ||
-                                                                    headerText.includes('phase 1:') ||
-                                                                    headerText.includes('phase 2:') ||
-                                                                    headerText.includes('phase 3:') ||
-                                                                    headerText.includes('phase 4:') ||
-                                                                    headerText.includes('phase 5:') ||
-                                                                    (headerText.match(/^\d+\.\d+/) && (
-                                                                        headerText.includes('api') ||
-                                                                        headerText.includes('deliverable')
-                                                                    ));
-
-                                                                if (shouldHide) {
-                                                                    skipSection = true;
-                                                                    sectionLevel = level;
-                                                                    continue;
-                                                                } else if (skipSection && level <= sectionLevel) {
-                                                                    // End of skipped section - new section at same or higher level
-                                                                    skipSection = false;
-                                                                    sectionLevel = 0;
-                                                                }
+                                                <button
+                                                    onClick={() => {
+                                                        setActiveDesignTab('hld');
+                                                        if (!hldDesign) {
+                                                            if (result?.analysis?.hld) {
+                                                                setHldDesign(result.analysis.hld);
+                                                            } else if (result?.id) {
+                                                                fetchArchitectureDesign(result.id);
                                                             }
-
-                                                            // Skip lines if we're in a hidden section
-                                                            if (skipSection) {
-                                                                continue;
-                                                            }
-
-                                                            // Handle code blocks
-                                                            if (trimmed.startsWith('```')) {
-                                                                if (!inCodeBlock) {
-                                                                    // Start of code block
-                                                                    inCodeBlock = true;
-                                                                    codeBlockType = trimmed.substring(3).trim().toLowerCase();
-                                                                    result.push(line);
-                                                                } else {
-                                                                    // End of code block
-                                                                    inCodeBlock = false;
-                                                                    codeBlockType = '';
-                                                                    result.push(line);
-                                                                }
-                                                                continue;
-                                                            }
-
-                                                            result.push(line);
                                                         }
+                                                    }}
+                                                    className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                                                        activeDesignTab === 'hld'
+                                                            ? 'bg-white text-blue-600 shadow-sm ring-1 ring-black/5'
+                                                            : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                                                    }`}
+                                                >
+                                                    <Layers className="w-3.5 h-3.5" />
+                                                    <span>High-Level Design (HLD)</span>
+                                                </button>
 
-                                                        return result.join('\n');
-                                                    };
+                                                <button
+                                                    onClick={() => {
+                                                        setActiveDesignTab('lld');
+                                                        if (!lldDesign) {
+                                                            if (result?.analysis?.lld) {
+                                                                setLldDesign(result.analysis.lld);
+                                                            } else if (result?.id) {
+                                                                fetchArchitectureDesign(result.id);
+                                                            }
+                                                        }
+                                                    }}
+                                                    className={`flex items-center gap-2 px-3.5 py-2 text-xs font-bold rounded-lg transition-all ${
+                                                        activeDesignTab === 'lld'
+                                                            ? 'bg-white text-indigo-600 shadow-sm ring-1 ring-black/5'
+                                                            : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+                                                    }`}
+                                                >
+                                                    <Database className="w-3.5 h-3.5" />
+                                                    <span>Low-Level Design (LLD)</span>
+                                                </button>
+                                            </div>
 
-                                                    if (processing && !analysisContent.trim()) {
-                                                        return (
-                                                            <div className="text-sm text-app-text-muted italic">
-                                                                Generating analysis...
+                                            {/* Design Actions (Download PDF, Download Markdown, Regenerate, Copy DDL) */}
+                                            {(activeDesignTab === 'hld' || activeDesignTab === 'lld') && (
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    {activeDesignTab === 'lld' && (
+                                                        <button
+                                                            onClick={handleCopyDdl}
+                                                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-all shadow-sm"
+                                                            title="Copy SQL Migration DDL"
+                                                        >
+                                                            {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                                            <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy DDL'}</span>
+                                                        </button>
+                                                    )}
+
+                                                    <button
+                                                        onClick={() => handleDownloadArchitectureMarkdown(activeDesignTab)}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-all shadow-sm"
+                                                        title={`Download ${activeDesignTab.toUpperCase()} Markdown`}
+                                                    >
+                                                        <Download className="w-3.5 h-3.5 text-blue-600" />
+                                                        <span>Export Markdown</span>
+                                                    </button>
+
+                                                    <button
+                                                        onClick={() => handleDownloadArchitecturePDF(activeDesignTab)}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-all shadow-sm shadow-blue-500/20"
+                                                        title={`Download ${activeDesignTab.toUpperCase()} PDF`}
+                                                    >
+                                                        <Download className="w-3.5 h-3.5" />
+                                                        <span>Export PDF</span>
+                                                    </button>
+
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* ── VIEW 1: EXECUTIVE SUMMARY ── */}
+                                        {activeDesignTab === 'executive' && (
+                                            <>
+                                                <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6">
+                                                    <h3 className="text-lg font-bold text-app-text-main mb-4 pb-2 border-b-2 border-app-border-light">
+                                                        Executive Summary & Agent Analysis
+                                                    </h3>
+                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
+                                                        {(() => {
+                                                            const analysisContent = result.analysis?.analysis || '';
+                                                            const explicitHtml = result.analysis?.html;
+                                                            const htmlToRender = explicitHtml || (isLikelyHtml(analysisContent) ? analysisContent : null);
+
+                                                            // Function to filter content for frontend display (hide ER diagrams and API sections)
+                                                            const filterContentForDisplay = (content) => {
+                                                                if (!content) return '';
+
+                                                                const lines = content.split('\n');
+                                                                const result = [];
+                                                                let inCodeBlock = false;
+                                                                let codeBlockType = '';
+                                                                let skipSection = false;
+                                                                let sectionLevel = 0;
+
+                                                                for (let i = 0; i < lines.length; i++) {
+                                                                    const line = lines[i];
+                                                                    const trimmed = line.trim();
+
+                                                                    // Detect section headers to skip
+                                                                    const headerMatch = trimmed.match(/^(#{1,6})\s+(.+)/);
+                                                                    if (headerMatch) {
+                                                                        const level = headerMatch[1].length;
+                                                                        const headerText = headerMatch[2].toLowerCase();
+
+                                                                        // Check if this is a section we want to hide
+                                                                        const shouldHide =
+                                                                            headerText.includes('api specification') ||
+                                                                            headerText.includes('api endpoint') ||
+                                                                            headerText.includes('core api') ||
+                                                                            headerText.includes('deliverable mapping') ||
+                                                                            headerText.includes('files to create') ||
+                                                                            headerText.includes('phase 1:') ||
+                                                                            headerText.includes('phase 2:') ||
+                                                                            headerText.includes('phase 3:') ||
+                                                                            headerText.includes('phase 4:') ||
+                                                                            headerText.includes('phase 5:') ||
+                                                                            (headerText.match(/^\d+\.\d+/) && (
+                                                                                headerText.includes('api') ||
+                                                                                headerText.includes('deliverable')
+                                                                            ));
+
+                                                                        if (shouldHide) {
+                                                                            skipSection = true;
+                                                                            sectionLevel = level;
+                                                                            continue;
+                                                                        } else if (skipSection && level <= sectionLevel) {
+                                                                            // End of skipped section - new section at same or higher level
+                                                                            skipSection = false;
+                                                                            sectionLevel = 0;
+                                                                        }
+                                                                    }
+
+                                                                    // Skip lines if we're in a hidden section
+                                                                    if (skipSection) {
+                                                                        continue;
+                                                                    }
+
+                                                                    // Handle code blocks
+                                                                    if (trimmed.startsWith('```')) {
+                                                                        if (!inCodeBlock) {
+                                                                            // Start of code block
+                                                                            inCodeBlock = true;
+                                                                            codeBlockType = trimmed.substring(3).trim().toLowerCase();
+                                                                            result.push(line);
+                                                                        } else {
+                                                                            // End of code block
+                                                                            inCodeBlock = false;
+                                                                            codeBlockType = '';
+                                                                            result.push(line);
+                                                                        }
+                                                                        continue;
+                                                                    }
+
+                                                                    result.push(line);
+                                                                }
+
+                                                                return result.join('\n');
+                                                            };
+
+                                                            if (processing && !analysisContent.trim()) {
+                                                                return (
+                                                                    <div className="text-sm text-app-text-muted italic">
+                                                                        Generating analysis...
+                                                                    </div>
+                                                                );
+                                                            }
+
+                                                            // Always use ReactMarkdown for consistent formatting
+                                                            return (
+                                                                <ReactMarkdown
+                                                                    remarkPlugins={[remarkGfm]}
+                                                                    components={markdownComponents}
+                                                                >
+                                                                    {filterContentForDisplay(analysisContent)}
+                                                                </ReactMarkdown>
+                                                            );
+                                                        })()}
+                                                    </div>
+                                                </div>
+
+                                                {/* Raw Source (Collapsed) */}
+                                                <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 mt-6">
+                                                    <details className="group">
+                                                        <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-app-text-light uppercase tracking-widest hover:text-app-text-label transition-colors">
+                                                            <span>View Processed Content</span>
+                                                            <span className="transition-transform group-open:rotate-180">
+                                                                <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
+                                                            </span>
+                                                        </summary>
+                                                        <div className="mt-4 pt-4 border-t border-app-bg-page">
+                                                            {(() => {
+                                                                // Check if we have structured sections
+                                                                const sections = result.analysis?.sections || result.extraction?.sections;
+                                                                const markdown = result.extraction?.markdown || '';
+
+                                                                // If we have sections OR markdown with section separators, show tabs
+                                                                if ((sections && sections.length > 0) || markdown.includes('---')) {
+                                                                    return <ProcessedContentTabs sections={sections} markdown={markdown} />;
+                                                                }
+
+                                                                // Fallback to HTML iframe if available
+                                                                if (result.extraction?.html) {
+                                                                    return (
+                                                                        <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
+                                                                            <iframe
+                                                                                srcDoc={result.extraction.html}
+                                                                                className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
+                                                                                title="Processed Content"
+                                                                                sandbox="allow-same-origin allow-scripts"
+                                                                            />
+                                                                        </div>
+                                                                    );
+                                                                }
+
+                                                                // Final fallback to plain markdown
+                                                                return (
+                                                                    <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
+                                                                        {markdown || '(No content extracted)'}
+                                                                    </div>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                    </details>
+                                                </div>
+                                            </>
+                                        )}
+
+                                        {/* ── VIEW 2: HIGH-LEVEL DESIGN (HLD) ── */}
+                                        {activeDesignTab === 'hld' && (
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 space-y-6">
+                                                {/* Simple Header Bar */}
+                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
+                                                    <div>
+                                                        <h2 className="text-xl font-extrabold text-gray-900">
+                                                            {hldDesign?.title || `High-Level Design Specification`}
+                                                        </h2>
+                                                        <p className="text-xs text-gray-500 mt-0.5">
+                                                            System context, C4 container topology, sequence workflows, and security matrix.
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            onClick={() => handleDownloadArchitectureMarkdown('hld')}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
+                                                            title="Download HLD Markdown"
+                                                        >
+                                                            <FileText className="w-3.5 h-3.5 text-blue-600" />
+                                                            <span>Markdown</span>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDownloadArchitecturePDF('hld')}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-all"
+                                                        >
+                                                            <Download className="w-3.5 h-3.5" />
+                                                            <span>Download PDF</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                {/* Architecture Validation & Traceability Indicators */}
+                                                {(hldDesign?.validation || hldDesign?.coverage || lldDesign?.consistency) && (
+                                                    <div className="flex flex-wrap items-center gap-2 p-3 bg-gradient-to-r from-blue-50/70 via-indigo-50/50 to-slate-50/70 border border-blue-100 rounded-lg text-xs">
+                                                        {hldDesign?.coverage && (
+                                                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-blue-200/80 rounded-md font-semibold text-blue-800 shadow-xs">
+                                                                <span className="text-gray-500 font-normal">Architecture Coverage:</span>
+                                                                <span className="font-bold text-blue-700">{hldDesign.coverage.coverage_percentage}%</span>
+                                                                <span className="text-[10px] text-gray-400">({hldDesign.coverage.covered_requirements}/{hldDesign.coverage.total_requirements})</span>
                                                             </div>
-                                                        );
-                                                    }
+                                                        )}
 
-                                                    // Always use ReactMarkdown for consistent formatting
-                                                    return (
+                                                        {hldDesign?.validation && (
+                                                            <div className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-md font-semibold shadow-xs ${
+                                                                hldDesign.validation.status === 'PASS' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'
+                                                            }`}>
+                                                                <span className="text-gray-500 font-normal">HLD Validation:</span>
+                                                                <span className="font-bold">{hldDesign.validation.status}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {lldDesign?.consistency && (
+                                                            <div className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-md font-semibold shadow-xs ${
+                                                                lldDesign.consistency.status === 'PASS' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'
+                                                            }`}>
+                                                                <span className="text-gray-500 font-normal">HLD ↔ LLD:</span>
+                                                                <span className="font-bold">{lldDesign.consistency.status}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {(() => {
+                                                            const warnCount = (hldDesign?.validation?.warnings?.length || 0) + (lldDesign?.consistency?.warnings?.length || 0);
+                                                            return (
+                                                                <div className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-gray-200 rounded-md font-medium text-gray-600 shadow-xs">
+                                                                    <span className="text-gray-400">Warnings:</span>
+                                                                    <span className="font-bold text-gray-700">{warnCount}</span>
+                                                                </div>
+                                                            );
+                                                        })()}
+
+                                                        {hldDesign?.coverage?.uncovered_items?.length > 0 ? (
+                                                            <div className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-50 border border-amber-300 rounded-md font-medium text-amber-800 shadow-xs" title={hldDesign.coverage.uncovered_items.map(u => `${u.id}: ${u.requirement}`).join('\n')}>
+                                                                <span>Uncovered Requirements:</span>
+                                                                <span className="font-bold">{hldDesign.coverage.uncovered_items.length}</span>
+                                                            </div>
+                                                        ) : hldDesign?.coverage ? (
+                                                            <div className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-emerald-600 font-medium">
+                                                                <span>All Requirements Covered</span>
+                                                            </div>
+                                                        ) : null}
+
+                                                        {hldDesign?.generation_source && (
+                                                            <div className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-slate-100 text-slate-600 border border-slate-200">
+                                                                <span>Source: {hldDesign.generation_source}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+
+                                                {/* HLD Content */}
+                                                {designLoading || designGenerating ? (
+                                                    <div className="py-20 flex flex-col items-center justify-center space-y-3">
+                                                        <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                                                        <p className="text-sm font-semibold text-gray-700">Synthesizing High-Level Design...</p>
+                                                        <p className="text-xs text-gray-400">Compiling container topologies, sequence workflows, and security matrices</p>
+                                                    </div>
+                                                ) : (
+                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
                                                         <ReactMarkdown
                                                             remarkPlugins={[remarkGfm]}
                                                             components={markdownComponents}
                                                         >
-                                                            {filterContentForDisplay(analysisContent)}
+                                                            {hldDesign?.markdown || '(No HLD generated yet. Re-analyze the BRD to generate.)'}
                                                         </ReactMarkdown>
-                                                    );
-                                                })()}
+                                                    </div>
+                                                )}
                                             </div>
-                                        </div>
+                                        )}
 
-                                        {/* Raw Source (Collapsed) */}
-                                        <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4">
-                                            <details className="group">
-                                                <summary className="flex justify-between items-center font-medium cursor-pointer list-none text-xs text-app-text-light uppercase tracking-widest hover:text-app-text-label transition-colors">
-                                                    <span>View Processed Content</span>
-                                                    <span className="transition-transform group-open:rotate-180">
-                                                        <svg fill="none" height="16" shapeRendering="geometricPrecision" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" viewBox="0 0 24 24" width="16"><path d="M6 9l6 6 6-6"></path></svg>
-                                                    </span>
-                                                </summary>
-                                                <div className="mt-4 pt-4 border-t border-app-bg-page">
-                                                    {(() => {
-                                                        // Check if we have structured sections
-                                                        const sections = result.analysis?.sections || result.extraction?.sections;
-                                                        const markdown = result.extraction?.markdown || '';
-
-                                                        // If we have sections OR markdown with section separators, show tabs
-                                                        if ((sections && sections.length > 0) || markdown.includes('---')) {
-                                                            return <ProcessedContentTabs sections={sections} markdown={markdown} />;
-                                                        }
-
-                                                        // Fallback to HTML iframe if available
-                                                        if (result.extraction?.html) {
-                                                            return (
-                                                                <div className="bg-app-bg-card rounded-lg border border-app-border overflow-hidden">
-                                                                    <iframe
-                                                                        srcDoc={result.extraction.html}
-                                                                        className="w-full h-[420px] sm:h-[520px] lg:h-[600px] border-0"
-                                                                        title="Processed Content"
-                                                                        sandbox="allow-same-origin allow-scripts"
-                                                                    />
-                                                                </div>
-                                                            );
-                                                        }
-
-                                                        // Final fallback to plain markdown
-                                                        return (
-                                                            <div className="bg-app-bg-page rounded-lg p-4 text-xs font-mono text-app-text-label max-h-96 overflow-y-auto whitespace-pre-wrap border border-app-border-light">
-                                                                {markdown || '(No content extracted)'}
-                                                            </div>
-                                                        );
-                                                    })()}
+                                        {/* ── VIEW 3: LOW-LEVEL DESIGN (LLD) ── */}
+                                        {activeDesignTab === 'lld' && (
+                                            <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 space-y-6">
+                                                {/* Simple Header Bar */}
+                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
+                                                    <div>
+                                                        <h2 className="text-xl font-extrabold text-gray-900">
+                                                             {lldDesign?.title || `Low-Level Design Specification`}
+                                                        </h2>
+                                                        <p className="text-xs text-gray-500 mt-0.5">
+                                                            Layered module contracts, ER diagram, database dictionary, SQL migration DDL, state machines, and file tree.
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <button
+                                                            onClick={handleCopyDdl}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
+                                                        >
+                                                            {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                                            <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy SQL DDL'}</span>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDownloadArchitectureMarkdown('lld')}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
+                                                            title="Download LLD Markdown"
+                                                        >
+                                                            <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                                                            <span>Markdown</span>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDownloadArchitecturePDF('lld')}
+                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all"
+                                                        >
+                                                            <Download className="w-3.5 h-3.5" />
+                                                            <span>Download PDF</span>
+                                                        </button>
+                                                    </div>
                                                 </div>
-                                            </details>
-                                        </div>
+
+                                                {/* Architecture Validation & Traceability Indicators (LLD View) */}
+                                                {(lldDesign?.validation || lldDesign?.consistency || lldDesign?.traceability) && (
+                                                    <div className="flex flex-wrap items-center gap-2 p-3 bg-gradient-to-r from-indigo-50/70 via-purple-50/50 to-slate-50/70 border border-indigo-100 rounded-lg text-xs">
+                                                        {lldDesign?.validation && (
+                                                            <div className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-md font-semibold shadow-xs ${
+                                                                lldDesign.validation.status === 'PASS' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'
+                                                            }`}>
+                                                                <span className="text-gray-500 font-normal">LLD Quality:</span>
+                                                                <span className="font-bold">{lldDesign.validation.status}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {lldDesign?.consistency && (
+                                                            <div className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-md font-semibold shadow-xs ${
+                                                                lldDesign.consistency.status === 'PASS' ? 'border-emerald-200 text-emerald-700' : 'border-amber-200 text-amber-700'
+                                                            }`}>
+                                                                <span className="text-gray-500 font-normal">HLD ↔ LLD:</span>
+                                                                <span className="font-bold">{lldDesign.consistency.status}</span>
+                                                            </div>
+                                                        )}
+
+                                                        {lldDesign?.traceability && (
+                                                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-indigo-200/80 rounded-md font-semibold text-indigo-800 shadow-xs">
+                                                                <span className="text-gray-500 font-normal">Traceability:</span>
+                                                                <span className="font-bold text-indigo-700 uppercase">{lldDesign.traceability.status}</span>
+                                                                {lldDesign.traceability.total_traced ? (
+                                                                    <span className="text-[10px] text-gray-400">({lldDesign.traceability.total_traced} mapped)</span>
+                                                                ) : null}
+                                                            </div>
+                                                        )}
+
+                                                        {lldDesign?.generation_source && (
+                                                            <div className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono uppercase bg-slate-100 text-slate-600 border border-slate-200">
+                                                                <span>Source: {lldDesign.generation_source}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+
+                                                {/* LLD Content */}
+                                                {designLoading || designGenerating ? (
+                                                    <div className="py-20 flex flex-col items-center justify-center space-y-3">
+                                                        <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                                                        <p className="text-sm font-semibold text-gray-700">Synthesizing Low-Level Design...</p>
+                                                        <p className="text-xs text-gray-400">Compiling data models, OpenAPI endpoint schemas, and migration DDL scripts</p>
+                                                    </div>
+                                                ) : (
+                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
+                                                        <ReactMarkdown
+                                                            remarkPlugins={[remarkGfm]}
+                                                            components={markdownComponents}
+                                                        >
+                                                            {lldDesign?.markdown || '(No LLD generated yet. Re-analyze the BRD to generate.)'}
+                                                        </ReactMarkdown>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -4487,78 +5043,6 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     )}
                 </div>
             </div>
-
-            {/* Architecture Fullscreen Modal */}
-            {isArchModalOpen && result?.analysis?.architecture && (() => {
-                const arch = result.analysis.architecture || {};
-                const nodes = Array.isArray(arch.nodes) ? arch.nodes : [];
-                const edges = Array.isArray(arch.edges) ? arch.edges : [];
-
-                const rfNodes = layoutArchitectureGraph(nodes, edges, 'TB');
-
-                const rfEdges = edges.map((edge, idx) => ({
-                    id: String(edge.id || `e-${idx}`),
-                    source: String(edge.from),
-                    target: String(edge.to),
-                    label: edge.description || undefined,
-                }));
-
-                return (
-                    <div className="fixed inset-0 z-[400] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-                        <div className="relative w-full max-w-6xl h-[80vh] rounded-2xl bg-app-bg-card border border-app-border-light shadow-2xl flex flex-col">
-                            <div className="flex items-center justify-between px-4 py-3 border-b border-app-border-light">
-                                <h2 className="text-sm font-bold text-app-text-main">
-                                    User Flow Diagram (Business Process View)
-                                </h2>
-                                <button
-                                    type="button"
-                                    onClick={() => setIsArchModalOpen(false)}
-                                    className="text-xs font-semibold text-app-text-muted hover:text-app-text-main px-2 py-1 rounded-md"
-                                >
-                                    Close
-                                </button>
-                            </div>
-                            <div className="flex-1 bg-app-bg-page overflow-auto p-6">
-                                {(() => {
-                                    // Extract mermaid diagram from analysis content
-                                    const analysisContent = result.analysis?.analysis || '';
-                                    const mermaidMatch = analysisContent.match(/```mermaid\s*([\s\S]*?)```/);
-                                    const mermaidCode = mermaidMatch ? mermaidMatch[1].trim() : null;
-
-                                    if (mermaidCode) {
-                                        return <MermaidDiagram code={mermaidCode} />;
-                                    }
-
-                                    // Fallback to ReactFlow if no mermaid found
-                                    if (rfNodes.length > 0) {
-                                        return (
-                                            <div className="h-full">
-                                                <ReactFlow
-                                                    nodes={rfNodes}
-                                                    edges={rfEdges}
-                                                    fitView
-                                                    nodesDraggable={false}
-                                                    nodesConnectable={false}
-                                                    elementsSelectable={false}
-                                                >
-                                                    <Background gap={16} size={1} />
-                                                    <Controls showInteractive={false} />
-                                                </ReactFlow>
-                                            </div>
-                                        );
-                                    }
-
-                                    return (
-                                        <div className="h-full flex items-center justify-center text-xs text-app-text-muted">
-                                            Architecture details are not available for this analysis.
-                                        </div>
-                                    );
-                                })()}
-                            </div>
-                        </div>
-                    </div>
-                );
-            })()}
         </div>
     );
 }

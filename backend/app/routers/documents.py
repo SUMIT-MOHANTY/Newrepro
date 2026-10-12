@@ -1945,6 +1945,228 @@ async def upload_and_analyze_document(
     }
 
 
-# ===== GOVERNANCE QUESTIONNAIRE ENDPOINTS =====
+# ═══════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE DESIGN (HLD & LLD) ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+class GenerateDesignPayload(BaseModel):
+    design_type: Optional[str] = "all"  # "all" | "hld" | "lld"
+    user_preferences: Optional[str] = None
+    force_regenerate: Optional[bool] = False
+
+
+@router.get("/documents/{document_id}/design")
+async def get_document_architecture_design(
+    document_id: int,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve the industry-grade High-Level Design (HLD) and Low-Level Design (LLD)
+    for a given document. If not present in stored analysis, auto-synthesizes them.
+    """
+    db_doc = db.query(models.Document).filter(models.Document.id == document_id).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    analysis_data = {}
+    if db_doc.analysis_result:
+        try:
+            analysis_data = json.loads(db_doc.analysis_result)
+        except Exception:
+            analysis_data = {}
+
+    from app.services.ai.architecture_design_service import architecture_design_service
+
+    if getattr(db_doc, "project_token", None):
+        from app.integrations.llm.llm_gateway import current_project_token_var
+        current_project_token_var.set(db_doc.project_token)
+
+    p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
+    brd_content = db_doc.full_content or db_doc.content_preview or analysis_data.get("analysis") or ""
+    changed = False
+
+    # Check or generate HLD via AI architecture design service
+    hld = analysis_data.get("hld")
+    if not hld or not isinstance(hld, dict) or not hld.get("markdown"):
+        hld_res = await architecture_design_service.generate_high_level_design(
+            brd_content=brd_content,
+            analysis_data=analysis_data,
+            project_name=p_name
+        )
+        analysis_data["hld"] = hld_res
+        changed = True
+
+    # Check or generate LLD via AI architecture design service
+    lld = analysis_data.get("lld")
+    if not lld or not isinstance(lld, dict) or not lld.get("markdown"):
+        lld_res = await architecture_design_service.generate_low_level_design(
+            brd_content=brd_content,
+            hld_content=(analysis_data.get("hld") or {}).get("markdown"),
+            analysis_data=analysis_data,
+            project_name=p_name
+        )
+        analysis_data["lld"] = lld_res
+        changed = True
+
+    if changed:
+        try:
+            db_doc.analysis_result = json.dumps(analysis_data)
+            db.add(db_doc)
+            db.commit()
+            db.refresh(db_doc)
+        except Exception as e:
+            logger.warning(f"Failed to persist synthesized HLD/LLD to database: {e}")
+
+    return {
+        "status": "success",
+        "document_id": document_id,
+        "filename": db_doc.filename,
+        "hld": analysis_data.get("hld"),
+        "lld": analysis_data.get("lld")
+    }
+
+
+@router.post("/documents/{document_id}/design/generate")
+async def generate_document_architecture_design(
+    document_id: int,
+    payload: GenerateDesignPayload = GenerateDesignPayload(),
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate or regenerate industry-grade High-Level Design (HLD) and/or
+    Low-Level Design (LLD) for a BRD document using the AI architecture design service.
+    """
+    db_doc = db.query(models.Document).filter(models.Document.id == document_id).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    analysis_data = {}
+    if db_doc.analysis_result:
+        try:
+            analysis_data = json.loads(db_doc.analysis_result)
+        except Exception:
+            analysis_data = {}
+
+    if getattr(db_doc, "project_token", None):
+        from app.integrations.llm.llm_gateway import current_project_token_var
+        current_project_token_var.set(db_doc.project_token)
+
+    p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
+    brd_content = db_doc.full_content or analysis_data.get("analysis") or ""
+
+    from app.services.ai.architecture_design_service import architecture_design_service
+
+    design_type = (payload.design_type or "all").lower()
+
+    if design_type == "hld":
+        hld_res = await architecture_design_service.generate_high_level_design(
+            brd_content=brd_content,
+            analysis_data=analysis_data,
+            project_name=p_name,
+            user_preferences=payload.user_preferences
+        )
+        analysis_data["hld"] = hld_res
+    elif design_type == "lld":
+        hld_content = (analysis_data.get("hld") or {}).get("markdown")
+        lld_res = await architecture_design_service.generate_low_level_design(
+            brd_content=brd_content,
+            hld_content=hld_content,
+            analysis_data=analysis_data,
+            project_name=p_name,
+            user_preferences=payload.user_preferences
+        )
+        analysis_data["lld"] = lld_res
+    else:  # "all"
+        suite = await architecture_design_service.generate_complete_design_suite(
+            brd_content=brd_content,
+            analysis_data=analysis_data,
+            project_name=p_name,
+            user_preferences=payload.user_preferences
+        )
+        analysis_data["hld"] = suite.get("hld")
+        analysis_data["lld"] = suite.get("lld")
+        analysis_data["architecture_summary"] = suite.get("summary")
+
+    db_doc.analysis_result = json.dumps(analysis_data)
+    db.add(db_doc)
+    db.commit()
+    db.refresh(db_doc)
+
+    return {
+        "status": "success",
+        "document_id": document_id,
+        "filename": db_doc.filename,
+        "hld": analysis_data.get("hld"),
+        "lld": analysis_data.get("lld"),
+        "architecture_summary": analysis_data.get("architecture_summary")
+    }
+
+
+@router.get("/documents/{document_id}/design/export")
+async def export_document_architecture_design(
+    document_id: int,
+    design_type: str = Query("hld", description="Type of design: 'hld' or 'lld'"),
+    format: str = Query("markdown", description="Export format: 'markdown'"),
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Export the High-Level Design (HLD) or Low-Level Design (LLD) as a standalone file.
+    """
+    db_doc = db.query(models.Document).filter(models.Document.id == document_id).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    analysis_data = {}
+    if db_doc.analysis_result:
+        try:
+            analysis_data = json.loads(db_doc.analysis_result)
+        except Exception:
+            analysis_data = {}
+
+    p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
+    brd_content = db_doc.full_content or db_doc.content_preview or analysis_data.get("analysis") or ""
+    dtype = design_type.lower().strip()
+
+    if dtype == "lld":
+        design_obj = analysis_data.get("lld")
+        if not design_obj or not design_obj.get("markdown"):
+            from app.services.ai.architecture_design_service import architecture_design_service
+            res = await architecture_design_service.generate_low_level_design(
+                brd_content=brd_content,
+                analysis_data=analysis_data,
+                project_name=p_name
+            )
+            md = res.get("markdown", "")
+        else:
+            md = design_obj.get("markdown")
+        doc_tag = "LLD"
+    else:
+        design_obj = analysis_data.get("hld")
+        if not design_obj or not design_obj.get("markdown"):
+            from app.services.ai.architecture_design_service import architecture_design_service
+            res = await architecture_design_service.generate_high_level_design(
+                brd_content=brd_content,
+                analysis_data=analysis_data,
+                project_name=p_name
+            )
+            md = res.get("markdown", "")
+        else:
+            md = design_obj.get("markdown")
+        doc_tag = "HLD"
+
+    clean_proj = re.sub(r"[^A-Za-z0-9_-]", "_", p_name)
+    export_filename = f"{clean_proj}_{doc_tag}_Specification.md"
+
+    return Response(
+        content=md.encode("utf-8"),
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{export_filename}"'
+        }
+    )
+
 
 

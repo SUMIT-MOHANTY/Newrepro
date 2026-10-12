@@ -52,18 +52,23 @@ class LLMGatewayClient:
         """
         Send a completion request and extract the text response directly.
         """
-        payload = {
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            **kwargs,
-        }
-        if model:
-            payload["model"] = model
+        extra_kwargs = dict(kwargs)
+        timeout = extra_kwargs.pop("timeout", 120.0)
+        if "max_tokens" not in extra_kwargs:
+            extra_kwargs["max_tokens"] = max_tokens
 
         with ai_purpose(purpose or "agent_execution"):
             with ai_project_context(project_token=project_token, project_name=project_name):
-                return await self._raw.call_llm_and_extract(payload)
+                return await self._raw.call_llm_and_extract(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    timeout=timeout,
+                    purpose=purpose,
+                    project_token=project_token,
+                    project_name=project_name,
+                    **extra_kwargs,
+                )
 
     async def complete_raw(
         self,
