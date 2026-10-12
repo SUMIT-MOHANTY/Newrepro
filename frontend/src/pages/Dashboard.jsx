@@ -2163,6 +2163,52 @@ const Dashboard = ({
             }
         }
 
+        let currentProgress = 10;
+        let progressTicker = null;
+
+        const updateProgressSmoothly = (newProgress, message) => {
+            currentProgress = Math.max(currentProgress, newProgress);
+            setProjectState(taskKey, {
+                progress: Math.floor(currentProgress),
+                ...(message ? { progressMessage: message } : {})
+            });
+        };
+
+        const startTicker = (targetMax = 86, messages = []) => {
+            if (progressTicker) clearInterval(progressTicker);
+            progressTicker = setInterval(() => {
+                if (currentProgress < targetMax) {
+                    let increment = 1.0;
+                    if (currentProgress < 30) {
+                        increment = 1.5;
+                    } else if (currentProgress < 55) {
+                        increment = 1.0;
+                    } else if (currentProgress < 72) {
+                        increment = 0.7;
+                    } else if (currentProgress < 82) {
+                        increment = 0.4;
+                    } else {
+                        increment = 0.15;
+                    }
+                    currentProgress = Math.min(targetMax, currentProgress + increment);
+                    const msg = messages.length > 0
+                        ? messages[Math.min(messages.length - 1, Math.floor(((currentProgress - 10) / Math.max(1, targetMax - 10)) * messages.length))]
+                        : null;
+                    setProjectState(taskKey, {
+                        progress: Math.floor(currentProgress),
+                        ...(msg ? { progressMessage: msg } : {})
+                    });
+                }
+            }, 300);
+        };
+
+        const stopTicker = () => {
+            if (progressTicker) {
+                clearInterval(progressTicker);
+                progressTicker = null;
+            }
+        };
+
         setProjectState(taskKey, { processing: true, error: '', result: null, aiQuestions: [], userAnswers: {}, userFeedback: '' });
 
         try {
@@ -2173,10 +2219,18 @@ const Dashboard = ({
             const contentSections = [];
             let uploadedFilePathsList = [];
 
-            setProjectState(taskKey, { progress: 10, progressMessage: `Preparing content for ${selectedProject.name}...` });
+            updateProgressSmoothly(10, `Preparing content for ${selectedProject.name}...`);
 
             // 1. Process uploaded files (Upload tab)
             if (hasFiles) {
+                startTicker(86, [
+                    'Uploading project document to server...',
+                    'Extracting document content and text...',
+                    'Analyzing document structure and tables...',
+                    'Parsing requirements and specifications...',
+                    'Finalizing document extraction...'
+                ]);
+
                 const formData = new FormData();
                 for (let i = 0; i < files.length; i++) {
                     formData.append('files', files[i]);
@@ -2187,6 +2241,8 @@ const Dashboard = ({
                     headers: { 'Authorization': `Bearer ${token}` },
                     body: formData
                 });
+
+                stopTicker();
 
                 if (uploadResponse.status === 401) {
                     handleLogout();
@@ -2217,11 +2273,17 @@ const Dashboard = ({
                     }
                     filename = uploadData.filename;
                 }
-                setProjectState(taskKey, { progress: 20, progressMessage: 'Uploaded files processed...' });
+                updateProgressSmoothly(87, 'Document content extracted successfully...');
+                await new Promise(r => setTimeout(r, 250));
             }
 
             // 2. Process linked files (Linked Doc tab)
             if (hasLinkedFiles) {
+                startTicker(68, [
+                    'Uploading linked documents...',
+                    'Extracting linked content...'
+                ]);
+
                 const formData = new FormData();
                 for (let i = 0; i < linkedFiles.length; i++) {
                     formData.append('files', linkedFiles[i]);
@@ -2232,6 +2294,8 @@ const Dashboard = ({
                     headers: { 'Authorization': `Bearer ${token}` },
                     body: formData
                 });
+
+                stopTicker();
 
                 if (uploadResponse.ok) {
                     const uploadData = await uploadResponse.json();
@@ -2257,7 +2321,7 @@ const Dashboard = ({
                     }
                     if (!filename) filename = uploadData.filename;
                 }
-                setProjectState(taskKey, { progress: 30, progressMessage: 'Linked documents processed...' });
+                updateProgressSmoothly(70, 'Linked documents processed...');
             }
 
             // 3. Process text input (Text tab)
@@ -2268,7 +2332,7 @@ const Dashboard = ({
                     html: `<pre style="white-space: pre-wrap; font-family: inherit;">${textInput}</pre>`
                 });
                 if (!filename) filename = 'Manual_Input_' + new Date().toISOString().slice(0, 10);
-                setProjectState(taskKey, { progress: 40, progressMessage: 'Text input processed...' });
+                updateProgressSmoothly(72, 'Text input processed...');
             }
 
             // 4. Process URL (URL tab)
@@ -2277,7 +2341,9 @@ const Dashboard = ({
                 let urlSourceUrl = urlSource || urlInput.trim();
 
                 if (!urlMarkdown && urlInput.trim()) {
+                    startTicker(74, ['Fetching website content...']);
                     const fetchedData = await fetchRequirementsFromUrl(urlInput, taskKey);
+                    stopTicker();
                     if (fetchedData) {
                         urlMarkdown = fetchedData.markdown;
                         urlSourceUrl = fetchedData.url || urlInput.trim();
@@ -2292,11 +2358,12 @@ const Dashboard = ({
                     });
                     if (!filename) filename = 'URL_Requirements_' + new Date().toISOString().slice(0, 10);
                 }
-                setProjectState(taskKey, { progress: 50, progressMessage: 'URL content processed...' });
+                updateProgressSmoothly(75, 'URL content processed...');
             }
 
             // 5. Process skill files (Skills tab)
             if (hasSkills) {
+                startTicker(76, ['Uploading skill files...']);
                 const formData = new FormData();
                 for (let i = 0; i < skillFiles.length; i++) {
                     formData.append('files', skillFiles[i]);
@@ -2307,6 +2374,8 @@ const Dashboard = ({
                     headers: { 'Authorization': `Bearer ${token}` },
                     body: formData
                 });
+
+                stopTicker();
 
                 if (uploadResponse.ok) {
                     const uploadData = await uploadResponse.json();
@@ -2366,7 +2435,7 @@ const Dashboard = ({
                         console.error('Failed to parse and save skills to governance context:', skillErr);
                     }
                 }
-                setProjectState(taskKey, { progress: 60, progressMessage: 'Skills processed...' });
+                updateProgressSmoothly(78, 'Skills processed...');
             }
 
             // 6. Combine all sections (for markdown / AI payload)
@@ -2384,7 +2453,8 @@ const Dashboard = ({
                 filename += ' (Combined)';
             }
 
-            setProjectState(taskKey, { progress: 70, progressMessage: 'All content combined...' });
+            updateProgressSmoothly(90, 'All content compiled...');
+            await new Promise(r => setTimeout(r, 200));
 
             // Build structured sections for UI display (includes repo context as a display-only section)
             const displaySections = contentSections.map(s => ({ title: s.title, content: s.markdown }));
@@ -2402,9 +2472,9 @@ const Dashboard = ({
             }
 
             if (isAllGovernanceSkippedCase && analyzeWithAi) {
+                updateProgressSmoothly(100, 'Analysis blocked pending IT approval.');
                 setProjectState(taskKey, {
-                    progress: 100,
-                    progressMessage: 'Analysis blocked pending IT approval.',
+                    processing: false,
                     error: ''
                 });
                 navigate('/new-project/governance');
@@ -2416,12 +2486,10 @@ const Dashboard = ({
 
             // For revisions OR first-time uploads without governance, navigate to governance page
             if (!hasGovernanceAssessment || isRevisionUpload) {
-                setProjectState(taskKey, {
-                    progress: 85,
-                    progressMessage: isRevisionUpload
-                        ? 'Revision content uploaded. Combining with previous content...'
-                        : 'Requirement screening complete. Saving Document before Governance...',
-                });
+                updateProgressSmoothly(93, isRevisionUpload
+                    ? 'Revision content uploaded. Combining with previous content...'
+                    : 'Requirement screening complete. Saving Document snapshot before Governance...');
+                await new Promise(r => setTimeout(r, 200));
 
                 // If this is a revision, include previous revision content for AI context
                 let finalMarkdownForAnalysis = combinedMarkdown;
@@ -2486,6 +2554,8 @@ const Dashboard = ({
                     skills_files: hasSkills ? skillFiles.map(f => f.name) : [],
                 };
 
+                updateProgressSmoothly(96, 'Saving screening snapshot to database...');
+
                 await savePendingScreeningToHistory({
                     filename,
                     markdown: finalMarkdownForAnalysis,
@@ -2495,6 +2565,13 @@ const Dashboard = ({
                     file_path: resolvedFilePath,
                     screeningInputs,
                 });
+
+                updateProgressSmoothly(100, isRevisionUpload
+                    ? 'Revision saved! Continuing to Governance...'
+                    : 'Screening complete! Redirecting to Governance...');
+
+                // Brief 600ms pause so user visually sees the 100% completion before navigating
+                await new Promise(resolve => setTimeout(resolve, 600));
 
                 setProjectState(taskKey, {
                     processing: false,
@@ -2552,8 +2629,10 @@ const Dashboard = ({
             }
 
         } catch (err) {
+            stopTicker();
             setProjectState(taskKey, { error: err.message });
         } finally {
+            stopTicker();
             setProjectState(taskKey, { processing: false });
         }
     };
