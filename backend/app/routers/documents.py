@@ -1976,7 +1976,11 @@ async def get_document_architecture_design(
         except Exception:
             analysis_data = {}
 
-    from app.services.ai.architecture_design_service import architecture_design_service
+    from app.services.ai.architecture_design_service import architecture_design_service, sanitize_design_markdown_date
+
+    if getattr(db_doc, "project_token", None):
+        from app.integrations.llm.llm_gateway import current_project_token_var
+        current_project_token_var.set(db_doc.project_token)
 
     if getattr(db_doc, "project_token", None):
         from app.integrations.llm.llm_gateway import current_project_token_var
@@ -1996,6 +2000,11 @@ async def get_document_architecture_design(
         )
         analysis_data["hld"] = hld_res
         changed = True
+    elif isinstance(hld, dict) and hld.get("markdown"):
+        clean_md = sanitize_design_markdown_date(hld["markdown"])
+        if clean_md != hld["markdown"]:
+            hld["markdown"] = clean_md
+            changed = True
 
     # Check or generate LLD via AI architecture design service
     lld = analysis_data.get("lld")
@@ -2008,6 +2017,11 @@ async def get_document_architecture_design(
         )
         analysis_data["lld"] = lld_res
         changed = True
+    elif isinstance(lld, dict) and lld.get("markdown"):
+        clean_md = sanitize_design_markdown_date(lld["markdown"])
+        if clean_md != lld["markdown"]:
+            lld["markdown"] = clean_md
+            changed = True
 
     if changed:
         try:
@@ -2156,6 +2170,9 @@ async def export_document_architecture_design(
         else:
             md = design_obj.get("markdown")
         doc_tag = "HLD"
+
+    from app.services.ai.architecture_design_service import sanitize_design_markdown_date
+    md = sanitize_design_markdown_date(md)
 
     clean_proj = re.sub(r"[^A-Za-z0-9_-]", "_", p_name)
     export_filename = f"{clean_proj}_{doc_tag}_Specification.md"

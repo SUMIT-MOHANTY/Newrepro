@@ -10,6 +10,7 @@ import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
 import mermaid from 'mermaid';
+import { generateArchitectureDesignPDF } from './architecturePdfGenerator';
 
 // Initialize mermaid with configuration
 // Initialize mermaid with optimal responsive configuration
@@ -55,17 +56,40 @@ if (typeof mermaid !== 'undefined' && mermaid.parseError) {
 // and crashes with "Cannot read properties of null (reading 'firstChild')" if multiple diagrams render concurrently.
 let mermaidRenderQueue = Promise.resolve();
 
+// Dedicated offscreen container for Mermaid rendering to prevent layout thrashing, scroll jumping, and screen flickering
+let offscreenMermaidVault = null;
+const getOffscreenMermaidVault = () => {
+    if (typeof document === 'undefined') return null;
+    let vault = document.getElementById('mermaid-offscreen-render-vault');
+    if (!vault) {
+        vault = document.createElement('div');
+        vault.id = 'mermaid-offscreen-render-vault';
+        vault.setAttribute('aria-hidden', 'true');
+        vault.style.cssText = 'position:fixed;top:-99999px;left:-99999px;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;z-index:-9999;';
+        document.body.appendChild(vault);
+    }
+    return vault;
+};
+
 const safeRenderMermaid = (id, code) => {
     return new Promise((resolve, reject) => {
         mermaidRenderQueue = mermaidRenderQueue
             .catch(() => {}) // keep queue alive even if a previous diagram failed
             .then(async () => {
+                const container = getOffscreenMermaidVault();
                 try {
-                    const res = await mermaid.render(id, code);
+                    const res = await mermaid.render(id, code, container || undefined);
+                    try {
+                        if (container) container.innerHTML = '';
+                        const el = document.getElementById(id);
+                        if (el && el.parentNode) el.parentNode.removeChild(el);
+                        const dEl = document.getElementById('d' + id);
+                        if (dEl && dEl.parentNode) dEl.parentNode.removeChild(dEl);
+                    } catch (e) {}
                     resolve(res);
                 } catch (err) {
-                    // Clean up only THIS diagram's temporary elements from DOM, NEVER all diagrams!
                     try {
+                        if (container) container.innerHTML = '';
                         const el = document.getElementById(id);
                         if (el && el.parentNode) el.parentNode.removeChild(el);
                         const dEl = document.getElementById('d' + id);
@@ -77,13 +101,20 @@ const safeRenderMermaid = (id, code) => {
     });
 };
 
+// Helper to ensure architecture design markdown header always reflects current date
+const sanitizeDesignMarkdownDate = (markdown) => {
+    if (!markdown || typeof markdown !== 'string') return markdown;
+    const currentDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    return markdown.replace(/(\*\*Date:\*\*)\s*[^\n\r]+/i, `$1 ${currentDate}  `);
+};
+
 // Helper to sanitize and fix common LLM Mermaid syntax errors and word truncations
 const sanitizeMermaidCode = (rawCode) => {
     if (!rawCode || typeof rawCode !== 'string') return '';
     let cleaned = rawCode.trim();
 
     // 1. Strip wrapping markdown code block ticks if present
-    cleaned = cleaned.replace(/^```(?:mermaid|erDiagram|erdiagram|flowchart|graph)?\s*/i, '');
+    cleaned = cleaned.replace(/^```(?:mermaid|erDiagram|erdiagram|flowchart|graph|sequenceDiagram|sequence|classDiagram|stateDiagram|c4)?\s*/i, '');
     cleaned = cleaned.replace(/\s*```$/, '');
     cleaned = cleaned.trim();
 
@@ -98,7 +129,16 @@ const sanitizeMermaidCode = (rawCode) => {
     // 3. Fix duplicate diagram headers at the start (e.g. erDiagram\nerDiagram or graph TD\ngraph TD)
     cleaned = cleaned.replace(/^(erDiagram|graph\s+[A-Z]+|flowchart\s+[A-Z]+|sequenceDiagram|classDiagram|stateDiagram)[\s\n]+\1/i, '$1');
 
-    // 4. Detect if this is an ER diagram
+    // 4. Detect if this is an Sequence diagram missing header
+    const isSeq = cleaned.startsWith('sequenceDiagram') ||
+                  cleaned.toLowerCase().startsWith('sequencediagram') ||
+                  cleaned.includes('->>') ||
+                  cleaned.includes('-->>');
+    if (isSeq && !cleaned.toLowerCase().startsWith('sequencediagram')) {
+        cleaned = 'sequenceDiagram\n' + cleaned;
+    }
+
+    // 5. Detect if this is an ER diagram
     const isEr = cleaned.startsWith('erDiagram') ||
                  cleaned.toLowerCase().startsWith('erdiagram') ||
                  cleaned.toLowerCase().includes('erdiagram') ||
@@ -830,13 +870,16 @@ export default function AgentAnalysis({
     const [designLoading, setDesignLoading] = useState(false);
     const [designGenerating, setDesignGenerating] = useState(false);
     const [copiedSnippet, setCopiedSnippet] = useState(null);
+    const [exportingPdfType, setExportingPdfType] = useState(null);
 
     useEffect(() => {
         if (result?.analysis?.hld) {
-            setHldDesign(result.analysis.hld);
+            const hld = result.analysis.hld;
+            setHldDesign(hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld);
         }
         if (result?.analysis?.lld) {
-            setLldDesign(result.analysis.lld);
+            const lld = result.analysis.lld;
+            setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
         }
     }, [result]);
 
@@ -850,8 +893,14 @@ export default function AgentAnalysis({
             });
             if (res.ok) {
                 const data = await res.json();
-                if (data.hld) setHldDesign(data.hld);
-                if (data.lld) setLldDesign(data.lld);
+                if (data.hld) {
+                    const hld = data.hld;
+                    setHldDesign(hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld);
+                }
+                if (data.lld) {
+                    const lld = data.lld;
+                    setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
+                }
             }
         } catch (err) {
             console.error('Failed to fetch architecture design:', err);
@@ -874,8 +923,14 @@ export default function AgentAnalysis({
             });
             if (res.ok) {
                 const data = await res.json();
-                if (data.hld) setHldDesign(data.hld);
-                if (data.lld) setLldDesign(data.lld);
+                if (data.hld) {
+                    const hld = data.hld;
+                    setHldDesign(hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld);
+                }
+                if (data.lld) {
+                    const lld = data.lld;
+                    setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
+                }
             }
         } catch (err) {
             console.error('Failed to regenerate architecture design:', err);
@@ -886,7 +941,7 @@ export default function AgentAnalysis({
 
     const handleDownloadArchitectureMarkdown = (type = 'hld') => {
         const design = type === 'lld' ? lldDesign : hldDesign;
-        const content = design?.markdown || '';
+        const content = sanitizeDesignMarkdownDate(design?.markdown || '');
         if (!content) return;
         const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -901,27 +956,35 @@ export default function AgentAnalysis({
     };
 
     const handleDownloadArchitecturePDF = async (type = 'hld') => {
+        if (exportingPdfType) return;
         const design = type === 'lld' ? lldDesign : hldDesign;
-        const content = design?.markdown || '';
+        const content = sanitizeDesignMarkdownDate(design?.markdown || '');
         if (!content) return;
-        const { generateArchitectureDesignPDF } = await import('./architecturePdfGenerator');
-        await generateArchitectureDesignPDF({
-            title: design.title || `${type.toUpperCase()} Specification`,
-            documentType: type.toUpperCase(),
-            markdownContent: content,
-            projectName: result?.filename || 'Enterprise Solution',
-            version: design.version || '1.0.0'
-        });
+        setExportingPdfType(type);
+        try {
+            await generateArchitectureDesignPDF({
+                title: design.title || `${type.toUpperCase()} Specification`,
+                documentType: type.toUpperCase(),
+                markdownContent: content,
+                projectName: result?.filename || 'Enterprise Solution',
+                version: design.version || '1.0.0',
+                renderMermaidToPng
+            });
+        } catch (err) {
+            console.error('Failed to export architecture PDF:', err);
+        } finally {
+            setExportingPdfType(null);
+        }
     };
 
-    const handleCopyDdl = () => {
+    const handleCopyDdl = useCallback(() => {
         const content = lldDesign?.markdown || '';
         const match = content.match(/```sql([\s\S]*?)```/);
         const ddl = match ? match[1].trim() : content;
         navigator.clipboard.writeText(ddl);
         setCopiedSnippet('ddl');
         setTimeout(() => setCopiedSnippet(null), 2500);
-    };
+    }, [lldDesign]);
 
     const handleSelectRevisionDoc = (doc) => {
         if (!doc || !doc.id) return;
@@ -932,8 +995,14 @@ export default function AgentAnalysis({
             setUserAnswers(docAnalysis.userAnswers || {});
             setUserFeedback(docAnalysis.userFeedback || '');
             setCompletedStages(docAnalysis.stages || {});
-            if (docAnalysis.hld) setHldDesign(docAnalysis.hld);
-            if (docAnalysis.lld) setLldDesign(docAnalysis.lld);
+            if (docAnalysis.hld) {
+                const h = docAnalysis.hld;
+                setHldDesign(h?.markdown ? { ...h, markdown: sanitizeDesignMarkdownDate(h.markdown) } : h);
+            }
+            if (docAnalysis.lld) {
+                const l = docAnalysis.lld;
+                setLldDesign(l?.markdown ? { ...l, markdown: sanitizeDesignMarkdownDate(l.markdown) } : l);
+            }
             setResult({
                 id: doc.id,
                 filename: doc.filename,
@@ -2081,8 +2150,14 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     setUserAnswers(savedAnswers);
                     setUserFeedback(savedFeedback);
                     setCompletedStages(savedStages);  // Restore completed stages
-                    if (storedAnalysis?.hld) setHldDesign(storedAnalysis.hld);
-                    if (storedAnalysis?.lld) setLldDesign(storedAnalysis.lld);
+                    if (storedAnalysis?.hld) {
+                        const hld = storedAnalysis.hld;
+                        setHldDesign(hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld);
+                    }
+                    if (storedAnalysis?.lld) {
+                        const lld = storedAnalysis.lld;
+                        setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
+                    }
 
                     const loadedResult = {
                         id: latestDocument.id,
@@ -2147,7 +2222,8 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                         try {
                             const jobIdPattern = /analysis_\d+_\d+_[a-f0-9]+/;
                             const potentialJobId = `analysis_${token ? JSON.parse(atob(token.split('.')[1])).user_id : 'unknown'}_`;
-                            // Try to find if there's an active analysis job
+
+                            // Try to find if there's an active analysis job
                             // We'll check if result exists OR if we should just not show error yet
                             const hasResult = hasCompletedDocumentAnalysis(latestDocument);
  
@@ -2814,7 +2890,37 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
     // ── Memoized custom Markdown components to prevent unmounting/remounting on parent state change ──
     const markdownComponents = useMemo(() => ({
         h1: ({ node, ...props }) => <h1 className="text-lg font-bold text-gray-900 mt-6 mb-3 pb-2 border-b-2 border-gray-200" {...props} />,
-        h2: ({ node, ...props }) => <h2 className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-200" {...props} />,
+        h2: ({ node, children, ...props }) => {
+            const extractText = (elem) => {
+                if (!elem) return '';
+                if (typeof elem === 'string') return elem;
+                if (Array.isArray(elem)) return elem.map(extractText).join('');
+                if (elem?.props?.children) return extractText(elem.props.children);
+                return String(elem || '');
+            };
+            const headingText = extractText(children);
+            const isDatabaseDesign = /database detailed design/i.test(headingText);
+
+            if (isDatabaseDesign) {
+                return (
+                    <div className="flex flex-wrap items-center justify-between gap-3 mt-6 mb-3 pb-2 border-b-2 border-gray-200">
+                        <h2 className="text-base font-bold text-gray-900 m-0 border-b-0" {...props}>
+                            {children}
+                        </h2>
+                        <button
+                            onClick={handleCopyDdl}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-all shadow-sm flex-shrink-0"
+                            title="Copy SQL Migration DDL"
+                        >
+                            {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                            <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy DDL'}</span>
+                        </button>
+                    </div>
+                );
+            }
+
+            return <h2 className="text-base font-bold text-gray-900 mt-5 mb-2 pb-1 border-b border-gray-200" {...props}>{children}</h2>;
+        },
         h3: ({ node, ...props }) => <h3 className="text-sm font-semibold text-gray-800 mt-4 mb-2" {...props} />,
         h4: ({ node, ...props }) => <h4 className="text-sm font-semibold text-gray-700 mt-3 mb-1" {...props} />,
         p: ({ node, ...props }) => <p className="text-sm text-gray-700 leading-relaxed mb-3" {...props} />,
@@ -2822,17 +2928,16 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
         ol: ({ node, ...props }) => <ol className="list-decimal list-outside ml-5 space-y-1 mb-3 text-sm text-gray-700" {...props} />,
         li: ({ node, ...props }) => <li className="leading-relaxed text-sm" {...props} />,
         table: ({ node, ...props }) => (
-            <div className="overflow-x-auto my-4 w-full border border-gray-200 rounded-lg max-w-full">
-                <table className="min-w-max w-full divide-y divide-gray-200 table-auto text-xs" {...props} />
+            <div className="overflow-x-auto my-3 w-full border border-gray-200 rounded-lg max-w-full shadow-xs">
+                <table className="w-full divide-y divide-gray-200 table-auto text-xs" {...props} />
             </div>
         ),
-        thead: ({ node, ...props }) => <thead className="bg-gray-50" {...props} />,
-        th: ({ node, ...props }) => <th className="px-3 py-2 text-left font-bold text-gray-700 uppercase border-b border-gray-200 min-w-[150px] whitespace-normal leading-snug" {...props} />,
-        td: ({ node, ...props }) => <td className="px-3 py-2 text-gray-700 border-t border-gray-200 min-w-[150px] whitespace-normal leading-relaxed" {...props} />,
+        thead: ({ node, ...props }) => <thead className="bg-gray-50/80" {...props} />,
+        tbody: ({ node, ...props }) => <tbody className="divide-y divide-gray-100 bg-white" {...props} />,
+        tr: ({ node, ...props }) => <tr className="hover:bg-gray-50/40 transition-colors" {...props} />,
+        th: ({ node, ...props }) => <th className="px-3 py-1.5 text-left font-semibold text-gray-700 uppercase tracking-wider border-b border-gray-200 whitespace-normal leading-tight text-[11px]" {...props} />,
+        td: ({ node, ...props }) => <td className="px-3 py-1.5 text-gray-700 border-t border-gray-100 whitespace-normal leading-snug align-top text-xs" {...props} />,
         code: ({ node, inline, className, children, ...props }) => {
-            if (inline) {
-                return <code className="bg-gray-100 text-red-600 px-1 py-0.5 rounded text-xs font-mono" {...props}>{children}</code>;
-            }
             const extractText = (elem) => {
                 if (!elem) return '';
                 if (typeof elem === 'string') return elem;
@@ -2842,6 +2947,24 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
             };
             const codeContent = extractText(children).trim();
             const lang = (className || '').toLowerCase();
+
+            const isInline = inline === true || (
+                inline === undefined &&
+                !lang &&
+                !codeContent.includes('\n') &&
+                (!node?.position || node.position.start.line === node.position.end.line)
+            );
+
+            if (isInline) {
+                return (
+                    <code
+                        className="inline-block bg-slate-100 text-slate-800 font-mono text-[11px] font-semibold px-1.5 py-0.5 rounded border border-slate-200/80 mx-0.5 my-0.5 leading-tight"
+                        {...props}
+                    >
+                        {children}
+                    </code>
+                );
+            }
 
             const isMermaid = lang.includes('mermaid') ||
                 codeContent.startsWith('graph') ||
@@ -2860,6 +2983,33 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                 return <MermaidDiagram code={codeContent} showDownload={true} />;
             }
 
+            if (lang.includes('sql')) {
+                return (
+                    <div className="my-4 rounded-xl border border-gray-800 bg-gray-900 overflow-hidden shadow-sm">
+                        <div className="flex items-center justify-between px-4 py-2 bg-gray-800/90 border-b border-gray-700">
+                            <span className="text-[11px] font-mono font-semibold text-gray-300 uppercase tracking-wider">
+                                SQL Migration DDL
+                            </span>
+                            <button
+                                onClick={() => {
+                                    navigator.clipboard.writeText(codeContent);
+                                    setCopiedSnippet('ddl');
+                                    setTimeout(() => setCopiedSnippet(null), 2500);
+                                }}
+                                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-gray-200 bg-gray-700 hover:bg-gray-600 rounded-md transition-all shadow-xs"
+                                title="Copy SQL Migration DDL"
+                            >
+                                {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-gray-300" />}
+                                <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy DDL'}</span>
+                            </button>
+                        </div>
+                        <pre className="p-4 text-gray-100 text-xs font-mono overflow-x-auto whitespace-pre leading-relaxed">
+                            <code className="text-gray-100 font-mono whitespace-pre" {...props}>{children}</code>
+                        </pre>
+                    </div>
+                );
+            }
+
             return (
                 <div className="my-4 rounded-xl border border-gray-800 bg-gray-900 overflow-hidden shadow-sm">
                     <pre className="p-4 text-gray-100 text-xs font-mono overflow-x-auto whitespace-pre leading-relaxed">
@@ -2874,7 +3024,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
         blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-blue-500 pl-4 italic text-gray-600 my-4 bg-blue-50 py-2" {...props} />,
         a: ({ node, ...props }) => <a className="text-blue-600 hover:text-blue-800 underline font-medium" {...props} />,
         strong: ({ node, ...props }) => <strong className="font-bold text-gray-900" {...props} />,
-    }), []);
+    }), [handleCopyDdl, copiedSnippet]);
 
     // ── Helper: render a mermaid code string to a PNG data-URL ──
     const renderMermaidToPng = async (mermaidCode) => {
@@ -4636,20 +4786,9 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 </button>
                                             </div>
 
-                                            {/* Design Actions (Download PDF, Download Markdown, Regenerate, Copy DDL) */}
+                                            {/* Design Actions (Download PDF, Download Markdown) */}
                                             {(activeDesignTab === 'hld' || activeDesignTab === 'lld') && (
-                                                <div className="flex items-center gap-2 flex-wrap">
-                                                    {activeDesignTab === 'lld' && (
-                                                        <button
-                                                            onClick={handleCopyDdl}
-                                                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-all shadow-sm"
-                                                            title="Copy SQL Migration DDL"
-                                                        >
-                                                            {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                                                            <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy DDL'}</span>
-                                                        </button>
-                                                    )}
-
+                                                <div className="flex items-center gap-2">
                                                     <button
                                                         onClick={() => handleDownloadArchitectureMarkdown(activeDesignTab)}
                                                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-all shadow-sm"
@@ -4661,13 +4800,22 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
 
                                                     <button
                                                         onClick={() => handleDownloadArchitecturePDF(activeDesignTab)}
-                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-all shadow-sm shadow-blue-500/20"
+                                                        disabled={!!exportingPdfType}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed rounded-lg transition-all shadow-sm shadow-blue-500/20"
                                                         title={`Download ${activeDesignTab.toUpperCase()} PDF`}
                                                     >
-                                                        <Download className="w-3.5 h-3.5" />
-                                                        <span>Export PDF</span>
+                                                        {exportingPdfType === activeDesignTab ? (
+                                                            <>
+                                                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                <span>Exporting...</span>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <Download className="w-3.5 h-3.5" />
+                                                                <span>Export PDF</span>
+                                                            </>
+                                                        )}
                                                     </button>
-
                                                 </div>
                                             )}
                                         </div>
@@ -4833,32 +4981,13 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                         {activeDesignTab === 'hld' && (
                                             <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 space-y-6">
                                                 {/* Simple Header Bar */}
-                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
-                                                    <div>
-                                                        <h2 className="text-xl font-extrabold text-gray-900">
-                                                            {hldDesign?.title || `High-Level Design Specification`}
-                                                        </h2>
-                                                        <p className="text-xs text-gray-500 mt-0.5">
-                                                            System context, C4 container topology, sequence workflows, and security matrix.
-                                                        </p>
-                                                    </div>
-                                                    <div className="flex items-center gap-2">
-                                                        <button
-                                                            onClick={() => handleDownloadArchitectureMarkdown('hld')}
-                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
-                                                            title="Download HLD Markdown"
-                                                        >
-                                                            <FileText className="w-3.5 h-3.5 text-blue-600" />
-                                                            <span>Markdown</span>
-                                                        </button>
-                                                        <button
-                                                            onClick={() => handleDownloadArchitecturePDF('hld')}
-                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-all"
-                                                        >
-                                                            <Download className="w-3.5 h-3.5" />
-                                                            <span>Download PDF</span>
-                                                        </button>
-                                                    </div>
+                                                <div className="pb-4 border-b border-gray-200/80">
+                                                    <h2 className="text-xl font-extrabold text-gray-900">
+                                                        {hldDesign?.title || `High-Level Design Specification`}
+                                                    </h2>
+                                                    <p className="text-xs text-gray-500 mt-0.5">
+                                                        System context, C4 container topology, sequence workflows, and security matrix.
+                                                    </p>
                                                 </div>
 
                                                 {/* Architecture Validation & Traceability Indicators */}
@@ -4932,7 +5061,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                             remarkPlugins={[remarkGfm]}
                                                             components={markdownComponents}
                                                         >
-                                                            {hldDesign?.markdown || '(No HLD generated yet. Re-analyze the BRD to generate.)'}
+                                                            {sanitizeDesignMarkdownDate(hldDesign?.markdown) || '(No HLD generated yet. Re-analyze the BRD to generate.)'}
                                                         </ReactMarkdown>
                                                     </div>
                                                 )}
@@ -4943,39 +5072,13 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                         {activeDesignTab === 'lld' && (
                                             <div className="bg-app-bg-card rounded-xl shadow-sm border border-app-border-light p-4 sm:p-6 space-y-6">
                                                 {/* Simple Header Bar */}
-                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-gray-200/80 gap-3">
-                                                    <div>
-                                                        <h2 className="text-xl font-extrabold text-gray-900">
-                                                             {lldDesign?.title || `Low-Level Design Specification`}
-                                                        </h2>
-                                                        <p className="text-xs text-gray-500 mt-0.5">
-                                                            Layered module contracts, ER diagram, database dictionary, SQL migration DDL, state machines, and file tree.
-                                                        </p>
-                                                    </div>
-                                                    <div className="flex items-center gap-2">
-                                                        <button
-                                                            onClick={handleCopyDdl}
-                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
-                                                        >
-                                                            {copiedSnippet === 'ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                                                            <span>{copiedSnippet === 'ddl' ? 'DDL Copied!' : 'Copy SQL DDL'}</span>
-                                                        </button>
-                                                        <button
-                                                            onClick={() => handleDownloadArchitectureMarkdown('lld')}
-                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 rounded-lg shadow-sm transition-all"
-                                                            title="Download LLD Markdown"
-                                                        >
-                                                            <FileText className="w-3.5 h-3.5 text-indigo-600" />
-                                                            <span>Markdown</span>
-                                                        </button>
-                                                        <button
-                                                            onClick={() => handleDownloadArchitecturePDF('lld')}
-                                                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-sm transition-all"
-                                                        >
-                                                            <Download className="w-3.5 h-3.5" />
-                                                            <span>Download PDF</span>
-                                                        </button>
-                                                    </div>
+                                                <div className="pb-4 border-b border-gray-200/80">
+                                                    <h2 className="text-xl font-extrabold text-gray-900">
+                                                        {lldDesign?.title || `Low-Level Design Specification`}
+                                                    </h2>
+                                                    <p className="text-xs text-gray-500 mt-0.5">
+                                                        Layered module contracts, ER diagram, database dictionary, SQL migration DDL, state machines, and file tree.
+                                                    </p>
                                                 </div>
 
                                                 {/* Architecture Validation & Traceability Indicators (LLD View) */}
@@ -5030,7 +5133,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                             remarkPlugins={[remarkGfm]}
                                                             components={markdownComponents}
                                                         >
-                                                            {lldDesign?.markdown || '(No LLD generated yet. Re-analyze the BRD to generate.)'}
+                                                            {sanitizeDesignMarkdownDate(lldDesign?.markdown) || '(No LLD generated yet. Re-analyze the BRD to generate.)'}
                                                         </ReactMarkdown>
                                                     </div>
                                                 )}
