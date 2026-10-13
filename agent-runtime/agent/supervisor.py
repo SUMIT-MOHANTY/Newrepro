@@ -15,6 +15,7 @@ Architecture:
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import logging
@@ -26,7 +27,7 @@ from typing import Any, Callable
 from mcp.server import MCPServer
 from mcp.git_tools import GitTools
 from agent.model_router import ModelRouter
-from agent.dag_scheduler import DAGScheduler, TaskStatus
+from agent.dag_scheduler import DAGScheduler, Task, TaskStatus
 from agent.sub_agents import BackendSubAgent, FrontendSubAgent, QASubAgent, SubAgent
 from agent.ipc import IPCRouter
 
@@ -116,6 +117,129 @@ class SupervisorAgent:
             except Exception as e:
                 logger.error(f"[Supervisor] Callback error for '{event_type}': {e}")
         # Also log for visibility
+    def _sync_checklist_progress(self, task_id: str, checklist_progress: dict[str, int]) -> None:
+        """Sync final checklist progress to the Task Management API (best-effort).
+
+        Uses the same endpoint and auth as the initial checklist sync in
+        _execute_single_task, so the user sees completed/total per task.
+        """
+        import httpx
+
+        task_api_url = os.environ.get("TASK_API_BASE_URL", "http://localhost:8000")
+        task_token = os.environ.get("CALLBACK_SECRET") or os.environ.get("TASK_TOKEN")
+        if not task_token:
+            return
+
+        async def _sync():
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.put(
+                    f"{task_api_url}/api/agent/tasks/{task_id}/checklist-progress/",
+                    json={"progress": checklist_progress},
+                    headers={"Authorization": f"Bearer {task_token}"},
+                )
+                return response.status_code
+
+        status = asyncio.run(_sync())
+        if status == 200:
+            print(f"[Supervisor] 💾 Synced checklist progress {checklist_progress} for {task_id}")
+        else:
+            logger.warning(f"[Supervisor] Checklist progress sync returned HTTP {status} (non-blocking)")
+
+    def _drain_followup_queue(self) -> int:
+        """Drain agent-discovered follow-up tasks into the DAG scheduler.
+
+        Agents append validated tasks to .agent/pending_followup_tasks.json
+        (via submit_followup_tasks). Each becomes a DAG task that depends on
+        its origin task so it runs when that prerequisite work is real — not
+        before. Discovered work is scheduled, not lost or silently absorbed.
+        """
+        queue_file = os.path.join(self.workspace_path, ".agent", "pending_followup_tasks.json")
+        if not os.path.exists(queue_file):
+            return 0
+        try:
+            with open(queue_file, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, ValueError) as e:
+            logger.warning(f"[Supervisor] Failed to read follow-up queue: {e}")
+            return 0
+        items = raw if isinstance(raw, list) else (raw.get("tasks", []) if isinstance(raw, dict) else [])
+        if not isinstance(items, list) or not items:
+            return 0
+
+        added = 0
+        seen_titles: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()
+            desc = str(item.get("description", "")).strip()
+            lane = str(item.get("lane", "backend")).strip().lower() or "backend"
+            if not title or not desc:
+                continue
+            origin = str(item.get("origin", "agent")).strip() or "agent"
+            deps = [str(d) for d in (item.get("depends_on") or []) if str(d).strip()]
+
+            # DAG-level dedup: skip if the title already exists in the DAG (from
+            # config or a previous drain), or was already created from this batch
+            # (two agents discovering the same work in one drain → one task).
+            title_key = title.lower()
+            exists_in_dag = any(
+                str(t.title).strip().lower() == title_key
+                for t in self.scheduler.tasks.values()
+            )
+            if exists_in_dag or title_key in seen_titles:
+                logger.info(f"[Supervisor] Skipping duplicate follow-up task '{title}' (already exists in DAG or duplicated in queue)")
+                seen_titles.add(title_key)
+                continue
+
+            # Parent dependency is STRICT: the follow-up truly runs after the
+            # origin task completes, regardless of lane (see Task.strict_deps).
+            strict_deps: list[str] = []
+            if not deps:
+                parent_task_id = str(item.get("parent_task_id", "")).strip()
+                if parent_task_id:
+                    strict_deps = [parent_task_id]
+                else:
+                    # No known parent: schedule conservatively as a root task
+                    # (backend/frontend roots exist from config anyway).
+                    pass
+            task_id = f"{origin}_{len(self.scheduler.tasks) + 1}_{int(time.time())}"
+            new_task_data = {
+                "task_id": task_id,
+                "title": title,
+                "description": (
+                    f"[Dynamic follow-up discovered by {origin}]\n{desc}"
+                ),
+                "lane": lane,
+                "depends_on": deps,
+                "status": "pending",
+                "subtasks": [],
+            }
+            if strict_deps:
+                new_task_data["strict_deps"] = strict_deps
+            self.scheduler.tasks[task_id] = Task(new_task_data)
+            self.scheduler.save_tasks()
+            added += 1
+            self._post_event("followup_task_created", {
+                "task_id": task_id,
+                "title": title,
+                "lane": lane,
+                "depends_on": deps,
+                "origin": origin,
+            })
+            logger.info(f"[Supervisor] 📌 Queued dynamic follow-up task {task_id}: {title} ({lane}) deps={deps}")
+
+        # Allow sibling agents (other containers) to see the new tasks too.
+        try:
+            self.ipc.broadcast("Supervisor", "followup_tasks_added", {"count": added})
+        except Exception:
+            pass
+        try:
+            os.remove(queue_file)
+        except OSError:
+            pass
+        return added
+
     def _ensure_early_preview_running(self) -> None:
         """Auto-boot live application preview early in a background daemon thread
         as soon as baseline frontend or backend structure is in place, so user can see
@@ -174,8 +298,12 @@ class SupervisorAgent:
         # ═══════════════════════════════════════════════════════════════════════
         try:
             from agent.checklist_generator import generate_task_checklist
-            import asyncio
-            
+
+            # NOTE: do NOT 'import os' / 'import asyncio' inside this try block.
+            # A local import shadows the module-level binding, so if the try
+            # raises before the import executes, every later os.*/asyncio.* use
+            # below raises UnboundLocalError. Both are imported at module top.
+
             print(f"[Supervisor] 📋 Generating dynamic checklist for {agent.name}...")
             
             # Generate checklist asynchronously
@@ -200,8 +328,11 @@ class SupervisorAgent:
                 # (We can't import backend.app.services here in Docker, so use HTTP)
                 try:
                     import httpx
-                    import os
-                    
+
+                    # 'os' comes from the module-level import — a local
+                    # 'import os' here would shadow it and blow up later
+                    # (UnboundLocalError) if httpx ever failed to import.
+
                     # Get Task Management API URL from environment
                     task_api_url = os.environ.get("TASK_API_BASE_URL", "http://localhost:8000")
                     task_token = os.environ.get("CALLBACK_SECRET") or os.environ.get("TASK_TOKEN")
@@ -229,7 +360,9 @@ class SupervisorAgent:
         
         print(f"{'='*60}\n")
 
-        # Update status to RUNNING
+        # Update status to RUNNING (and stamp the current task id so the agent's
+        # submit_followup_tasks calls can default their dependency to this task)
+        os.environ["PARENT_TASK_ID"] = task_id
         self.scheduler.update_task_status(task_id, TaskStatus.RUNNING)
         self._post_event("task_started", {
             "task_id": task_id,
@@ -334,6 +467,17 @@ class SupervisorAgent:
             self.tasks_completed += 1
             self.total_files_changed.extend(result.files_changed)
             self.scheduler.update_task_status(task_id, TaskStatus.COMPLETED)
+
+            # Checklist progress: pull the agent's final tracker state, sync it
+            # to the Task API (best-effort), and record it in the task result.
+            checklist_progress = getattr(result, "checklist_progress", None)
+            if checklist_progress:
+                checklist_progress = dict(checklist_progress)
+                try:
+                    self._sync_checklist_progress(task_id, checklist_progress)
+                except Exception as sync_err:
+                    logger.warning(f"[Supervisor] Checklist progress sync failed (non-blocking): {sync_err}")
+
             self.task_results[task_id] = {
                 "status": "completed",
                 "agent": agent.name,
@@ -344,6 +488,7 @@ class SupervisorAgent:
                 "agent_reported_status": "completed",
                 "platform_verified": bool((getattr(result, "verification", None) or {}).get("passed")),
                 "verification": getattr(result, "verification", None),
+                "checklist_progress": checklist_progress,
             }
 
             print(f"\n[Supervisor] ✅ Task {task_id} completed by {agent.name} "
@@ -437,6 +582,14 @@ class SupervisorAgent:
         idle_rounds = 0
 
         while True:
+            # Drain agent-discovered follow-up tasks into the DAG before
+            # scheduling, so newly discovered work joins the run rather than
+            # being silently absorbed or lost.
+            try:
+                self._drain_followup_queue()
+            except Exception as drain_err:
+                logger.warning(f"[Supervisor] Follow-up drain error: {drain_err}")
+
             ready_tasks = self.scheduler.get_ready_tasks()
 
             if not ready_tasks:

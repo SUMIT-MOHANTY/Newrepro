@@ -103,6 +103,10 @@ class ToolExecutor:
         if tool_name == "submit_plan":
             return self._execute_submit_plan(tool_input)
 
+        # Handle dynamic swarm task creation (scheduled by the supervisor after this task)
+        if tool_name == "submit_followup_tasks":
+            return self._execute_submit_followup_tasks(tool_input)
+
         mapping = self._registry.get_mcp_mapping(tool_name)
         if mapping is None:
             return self._error_result(f"Unknown tool: {tool_name}")
@@ -1074,6 +1078,144 @@ class ToolExecutor:
     def submitted_plan(self) -> dict[str, Any] | None:
         """Return the plan submitted via submit_plan, if any."""
         return getattr(self, "_submitted_plan", None)
+
+    _FOLLOWUP_LANES = ("backend", "frontend", "qa")
+    _MAX_FOLLOWUP_TASKS_PER_CALL = 5
+
+    def _execute_submit_followup_tasks(self, tool_input: dict[str, Any] | str) -> dict[str, Any]:
+        """Record validated follow-up tasks discovered by an agent mid-run.
+
+        Tasks are appended to .agent/pending_followup_tasks.json (atomic write,
+        merged across agents). The supervisor drains this queue into the DAG
+        after the current task finishes, so the work is scheduled — not lost.
+        """
+        import json
+        import os
+        import tempfile
+        from datetime import datetime, timezone
+
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except Exception:
+                tool_input = {}
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+
+        raw_tasks = tool_input.get("tasks")
+        if isinstance(raw_tasks, dict):
+            raw_tasks = [raw_tasks]
+        if not isinstance(raw_tasks, list) or not raw_tasks:
+            return self._error_result(
+                "submit_followup_tasks requires a non-empty 'tasks' array. "
+                "Each item: {title, description, lane}. Only submit work genuinely "
+                "required for the overall requirement."
+            )
+
+        agent_id = os.environ.get("AGENT_ID", "unknown_agent")
+        # Current task id (stamped by the supervisor before dispatch) becomes
+        # the default dependency so the follow-up runs after this task.
+        current_task_id = os.environ.get("PARENT_TASK_ID", "")
+
+        accepted: list[dict[str, Any]] = []
+        rejected: list[str] = []
+        for t in raw_tasks[: self._MAX_FOLLOWUP_TASKS_PER_CALL]:
+            if not isinstance(t, dict):
+                rejected.append("entry is not an object")
+                continue
+            title = str(t.get("title", "")).strip()
+            desc = str(t.get("description", "")).strip()
+            lane = str(t.get("lane", "")).strip().lower()
+            if not title or not desc:
+                rejected.append(f"{title or '(untitled)'}: missing title or description")
+                continue
+            if lane not in self._FOLLOWUP_LANES:
+                rejected.append(f"{title}: invalid lane '{lane}' (backend|frontend|qa)")
+                continue
+            deps = t.get("depends_on")
+            if isinstance(deps, str):
+                deps = [deps]
+            if not isinstance(deps, list):
+                deps = []
+            deps = [str(d) for d in deps if str(d).strip()]
+            accepted.append({
+                "title": title[:200],
+                "description": desc[:2000],
+                "lane": lane,
+                "depends_on": deps,
+                "parent_task_id": current_task_id,
+                "origin": agent_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        if len(raw_tasks) > self._MAX_FOLLOWUP_TASKS_PER_CALL:
+            rejected.append(
+                f"{len(raw_tasks) - self._MAX_FOLLOWUP_TASKS_PER_CALL} extra tasks dropped: max "
+                f"{self._MAX_FOLLOWUP_TASKS_PER_CALL} per call"
+            )
+
+        if not accepted:
+            return self._error_result(
+                "No valid follow-up tasks: " + "; ".join(rejected)
+            )
+
+        # Append to the shared pending queue atomically (merge, never overwrite)
+        workspace_path = self._workspace_root()
+        queue_dir = os.path.join(workspace_path, ".agent")
+        queue_file = os.path.join(queue_dir, "pending_followup_tasks.json")
+        os.makedirs(queue_dir, exist_ok=True)
+
+        try:
+            existing: list[dict[str, Any]] = []
+            try:
+                with open(queue_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    existing = data
+                elif isinstance(data, dict):
+                    existing = data.get("tasks", [])
+            except (OSError, ValueError):
+                existing = []
+
+            # De-dup by (title, lane) against pending entries.
+            seen = {
+                (str(e.get("title", "")).strip().lower(), str(e.get("lane", "")))
+                for e in existing
+                if isinstance(e, dict)
+            }
+            for t in accepted:
+                key = (t["title"].strip().lower(), t["lane"])
+                if key in seen:
+                    rejected.append(f"{t['title']}: duplicate of an already-pending task")
+                    continue
+                seen.add(key)
+                existing.append(t)
+
+            fd, tmp_path = tempfile.mkstemp(dir=queue_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(existing, f, indent=2)
+                os.replace(tmp_path, queue_file)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception as q_err:
+            return self._error_result(f"Failed to record follow-up tasks: {q_err}")
+
+        msg = (
+            f"📋 {len(accepted)} follow-up task(s) accepted and queued for the swarm scheduler. "
+            "They will run AFTER your current task completes. Continue with your own checklist now — "
+            "do NOT wait for them."
+        )
+        if rejected:
+            msg += "\nRejected entries: " + "; ".join(rejected)
+        try:
+            print(f"[ToolExecutor] 📌 Follow-up tasks queued: {len(accepted)} (from {agent_id})")
+        except UnicodeEncodeError:
+            print("[ToolExecutor] Follow-up tasks queued")
+        return self._success_result(msg)
 
     def _error_result(self, error: str) -> dict[str, Any]:
         """Format a failed tool result for Claude."""

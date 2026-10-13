@@ -6,6 +6,7 @@ step-by-step checklist items that will be stored in the database and tracked.
 """
 import json
 import logging
+import re
 from typing import Any, Dict, List
 from agent.model_router import ModelRouter, TaskType
 from infrastructure.llm_client import LLMClient
@@ -224,6 +225,60 @@ def _parse_checklist_response(response: str) -> List[Dict[str, Any]]:
                 })
     
     return checklist
+
+
+_FILE_RE = re.compile(
+    r"[\w./\\-]+\.(?:py|ts|tsx|js|jsx|json|css|scss|html|vue|svelte|yaml|yml|toml|sql|sh|md)\b"
+)
+
+
+def build_tracker_tasks(
+    checklist: List[Dict[str, Any]],
+    files_involved: List[str] | None = None,
+) -> List[Dict[str, Any]]:
+    """Convert generated checklist items into TaskChecklistTracker task format.
+
+    Tracker items follow the shape the existing plan-checklist tracker expects:
+        {"task_id": int, "action": "edit", "file": str, "description": str}
+
+    Items that mention a file path are file-bound edits; items without any
+    recoverable file path become "guideline" steps (they render in the
+    tracker banner as guidance and are auto-completed once all file tasks
+    are done, so they never block completion).
+    """
+    known_files = [
+        str(f).replace("\\", "/").lstrip("/")
+        for f in (files_involved or [])
+        if f
+    ]
+    tracker_tasks: List[Dict[str, Any]] = []
+    for idx, item in enumerate(checklist or [], start=1):
+        if isinstance(item, dict):
+            text = str(item.get("text", "")).strip()
+        else:
+            text = str(item).strip()
+        if not text:
+            continue
+
+        file_path = ""
+        for candidate in _FILE_RE.findall(text):
+            cand = candidate.replace("\\", "/").lstrip("/")
+            if not cand or len(cand) < 4:
+                continue
+            # Prefer candidates that map to a known involved file.
+            if any(k == cand or k in cand or cand.endswith(k) for k in known_files):
+                file_path = cand
+                break
+            if not file_path:
+                file_path = cand
+        tracker_tasks.append({
+            "task_id": idx,
+            "action": "edit" if file_path else "step",
+            "file": file_path,
+            "description": text,
+            "guideline": not file_path,
+        })
+    return tracker_tasks
 
 
 def _create_fallback_checklist(

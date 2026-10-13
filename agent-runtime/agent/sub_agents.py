@@ -9,17 +9,20 @@ Uses the existing ClaudeToolClient.run_tool_loop() for the ReAct loop.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any, List
 
-from infrastructure.claude_tool_client import ClaudeToolClient, FileManifest
+from infrastructure.claude_tool_client import ClaudeToolClient, FileManifest, TaskChecklistTracker
 from agent.model_router import ModelRouter, TaskType
 from agent.tools.tool_registry import ToolRegistry, ToolPhase
 from agent.tools.tool_executor import ToolExecutor
 from runtime.reality_guard import AgentRealityGuard
+from agent.checklist_generator import build_tracker_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,8 @@ class TaskResult:
         self.files_changed = files_changed or []
         # Gate A/C: platform verification evidence attached by the gate or supervisor
         self.verification: dict | None = None
+        # Dynamic checklist progress ({completed, total}) from the tracker, if any
+        self.checklist_progress: dict | None = None
 
 
 class SubAgent(ABC):
@@ -179,6 +184,33 @@ class SubAgent(ABC):
         )
 
 
+def _read_live_contracts(workspace_path: str) -> str:
+    """Fresh read of inter-agent contracts at task start.
+
+    The system prompt may be built earlier or cached by the caller; agents in
+    a parallel swarm see each other's published endpoints/qa gates change
+    mid-run, so the contract section must reflect disk state NOW, not at
+    prompt-build time. Returns an empty string when no contract exists yet.
+    """
+    contract_file = os.path.join(workspace_path, ".agent", "contracts", "api_contract.json")
+    try:
+        if not os.path.isfile(contract_file):
+            return ""
+        with open(contract_file, "r", encoding="utf-8") as cf:
+            cd = json.load(cf)
+        routes = cd.get("routes", [])
+        if not routes:
+            return ""
+        lines = [
+            "### LIVE BACKEND ENDPOINTS PUBLISHED BY BACKEND AGENT (USE EXACT PATHS):"
+        ]
+        for cr in routes[:35]:
+            lines.append(f"- {cr.get('method')} {cr.get('path')}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 class BaseReActAgent(SubAgent):
     """Sub-agent that executes tasks using the ClaudeToolClient ReAct loop."""
 
@@ -226,6 +258,26 @@ class BaseReActAgent(SubAgent):
                 # Build the system prompt with role and contract enforcement
                 system_prompt = self._build_system_prompt(task, context=context)
 
+                # Fresh contract refresh: the prompt's live-endpoints section
+                # may be stale in a parallel swarm — re-read at task start and
+                # append the current state so wiring targets real endpoints.
+                try:
+                    live_now = _read_live_contracts(workspace_path)
+                except Exception:
+                    live_now = ""
+                if live_now:
+                    marker = "LIVE BACKEND ENDPOINTS PUBLISHED BY BACKEND AGENT"
+                    if marker not in system_prompt:
+                        system_prompt = system_prompt + f"\n\n{live_now}"
+                    else:
+                        import re as _re
+                        system_prompt = _re.sub(
+                            r"### LIVE BACKEND ENDPOINTS PUBLISHED BY BACKEND AGENT[^#]*",
+                            live_now + "\n",
+                            system_prompt,
+                            count=1,
+                        )
+
                 # Build the user message
                 if attempt == 1:
                     user_msg = (
@@ -247,12 +299,35 @@ class BaseReActAgent(SubAgent):
                 messages = [{"role": "user", "content": user_msg}]
 
                 # Run the ReAct tool loop (Observe → Think → Act → Verify)
+                # Dynamic checklist: use the supervisor-generated checklist if
+                # present, otherwise fall back to the task's own subtasks.
+                raw_checklist = getattr(task, "checklist", None)
+                if not raw_checklist:
+                    raw_checklist = [
+                        (st if isinstance(st, dict) else {"text": str(st)})
+                        for st in getattr(task, "subtasks", []) or []
+                    ]
+                tracker_tasks = build_tracker_tasks(
+                    raw_checklist,
+                    files_involved=getattr(task, "files_involved", []),
+                )
+                task_tracker = None
+                if tracker_tasks:
+                    task_tracker = TaskChecklistTracker(
+                        tracker_tasks,
+                        objective=getattr(task, "title", "") or "Complete the assigned task",
+                    )
+
                 result = client.run_tool_loop(
                     system=system_prompt,
                     messages=messages,
                     tool_executor=executor,
                     max_iterations=40,
+                    task_tracker=task_tracker,
                 )
+
+                if task_tracker is not None:
+                    task_tracker.complete_pending_steps()
 
                 elapsed = time.time() - start_time
                 files = list(executor.files_changed) if hasattr(executor, "files_changed") else []
@@ -290,12 +365,15 @@ class BaseReActAgent(SubAgent):
                     f"Files changed: {len(files)}"
                 )
 
-                return TaskResult(
+                task_result = TaskResult(
                     task_id=task_id,
                     success=True,
                     output=result.final_text if hasattr(result, "final_text") else str(result),
                     files_changed=files,
                 )
+                if task_tracker is not None:
+                    task_result.checklist_progress = task_tracker.checklist_progress()
+                return task_result
 
             except Exception as e:
                 last_error = str(e)

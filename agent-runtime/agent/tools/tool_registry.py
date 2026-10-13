@@ -649,6 +649,49 @@ _SUBMIT_FOLLOWUP_PLAN_TOOL = {
 }
 
 
+_SUBMIT_FOLLOWUP_TASKS_TOOL = {
+    "name": "submit_followup_tasks",
+    "description": (
+        "Create NEW tasks for the swarm when you discover work outside your current "
+        "task's scope but required for the overall BRD (e.g. a missing API endpoint "
+        "the frontend needs, or a missing route). Each task is scheduled automatically "
+        "after your task completes. Use SPARINGLY for genuinely required work — do NOT "
+        "restate work already in your checklist or create trivial/refactor tasks."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Short imperative title (e.g. 'Add POST /api/orders endpoint')"},
+                        "description": {
+                            "type": "string",
+                            "description": "What must be built and why it is required for the overall requirement. Include exact API paths / file paths / component names so another agent can implement it without re-discovery.",
+                        },
+                        "lane": {
+                            "type": "string",
+                            "enum": ["backend", "frontend", "qa"],
+                            "description": "Which agent lane should own this task.",
+                        },
+                        "depends_on": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional task IDs this new task must wait for (defaults to the current task).",
+                        },
+                    },
+                    "required": ["title", "description", "lane"],
+                },
+                "description": "1-5 new tasks this agent discovered are required.",
+            },
+        },
+        "required": ["tasks"],
+    },
+}
+
+
 # ---------------------------------------------------------------------------
 # Tool name → MCP module.method mapping
 # ---------------------------------------------------------------------------
@@ -656,6 +699,7 @@ _SUBMIT_FOLLOWUP_PLAN_TOOL = {
 _TOOL_TO_MCP_MAP: dict[str, tuple[str, str]] = {
     # Planning
     "submit_plan": ("plan", "submit_plan"),
+    "submit_followup_tasks": ("plan", "submit_followup_tasks"),
     # Filesystem
     "write_files": ("filesystem", "write_files"),  # Batch write — handled by tool executor
     "list_directory": ("filesystem", "list_directory"),
@@ -834,6 +878,7 @@ class ToolRegistry:
             *_GIT_TOOLS,
             *_BUILD_TOOLS,
             *_EXECUTION_TOOLS,
+            _SUBMIT_FOLLOWUP_TASKS_TOOL,  # dynamic swarm task creation (scheduled after current task)
         ]
         if self._web_search_enabled:
             tools.extend(_WEB_SEARCH_TOOLS)

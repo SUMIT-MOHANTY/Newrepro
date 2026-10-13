@@ -493,10 +493,32 @@ class TaskChecklistTracker:
     def is_all_file_tasks_completed(self) -> bool:
         """Check if all non-verification file tasks are completed."""
         for idx, t in enumerate(self.tasks):
-            if t.get("action") not in ("verify", "install") and "build" not in t.get("file", "").lower():
+            action = t.get("action")
+            # Guideline "step" items (no file binding) never block completion:
+            # they are auto-checked once every file task is done.
+            if action in ("verify", "install", "step"):
+                continue
+            if "build" not in t.get("file", "").lower():
                 if t.get("task_id", idx + 1) not in self.completed_task_ids:
                     return False
         return True
+
+    def complete_pending_steps(self) -> None:
+        """Auto-complete guideline 'step' items once all file tasks are done."""
+        if not self.is_all_file_tasks_completed():
+            return
+        for idx, t in enumerate(self.tasks):
+            if t.get("action") == "step":
+                tid = t.get("task_id", idx + 1)
+                if tid not in self.completed_task_ids:
+                    self.completed_task_ids.add(tid)
+                    log(f"✅ [Task Tracker] Guideline step {tid} completed (all file tasks done).")
+
+    def checklist_progress(self) -> dict[str, int]:
+        """Progress snapshot for external sync (e.g. Task Management API)."""
+        total = len(self.tasks)
+        completed = len(self.completed_task_ids)
+        return {"completed": completed, "total": total}
 
     def reset_verification(self) -> None:
         """Un-mark verification tasks when build fails so checklist reflects pending verification."""
@@ -542,13 +564,16 @@ class TaskChecklistTracker:
             t_desc = t.get("description", t.get("instructions", ""))
             is_done = tid in self.completed_task_ids
             is_active = (idx == self.active_task_index and not is_done)
+            is_step = t.get("action") == "step"
 
             if is_done:
-                lines.append(f"[x] Task {tid}: `{t_file}` â€” {t_desc} (DONE)")
+                lines.append(f"[x] Task {tid}: {t_desc} (DONE)")
             elif is_active:
-                lines.append(f">>> [ACTIVE - Task {tid} of {total_tasks}] `{t_file}` â€” {t_desc}  <<<")
+                lines.append(f">>> [ACTIVE - Task {tid} of {total_tasks}] {t_desc} <<<")
+            elif is_step:
+                lines.append(f"[~] Step {tid}: {t_desc} (guideline)")
             else:
-                lines.append(f"[ ] Task {tid}: `{t_file}` â€” {t_desc}")
+                lines.append(f"[ ] Task {tid}: `{t_file}` — {t_desc}")
 
         lines.append("")
         # Add turn directive â€” strict action matching, no description string matching
@@ -2127,6 +2152,40 @@ class ClaudeToolClient:
         inspection_tools = ("read_file", "list_directory", "check_syntax", "get_generated_file", "file_exists")
         write_tools = ("write_file", "write_files", "replace_file_content", "batch_replace_file_content", "run_command", "install_and_build", "run_build")
 
+        # ── P4 Guard: repeated follow-up task submissions ────────────────────
+        # A model that discovers "more work" can keep spawning follow-up tasks
+        # until the DAG floods. Cap submissions per session (matches Freebuff's
+        # follow-up suggestion cap philosophy).
+        if tool_name == "submit_followup_tasks":
+            self._followup_submit_count = getattr(self, "_followup_submit_count", 0) + 1
+            if self._followup_submit_count > 3:
+                log(f"🛑 [Progress Guard] Follow-up task cap reached ({self._followup_submit_count - 1} previous calls)")
+                return {
+                    "type": "tool_result",
+                    "content": (
+                        "Error: Follow-up task submission limit reached (3 per session). "
+                        "The queue already holds your discovered work. Continue your own checklist "
+                        "and complete your current task — do NOT submit more follow-ups."
+                    ),
+                    "is_error": True,
+                }
+
+        # ── P4 Guard: repeated rejected edits to the same file ───────────────
+        # Paths from patch calls are collected here; failures are counted AFTER
+        # execution (see below) so only rejected edits increment the counter.
+        _patch_tools = ("replace_file_content", "find_and_replace", "batch_replace_file_content")
+        _patch_paths: list[str] = []
+        if tool_name in _patch_tools and isinstance(tool_input, dict):
+            if not hasattr(self, "_patch_fail_counts"):
+                self._patch_fail_counts = {}
+            for e in ([tool_input] if tool_name in ("replace_file_content", "find_and_replace")
+                      else (tool_input.get("edits") or []) if isinstance(tool_input.get("edits"), list) else []):
+                if not isinstance(e, dict):
+                    continue
+                p = str(e.get("path") or e.get("file_path") or "").replace("\\", "/").lstrip("/")
+                if p:
+                    _patch_paths.append(p)
+
         if tool_name in inspection_tools:
             self._consecutive_inspection_count = getattr(self, "_consecutive_inspection_count", 0) + 1
         elif tool_name in write_tools:
@@ -2187,6 +2246,30 @@ class ClaudeToolClient:
         result = tool_executor.execute(
             tool_name, tool_input if isinstance(tool_input, (dict, list, str)) else {}
         )
+
+        # ── P4 Guard: count rejected patch edits per file and intervene ──────
+        if _patch_paths and tool_name in _patch_tools and result.get("is_error"):
+            for p in _patch_paths:
+                self._patch_fail_counts[p] = self._patch_fail_counts.get(p, 0) + 1
+                fails = self._patch_fail_counts[p]
+                if fails == 3:
+                    log(f"⚠️ [Progress Guard] 3rd rejected edit to {p} — injecting recovery guidance")
+                    result["content"] = (
+                        str(result.get("content", "")) + "\n\n"
+                        "[MULTIPLE FAILED EDITS: You have now failed to edit this file 3 times. "
+                        "The patch approach is not converging. STOP using replace_file_content on this file. "
+                        "Instead use `write_file` ONCE with the complete, validated file content — it is "
+                        "already in your Active Inspected Files cache.]"
+                    )
+                elif fails == 5:
+                    log(f"🛑 [Progress Guard] 5th rejected edit to {p} — hard-blocking patch tools for it")
+                    result["content"] = (
+                        str(result.get("content", "")) + "\n\n"
+                        f"[PATCH TOOLS BLOCKED FOR `{p}`: 5 failed edit attempts detected. "
+                        "Use `write_file` with the COMPLETE file content. Do not attempt further patches.]"
+                    )
+                    if hasattr(tool_executor, "_rollback_blocked_files"):
+                        tool_executor._rollback_blocked_files.add(p)
 
 
         if getattr(self, "_duplicate_call_count", 1) == 2 and not result.get("is_error"):

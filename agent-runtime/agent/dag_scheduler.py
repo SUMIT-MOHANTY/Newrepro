@@ -37,8 +37,18 @@ class Task:
         except ValueError:
             self.status = TaskStatus.PENDING
 
+        # Strict deps always block regardless of lane (cross-lane deps in
+        # depends_on are otherwise soft for non-gateway tasks). Dynamic
+        # follow-up tasks use this so they truly run after their origin task.
+        raw_strict = data.get("strict_deps") or []
+        if isinstance(raw_strict, str):
+            raw_strict = [raw_strict]
+        if not isinstance(raw_strict, list):
+            raw_strict = []
+        self.strict_deps = [str(d) for d in raw_strict if str(d).strip()]
+
     def to_dict(self):
-        return {
+        payload = {
             "task_id": self.task_id,
             "title": self.title,
             "description": self.description,
@@ -47,6 +57,9 @@ class Task:
             "depends_on": self.depends_on,
             "status": self.status.value
         }
+        if self.strict_deps:
+            payload["strict_deps"] = self.strict_deps
+        return payload
 
 class DAGScheduler:
     """DAG-based task scheduler"""
@@ -176,6 +189,22 @@ class DAGScheduler:
             if task.status == TaskStatus.PENDING:
                 can_run = True
                 task_lane = (getattr(task, "lane", "") or "").lower().strip()
+
+                # Strict deps first: they block regardless of lane. If the dep
+                # task is here, it must be terminal; if external, the same
+                # disk check applies as for gateway tasks below.
+                for dep in task.strict_deps:
+                    dep_task = self._find_task_by_id(dep)
+                    if dep_task:
+                        if dep_task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                            can_run = False
+                            break
+                    elif not self._is_external_dependency_finished(dep):
+                        can_run = False
+                        break
+                if not can_run:
+                    continue
+
                 for dep in task.depends_on:
                     dep_task = self._find_task_by_id(dep)
                     if dep_task:
