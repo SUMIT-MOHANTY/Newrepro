@@ -1982,10 +1982,6 @@ async def get_document_architecture_design(
         from app.integrations.llm.llm_gateway import current_project_token_var
         current_project_token_var.set(db_doc.project_token)
 
-    if getattr(db_doc, "project_token", None):
-        from app.integrations.llm.llm_gateway import current_project_token_var
-        current_project_token_var.set(db_doc.project_token)
-
     p_name = analysis_data.get("title") or db_doc.filename or "Enterprise Solution"
     brd_content = db_doc.full_content or db_doc.content_preview or analysis_data.get("analysis") or ""
     changed = False

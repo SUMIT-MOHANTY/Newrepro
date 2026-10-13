@@ -2983,7 +2983,14 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                 return <MermaidDiagram code={codeContent} showDownload={true} />;
             }
 
-            if (lang.includes('sql')) {
+            const isSql = lang.includes('sql') ||
+                codeContent.toLowerCase().includes('create table') ||
+                codeContent.toLowerCase().includes('create extension') ||
+                codeContent.toLowerCase().includes('create or replace function') ||
+                codeContent.toLowerCase().includes('-- database schema') ||
+                codeContent.toLowerCase().includes('migration ddl');
+
+            if (isSql) {
                 return (
                     <div className="my-4 rounded-xl border border-gray-800 bg-gray-900 overflow-hidden shadow-sm">
                         <div className="flex items-center justify-between px-4 py-2 bg-gray-800/90 border-b border-gray-700">
