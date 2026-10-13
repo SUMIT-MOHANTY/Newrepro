@@ -20,6 +20,7 @@ import copy
 import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
@@ -108,6 +109,17 @@ class SupervisorAgent:
         self.tasks_failed = 0
         self.total_files_changed: list[str] = []
         self.task_results: dict[str, dict[str, Any]] = {}
+
+        # Platform-verification repair loop state. How many repair rounds the
+        # swarm may run is configuration, not a hard-coded assumption.
+        try:
+            self.max_platform_repair_rounds = max(0, int(os.environ.get("VERIFICATION_MAX_REPAIR_ROUNDS", "3")))
+        except (TypeError, ValueError):
+            self.max_platform_repair_rounds = 3
+        self._platform_repair_rounds_done = 0
+        self.verification_history: list[dict[str, Any]] = []
+        self._last_verification_signature: str | None = None
+        self.repair_tasks_created = 0
 
     def _post_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Post a lifecycle event to the control plane."""
@@ -542,6 +554,155 @@ class SupervisorAgent:
 
             return False
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # PLATFORM VERIFICATION → AGENT REPAIR FEEDBACK
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _platform_verify(self) -> dict[str, Any] | None:
+        """Run the platform's runnability gates over the whole workspace.
+
+        Stage selection is dynamic (the engine derives the applicable stages from
+        what is actually on disk), so no stage names are hard-coded here.
+        """
+        if not _VERIFICATION_AVAILABLE:
+            return {"skipped": True, "reason": "verification engine unavailable"}
+        try:
+            report = VerificationEngine(self.workspace_path).run_full_verification()
+            return report.to_dict()
+        except Exception as verify_err:
+            logger.warning(f"[Supervisor] Platform verification error: {verify_err}")
+            return {"skipped": True, "reason": str(verify_err)[:300]}
+
+    def _workspace_roots(self) -> dict[str, list[str]]:
+        """Workspace layout, discovered by the platform (single source of truth)."""
+        try:
+            from runtime.verification_engine import VerificationEngine as _VE
+            return _VE(self.workspace_path)._find_roots()
+        except Exception:
+            return {"python": [], "node": []}
+
+    def _lane_for_failure(self, stage: dict[str, Any]) -> str:
+        """Decide which lane owns a verification failure — from the failure itself.
+
+        Ownership is inferred from the workspace layout (discovered roots) and the
+        paths named in the failure text, falling back to gate semantics. No project
+        layout or directory name is assumed.
+        """
+        detail = str(stage.get("detail") or "").replace("\\", "/").lower()
+        gate = str(stage.get("name") or "").lower()
+        roots = self._workspace_roots()
+
+        # Connectivity failures are caused by whichever side is actually down —
+        # the frontend config merely points at the API, so name the real cause.
+        if gate == "connectivity":
+            first_line = detail.splitlines()[0] if detail else ""
+            if "backend unreachable" in detail or "backend" in first_line:
+                return "backend"
+            return "frontend"
+
+        def _rel(root: str) -> str:
+            try:
+                rel = os.path.relpath(root, self.workspace_path).replace("\\", "/").lower()
+            except ValueError:
+                return ""
+            return "" if rel in (".", "") else rel
+
+        node_rels = [r for r in (_rel(nr) for nr in roots.get("node", [])) if r]
+        py_rels = [r for r in (_rel(pr) for pr in roots.get("python", [])) if r]
+
+        if any(r in detail for r in node_rels):
+            return "frontend"
+        if any(r in detail for r in py_rels):
+            return "backend"
+
+        if re.search(r"\.(tsx|jsx|vue|svelte|css|scss|sass|html)\b", detail):
+            return "frontend"
+        if re.search(r"\.py\b", detail):
+            return "backend"
+
+        if gate in ("build", "serve"):
+            return "frontend"
+        if gate in ("imports", "boot", "contract"):
+            return "backend"
+        return "qa"
+
+    def _enqueue_verification_repairs(self, report: dict[str, Any]) -> int:
+        """Turn platform verification failures into repair tasks for the lane agents.
+
+        Each failing gate is grouped under the lane that owns the affected files;
+        the lane agent picks the task up on the next scheduling round, fixes the
+        root cause, and the platform re-verifies. Returns the number of tasks added.
+        """
+        stages = report.get("stages") or []
+        failures = [
+            st for st in stages
+            if isinstance(st, dict) and not st.get("passed") and not st.get("skipped")
+        ]
+        if not failures:
+            return 0
+
+        try:
+            from runtime.verification_engine import classify_failure as _classify
+        except Exception:
+            _classify = lambda raw: "unknown"  # noqa: E731
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for st in failures:
+            grouped.setdefault(self._lane_for_failure(st), []).append(st)
+
+        created = 0
+        for lane, items in grouped.items():
+            if lane not in self.agents:
+                lane = "backend" if lane == "backend" else "qa"
+            gate_names = ", ".join(str(i.get("name")) for i in items)
+            title = f"[Platform Repair] {gate_names} gate failing"
+            lines = [
+                "PLATFORM VERIFICATION FAILURE — the assembled project did not pass the",
+                "platform's runnability gates. Fix the ROOT CAUSE in the referenced files",
+                "so the same gates pass on the next verification round.",
+                "Address every item below, then exercise the affected build/run command",
+                "yourself to confirm it succeeds. Do not weaken, delete or bypass checks,",
+                "and do not hard-code values to silence a failure.",
+                "",
+            ]
+            for it in items:
+                detail = str(it.get("detail") or "")
+                lines.append(f"### Gate: {it.get('name')} (failure class: {_classify(detail)})")
+                lines.append(detail[:4000])
+                lines.append("")
+            task_id = f"verification_repair_{lane}_{int(time.time())}_{created + 1}"
+            self.scheduler.tasks[task_id] = Task({
+                "task_id": task_id,
+                "title": title,
+                "description": "\n".join(lines),
+                "lane": lane,
+                "depends_on": [],
+                "status": "pending",
+                "subtasks": [],
+            })
+            self.scheduler.save_tasks()
+            created += 1
+
+            self._post_event("verification_repair_dispatched", {
+                "task_id": task_id,
+                "lane": lane,
+                "gates": [str(i.get("name")) for i in items],
+                "failure_classes": [_classify(str(i.get("detail") or "")) for i in items],
+            })
+            try:
+                self.ipc.broadcast("Supervisor", "verification_issue_routed", {
+                    "task_id": task_id,
+                    "lane": lane,
+                    "error": str(items[0].get("detail") or "")[:500],
+                })
+            except Exception:
+                pass
+            logger.info(
+                f"[Supervisor] 🛠️  Verification repair routed to '{lane}' lane "
+                f"({task_id}): {title}"
+            )
+        return created
+
     def run(self) -> dict[str, Any]:
         """Execute all tasks in dependency order with parallel execution.
 
@@ -600,7 +761,56 @@ class SupervisorAgent:
                 )
                 if all_done:
                     print(f"\n[Supervisor] 🏁 All tasks processed!")
-                    break
+
+                    # ── Platform runnability decides whether the run is really done ──
+                    # Task counts alone never mean "done": the platform proves the
+                    # assembled app is installable, buildable, bootable and
+                    # connected. When it is not, the failures are converted into
+                    # repair tasks and routed to the lane agents that own the
+                    # affected files — the swarm then fixes them and we re-verify.
+                    if not _VERIFICATION_AVAILABLE:
+                        break
+
+                    report = self._platform_verify()
+                    if report is not None:
+                        self.verification_history.append(report)
+
+                    if report is None or report.get("skipped") or report.get("passed"):
+                        break
+
+                    signature = str(report.get("error_signature") or "")
+                    if signature and signature == self._last_verification_signature:
+                        # Failures not shrinking: another round would repeat the same
+                        # broken attempt, so stop and report convergence honestly.
+                        report.setdefault("convergence", True)
+                        logger.warning(
+                            "[Supervisor] Verification failures are not shrinking — "
+                            "stopping the repair loop (convergence)."
+                        )
+                        break
+                    self._last_verification_signature = signature
+
+                    if self._platform_repair_rounds_done >= self.max_platform_repair_rounds:
+                        logger.warning(
+                            f"[Supervisor] Platform repair rounds exhausted "
+                            f"({self._platform_repair_rounds_done}/{self.max_platform_repair_rounds}) — "
+                            "reporting the project as not runnable."
+                        )
+                        break
+
+                    created = self._enqueue_verification_repairs(report)
+                    if not created:
+                        break
+
+                    self._platform_repair_rounds_done += 1
+                    self.repair_tasks_created += created
+                    print(
+                        f"\n[Supervisor] 🔁 Platform verification round "
+                        f"{self._platform_repair_rounds_done}/{self.max_platform_repair_rounds}: "
+                        f"routed {created} repair task(s) to the owning lane agents."
+                    )
+                    idle_rounds = 0
+                    continue
 
                 # Check for deadlock or stalled tasks
                 idle_rounds += 1
@@ -654,25 +864,31 @@ class SupervisorAgent:
         # ═══════════════════════════════════════════════════════
         # SUMMARY
         # ═══════════════════════════════════════════════════════
+        # Repair tasks created by the verification loop join the same run, so the
+        # final task count is whatever the scheduler ended up holding.
+        total_tasks = len(self.scheduler.tasks)
+
         summary = {
             "total_tasks": total_tasks,
             "completed": self.tasks_completed,
             "failed": self.tasks_failed,
             "files_changed": len(set(self.total_files_changed)),
             "tasks": self.task_results,
+            "verification_rounds": len(self.verification_history),
+            "repair_tasks_created": self.repair_tasks_created,
+            "verification_max_repair_rounds": self.max_platform_repair_rounds,
         }
 
         # ── Gate B/C: global platform verification of the whole workspace ─────
-        # The swarm summary no longer claims success from task counts alone: the
-        # platform proves the assembled app is runnable (foundation/imports/boot/
-        # contract) and records the honest global status.
+        # The swarm summary never claims success from task counts alone: the last
+        # platform verification round (dynamic stages, run inside the DAG loop)
+        # decides the honest global status for the assembled application.
         global_verification: dict[str, Any] = {"skipped": True, "reason": "verification engine unavailable"}
-        if _VERIFICATION_AVAILABLE:
+        if self.verification_history:
+            global_verification = self.verification_history[-1]
+        elif _VERIFICATION_AVAILABLE:
             try:
-                g_report = VerificationEngine(self.workspace_path).run_full_verification(
-                    stages=["foundation", "imports", "boot", "contract"]
-                )
-                global_verification = g_report.to_dict()
+                global_verification = self._platform_verify() or global_verification
             except Exception as g_exc:
                 global_verification = {"skipped": True, "reason": str(g_exc)[:300]}
 

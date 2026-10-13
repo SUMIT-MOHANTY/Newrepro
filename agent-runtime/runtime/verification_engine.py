@@ -11,12 +11,17 @@ Design principles (from the platform improvement plan):
 4. Failures are classified into machine-actionable classes so repair loops
    converge instead of repeating the same broken attempt.
 
-Verification stages per project root:
-  foundation  — required manifests/entrypoints exist (the missing main.py class of bug)
-  imports     — Python entrypoint module imports cleanly and app object constructs
-  build       — npm install (first!) + npm run build exit 0 for Node sub-projects
-  boot        — server process starts and its health endpoint responds (uvicorn)
-  contract    — routes mounted by the running app cover the analyzed API contract
+Verification stages (dynamically selected per project — see plan_stages):
+  foundation   — required manifests/entrypoints exist (the missing main.py class of bug)
+  imports      — Python entrypoint module imports cleanly and app object constructs
+  build        — npm install (first!) + npm run build/typecheck exit 0 for Node sub-projects
+  boot         — backend server process starts and its health endpoint responds
+  serve        — Node app is served (its own preview/start/serve script or built output) and responds
+  contract     — routes mounted by the running app cover the analyzed API contract
+  connectivity — every detected server is up and the frontend's declared API base reaches the backend
+
+Which stages run is derived from the project kinds detected ON DISK (plan_stages),
+never from a stage list hard-coded by a caller, so any stack/layout is covered.
 
 The result is a VerificationReport that pipelines and the supervisor embed into
 task summaries, so status downstream ("completed") always means "verified".
@@ -79,13 +84,32 @@ def classify_failure(raw_error: str) -> str:
         return "type"
     if "cannot find name" in e or "cannot find module" in e or "has no exported member" in e:
         return "type"
-    if "npm err! code e404" in e or "no matching distribution" in e or "could not find a version" in e:
+    # Dependency resolution problems (any package manager) — must be checked
+    # before build/type, because these messages read like either.
+    if any(k in e for k in (
+        "no matching distribution", "could not find a version", "eresolve",
+        "peer dep", "npm err! notarget", "version solving failed",
+        "conflicting dependencies", "dependency resolver", "is incompatible",
+    )):
         return "dependency"
-    if "npm err!" in e or "vite build failed" in e or "failed to compile" in e:
+    if "npm err! code e404" in e:
+        return "dependency"
+    # Build/asset-pipeline failures (any bundler, any CSS pipeline): "class does
+    # not exist", "@apply", postcss/tailwind, unresolved imports, bundler errors.
+    if any(k in e for k in (
+        "postcss", "tailwind", "@apply", "failed to resolve", "rollup",
+        "esbuild", "webpack", "cannot be found in the image", "does not exist. if",
+    )):
+        return "build"
+    if "is not assignable to type" in e:
+        return "type"
+    if "npm err!" in e or "vite build failed" in e or "failed to compile" in e or "build failed" in e:
         return "build"
     if "uvicorn" in e and ("error" in e or "traceback" in e):
         return "runtime"
     if "address already in use" in e:
+        return "runtime"
+    if "returned http" in e or "not actually served" in e:
         return "runtime"
     if "connection refused" in e or "did not respond" in e:
         return "health"
@@ -104,7 +128,9 @@ class CheckResult:
         return {
             "name": self.name,
             "passed": self.passed,
-            "detail": (self.detail or "")[:800],
+            # Keep enough of the real failure text for a repair agent to act on it
+            # (previously truncated to 800 chars, which could cut off the error).
+            "detail": (self.detail or "")[:6000],
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
         }
@@ -157,6 +183,13 @@ class VerificationReport:
             "stages": [c.to_dict() for c in self.stages],
             "failure_classes": self.failure_classes,
             "error_signature": self.error_signature,
+            # Full failure text is kept so repair agents receive the real error,
+            # not a truncated notice.
+            "failures": [
+                {"name": c.name, "failure_class": classify_failure(c.detail),
+                 "detail": (c.detail or "")[:6000]}
+                for c in self.failures
+            ],
         }
 
 
@@ -279,6 +312,36 @@ def detect_project_kinds(root: str) -> list[str]:
 # Engine
 # ─────────────────────────────────────────────────────────────────────────────
 
+def plan_stages(kinds: list[str]) -> list[str]:
+    """Derive exactly which verification stages apply to the detected project.
+
+    Fully dynamic: the stage plan comes from the project kinds found on disk, so
+    a Python-only, Node-only, or mixed repo each gets exactly the gates that can
+    actually prove runnability. No caller needs to (or may) hard-code a list.
+    """
+    kinds = kinds or []
+    if kinds == ["unknown"]:
+        return ["foundation"]
+
+    has_python = "python_backend" in kinds
+    has_node_app = any(k in kinds for k in ("node_frontend", "node_backend", "node_frontend_orphan"))
+
+    stages: list[str] = ["foundation"]
+    if has_python:
+        stages.append("imports")
+    if has_node_app:
+        stages.append("build")
+    if has_python:
+        stages.append("boot")
+    if has_node_app:
+        stages.append("serve")
+    if has_python:
+        stages.append("contract")
+    if has_python or has_node_app:
+        stages.append("connectivity")
+    return stages
+
+
 class VerificationEngine:
     """Runs runnability gates for any project, reporting skipped checks honestly."""
 
@@ -288,16 +351,19 @@ class VerificationEngine:
         event_cb: Any = None,
         health_path: str = "/health",
         boot_timeout: float = 25.0,
+        serve_timeout: float = 30.0,
         contract_path: str | None = None,
     ):
         self.ws = workspace_path
         self.event_cb = event_cb
         self.health_path = health_path if health_path.startswith("/") else f"/{health_path}"
         self.boot_timeout = boot_timeout
+        self.serve_timeout = serve_timeout
         self.contract_path = contract_path or os.path.join(
             workspace_path, ".agent", "contracts", "api_contract.json"
         )
         self._last_python_routes: list[dict] = []
+        self._roots_cache: dict[str, list[str]] | None = None
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -309,24 +375,50 @@ class VerificationEngine:
                 pass
 
     def _find_roots(self) -> dict[str, list[str]]:
-        """Locate python and node roots (workspace root itself or conventional subdirs)."""
+        """Discover every Python / Node root in the workspace, dynamically.
+
+        No directory names are assumed: any directory carrying a manifest
+        (requirements/pyproject/Pipfile or package.json) — at the workspace root
+        or nested up to a bounded depth — is treated as a root of that stack.
+        """
+        cached = getattr(self, "_roots_cache", None)
+        if cached is not None:
+            return cached
+
         py_roots: list[str] = []
         node_roots: list[str] = []
-
         if _python_marker(self.ws):
             py_roots.append(self.ws)
-        for sub in ("backend", "server", "api"):
-            d = os.path.join(self.ws, sub)
-            if os.path.isdir(d) and _python_marker(d):
-                py_roots.append(d)
-
         if _node_marker(self.ws):
             node_roots.append(self.ws)
-        for sub in ("frontend", "client", "web"):
-            d = os.path.join(self.ws, sub)
-            if os.path.isdir(d) and _node_marker(d):
-                node_roots.append(d)
-        return {"python": py_roots, "node": node_roots}
+
+        skip_dirs = {
+            "node_modules", ".git", ".agent", ".agent_history", ".agent_ipc",
+            "venv", ".venv", "env", "__pycache__", "dist", "build", "out",
+            ".next", "coverage", ".turbo", "tmp", "temp",
+        }
+        max_depth = 3
+        for root_dir, dirs, files in os.walk(self.ws):
+            dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+            rel = os.path.relpath(root_dir, self.ws)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth >= max_depth:
+                dirs[:] = []
+            if root_dir == self.ws:
+                continue
+            if any(f in files for f in ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py")) or _python_marker(root_dir):
+                py_roots.append(root_dir)
+            if "package.json" in files:
+                node_roots.append(root_dir)
+
+        # De-duplicate while preserving discovery order
+        seen: set[str] = set()
+        roots = {
+            "python": [d for d in py_roots if not (d in seen or seen.add(d))],
+            "node": [d for d in node_roots if not (d in seen or seen.add(d))],
+        }
+        self._roots_cache = roots
+        return roots
 
     def _run(self, cmd: list[str], cwd: str, timeout: float) -> tuple[bool, str, str]:
         """Run a command with timeout, returning (ok, stdout_tail, stderr_tail)."""
@@ -345,6 +437,23 @@ class VerificationEngine:
             return False, "", f"Command not found: {cmd[0]} (tool unavailable in this environment)"
         except Exception as exc:
             return False, "", f"Command failed: {exc}"
+
+    def _clean_output(self, out: str, err: str, limit: int = 2500) -> str:
+        """Combine stdout/stderr tails for a failure report.
+
+        Drops package-manager notice/warn noise so the REAL error survives for
+        the repair agent instead of being crowded out by banner lines.
+        """
+        parts: list[str] = []
+        for chunk in (out or "", err or ""):
+            for line in chunk.splitlines():
+                low = line.strip().lower()
+                if low.startswith(("npm notice", "npm warn")):
+                    continue
+                if not line.strip() and (not parts or not parts[-1].strip()):
+                    continue
+                parts.append(line)
+        return "\n".join(parts).strip()[-limit:]
 
     # ── stage 1: foundation ──────────────────────────────────────────────────
 
@@ -554,13 +663,13 @@ class VerificationEngine:
                     cwd=nr, timeout=600.0,
                 )
                 if not ok:
-                    failures.append(f"npm install failed in {rel}:\n{(err or out)[-1200:]}")
+                    failures.append(f"npm install failed in {rel}:\n{self._clean_output(out, err)}")
                     continue
 
             self._post("verification_progress", {"stage": "build", "message": f"npm run build in {rel}..."})
             ok, out, err = self._run(["npm", "run", "build"], cwd=nr, timeout=600.0)
             if not ok:
-                failures.append(f"npm run build failed in {rel}:\n{(err or out)[-1500:]}")
+                failures.append(f"npm run build failed in {rel}:\n{self._clean_output(out, err)}")
             else:
                 notes.append(f"{rel}: npm build OK")
 
@@ -590,27 +699,12 @@ class VerificationEngine:
             )
 
         pr = roots["python"][0]
-        entry = None
-        app_ref = None
-        for cand_app, cand_file in (
-            ("app.main:app", "app/main.py"),
-            ("src.main:app", "src/main.py"),
-            ("main:app", "main.py"),
-            ("app:app", "app.py"),
-        ):
-            if os.path.exists(os.path.join(pr, cand_file)):
-                entry = cand_file
-                app_ref = cand_app
-                break
-        if not entry:
+        app_ref = self._detect_asgi_ref(pr)
+        if not app_ref:
             return CheckResult(name="boot", passed=True, skipped=True,
-                               skip_reason="no ASGI app reference (module:app) found — boot check not applicable")
+                               skip_reason="no importable ASGI/WSGI app object (module:app) found — boot check not applicable")
 
-        import socket
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        s.close()
+        port = self._ephemeral_port()
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.dirname(pr) if os.path.basename(pr) == "backend" else pr
         env.setdefault("ENVIRONMENT", "test")
@@ -655,15 +749,334 @@ class VerificationEngine:
                 detail=f"server did not respond on port {port} within {self.boot_timeout:.0f}s",
             )
         finally:
-            if proc and proc.poll() is None:
+            self._terminate(proc)
+
+    # ── stage 4b: Node app serve (command taken from the project itself) ─────
+
+    def check_serve(self, kinds: list[str]) -> CheckResult:
+        """Prove every detected Node app actually SERVES over HTTP.
+
+        The start command is taken from the project's own package.json scripts
+        (preview/start/serve) or, when the project ships built output, from a
+        static server over that output — nothing about the framework is assumed.
+        """
+        roots = self._find_roots()
+        if not roots["node"]:
+            return CheckResult(name="serve", passed=True, skipped=True,
+                               skip_reason="no Node app detected — nothing to serve")
+
+        failures: list[str] = []
+        notes: list[str] = []
+        for nr in roots["node"]:
+            rel = os.path.relpath(nr, self.ws)
+            cmd, kind = self._serve_plan(nr)
+            if not cmd:
+                notes.append(
+                    f"{rel}: no preview/start/serve script and no built output — serve check not applicable"
+                )
+                continue
+            self._post("verification_progress", {"stage": "serve", "message": f"Serving {rel} via {kind}..."})
+            ok, detail = self._serve_and_probe(nr, cmd, kind)
+            if ok:
+                notes.append(f"{rel}: {detail}")
+            else:
+                failures.append(f"{rel}: {detail}")
+
+        if failures:
+            return CheckResult(name="serve", passed=False, detail="\n---\n".join(failures))
+        if not notes:
+            return CheckResult(name="serve", passed=True, skipped=True,
+                               skip_reason="no servable Node app detected")
+        return CheckResult(name="serve", passed=True, detail="; ".join(notes))
+
+    # ── stage 6: cross-service connectivity ─────────────────────────────────
+
+    def check_connectivity(self, kinds: list[str]) -> CheckResult:
+        """Every detected server is actually up, and the frontend's declared API
+        base reaches the backend.
+
+        The API base is discovered from the project's own env files / source
+        (any framework's VITE_*/REACT_APP_*/NEXT_PUBLIC_* or baseURL constant) —
+        if the project declares none, the cross-service probe is recorded as not
+        applicable rather than silently passing.
+        """
+        roots = self._find_roots()
+        if not roots["python"] and not roots["node"]:
+            return CheckResult(name="connectivity", passed=True, skipped=True,
+                               skip_reason="no servers detected — connectivity not applicable")
+
+        failures: list[str] = []
+        notes: list[str] = []
+        proc = None
+        backend_base = ""
+        try:
+            if roots["python"]:
+                ok, backend_base, detail, proc = self._boot_backend_process()
+                if ok:
+                    notes.append(f"backend reachable at {backend_base} ({detail})")
+                else:
+                    failures.append(f"backend unreachable: {detail}")
+
+            api_base, source = self._detect_api_base(roots["node"], backend_base)
+            if api_base:
+                probe_url = api_base.rstrip("/") + "/"
+                code, _, err = _http_probe(probe_url, timeout=5.0)
+                if code is not None and code < 500:
+                    notes.append(f"frontend API base {api_base} reachable (HTTP {code}) [{source}]")
+                else:
+                    failures.append(
+                        f"frontend API base {api_base} unreachable [{source}]"
+                        + (f": {err}" if err else "")
+                    )
+            else:
+                notes.append(
+                    "frontend API base not declared in env/source — cross-service probe not applicable"
+                )
+        finally:
+            self._terminate(proc)
+
+        if failures:
+            return CheckResult(name="connectivity", passed=False, detail="\n---\n".join(failures))
+        if not notes:
+            return CheckResult(name="connectivity", passed=True, skipped=True,
+                               skip_reason="nothing verifiable detected")
+        return CheckResult(name="connectivity", passed=True, detail="; ".join(notes))
+
+    # ── server helpers ──────────────────────────────────────────────────────
+
+    def _ephemeral_port(self) -> int:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _terminate(self, proc: Any) -> None:
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
                 try:
-                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+            except Exception:
+                pass
+
+    def _detect_asgi_ref(self, py_root: str) -> str | None:
+        """Find any importable ASGI/WSGI app object in a Python root, dynamically.
+
+        Scans the source for `<name> = <Framework>(...)` assignments and returns
+        the importable `module:object` reference — no framework or filename is
+        hard-coded, so FastAPI/Flask/Starlette/Quart/Sanic/aiohttp/Falcon all work
+        in any layout.
+        """
+        app_pattern = re.compile(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[^=]+)?=\s*"
+            r"(FastAPI|APIRouter|Flask|Starlette|Quart|Sanic|Bottle|web\.Application|falcon\.App|falcon\.API)\s*\(",
+            re.MULTILINE,
+        )
+        skip_dirs = {"node_modules", ".git", ".agent", "venv", ".venv", "__pycache__", "dist", "build", "tests", "test"}
+        candidates: list[tuple[int, str]] = []
+        for root_dir, dirs, files in os.walk(py_root):
+            dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+            for fname in sorted(files):
+                if not fname.endswith(".py"):
+                    continue
+                fpath = os.path.join(root_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
+                        content = fh.read()
+                except Exception:
+                    continue
+                match = app_pattern.search(content)
+                if not match:
+                    continue
+                obj = match.group(1)
+                rel = os.path.relpath(fpath, py_root).replace("\\", "/")
+                module = rel[:-3].replace("/", ".")
+                if module.endswith(".__init__"):
+                    module = module[: -len(".__init__")]
+                # Prefer conventional entrypoints when several apps exist.
+                rank = 0 if os.path.basename(fpath) in ("main.py", "app.py", "asgi.py", "server.py") else 1
+                candidates.append((rank, f"{module}:{obj}"))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: c[0])
+        return candidates[0][1]
+
+    def _read_scripts(self, node_root: str) -> dict[str, str]:
+        try:
+            with open(os.path.join(node_root, "package.json"), "r", encoding="utf-8") as fh:
+                return json.load(fh).get("scripts") or {}
+        except Exception:
+            return {}
+
+    def _serve_plan(self, node_root: str) -> tuple[list[str], str]:
+        """Return (command, description) to serve this Node app, from its own config."""
+        scripts = self._read_scripts(node_root)
+        for script in ("preview", "start", "serve"):
+            if script in scripts:
+                return ["npm", "run", script], f"npm run {script}"
+        for name in ("dist", "build", "out"):
+            out_dir = os.path.join(node_root, name)
+            if os.path.isfile(os.path.join(out_dir, "index.html")):
+                return [
+                    sys.executable or "python", "-m", "http.server", "{port}",
+                    "--bind", "127.0.0.1", "--directory", out_dir,
+                ], f"static {name}/"
+        return [], ""
+
+    def _serve_and_probe(self, node_root: str, cmd: list[str], kind: str) -> tuple[bool, str]:
+        """Start a Node app on an ephemeral port and probe it. Always cleans up."""
+        if not shutil.which("npm") and cmd[0] == "npm":
+            return False, "npm not available in this environment"
+        port = self._ephemeral_port()
+        run_cmd = [str(port) if part == "{port}" else part for part in cmd]
+        if run_cmd[0] == "npm":
+            run_cmd += ["--", "--port", str(port), "--host", "127.0.0.1"]
+        env = dict(os.environ)
+        env.update({"PORT": str(port), "HOST": "127.0.0.1", "BROWSER": "none", "CI": "1"})
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                run_cmd, cwd=node_root, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+            deadline = time.time() + self.serve_timeout
+            last_code: int | None = None
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    tail = ""
                     try:
-                        proc.wait(timeout=5)
+                        tail = self._clean_output("", (proc.stderr.read() or b"").decode("utf-8", "replace"))
                     except Exception:
-                        proc.kill()
+                        pass
+                    return False, f"'{kind}' exited rc={proc.returncode} before serving:\n{tail}"
+                code, _, _ = _http_probe(f"http://127.0.0.1:{port}/", timeout=3.0)
+                if code is not None:
+                    last_code = code
+                    if 200 <= code < 400:
+                        return True, f"{kind} responded HTTP {code} on port {port}"
+                time.sleep(1.0)
+            if last_code is not None:
+                return False, (
+                    f"{kind} started but returned HTTP {last_code} on / for "
+                    f"{self.serve_timeout:.0f}s — the app entry is not actually served"
+                )
+            return False, f"{kind} did not respond on port {port} within {self.serve_timeout:.0f}s"
+        except FileNotFoundError as exc:
+            return False, f"'{kind}' could not start: {exc}"
+        finally:
+            self._terminate(proc)
+
+    def _boot_backend_process(self) -> tuple[bool, str, str, Any]:
+        """Start the detected ASGI app on an ephemeral port and probe it.
+
+        Returns (ok, base_url, detail, proc); the caller owns the process.
+        """
+        roots = self._find_roots()
+        if not roots["python"]:
+            return False, "", "no python backend detected", None
+        if not _has_uvicorn():
+            return False, "", "uvicorn not installed in runtime environment", None
+
+        pr = roots["python"][0]
+        app_ref = self._detect_asgi_ref(pr)
+        if not app_ref:
+            return False, "", "no importable ASGI/WSGI app object found", None
+
+        port = self._ephemeral_port()
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.path.dirname(pr) if os.path.basename(pr) == "backend" else pr
+        env.setdefault("ENVIRONMENT", "test")
+        base_url = f"http://127.0.0.1:{port}"
+
+        try:
+            proc = subprocess.Popen(
+                [sys.executable or "python", "-m", "uvicorn", app_ref,
+                 "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+                cwd=pr, env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            return False, base_url, f"uvicorn could not start: {exc}", None
+
+        deadline = time.time() + self.boot_timeout
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                tail = ""
+                try:
+                    tail = self._clean_output("", (proc.stderr.read() or b"").decode("utf-8", "replace"))
                 except Exception:
                     pass
+                return False, base_url, f"{app_ref} exited rc={proc.returncode} while booting:\n{tail}", proc
+            for path in (self.health_path, "/"):
+                code, _, _ = _http_probe(f"{base_url}{path}", timeout=3.0)
+                if code is not None and code < 500:
+                    return True, base_url, f"{app_ref} responded HTTP {code} on {path}", proc
+            time.sleep(1.0)
+        return False, base_url, f"{app_ref} did not respond within {self.boot_timeout:.0f}s", proc
+
+    def _detect_api_base(self, node_roots: list[str], backend_base: str) -> tuple[str, str]:
+        """Discover the frontend's API base URL from env files or source, dynamically."""
+        env_key_re = re.compile(
+            r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*['\"]?(https?://[^'\"\s]+)", re.MULTILINE
+        )
+        src_re = re.compile(
+            r"(?:baseURL|baseUrl|API_BASE_URL|API_URL|VITE_API_URL|apiBaseUrl|API_BASE)"
+            r"\s*[:=]\s*[`'\"](https?://[^`'\"\s]+)", re.MULTILINE
+        )
+        skip_dirs = {"node_modules", ".git", "dist", "build", ".next", "coverage"}
+
+        for nr in node_roots:
+            # 1. env files at the Node root and two levels up (monorepos)
+            search_dirs = [nr, os.path.dirname(nr), os.path.dirname(os.path.dirname(nr))]
+            for d in search_dirs:
+                if not d or not os.path.isdir(d):
+                    continue
+                try:
+                    entries = os.listdir(d)
+                except OSError:
+                    continue
+                for fname in entries:
+                    if not (fname.startswith(".env") or fname == "vite.config.ts" or fname == "vite.config.js"):
+                        continue
+                    fpath = os.path.join(d, fname)
+                    if not os.path.isfile(fpath):
+                        continue
+                    try:
+                        with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
+                            content = fh.read()
+                    except Exception:
+                        continue
+                    for _key, url in env_key_re.findall(content):
+                        return url, f"{os.path.relpath(fpath, self.ws)}"
+                    m = src_re.search(content)
+                    if m:
+                        return m.group(1), f"{os.path.relpath(fpath, self.ws)}"
+            # 2. source constants
+            for root_dir, dirs, files in os.walk(nr):
+                dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+                for fname in files:
+                    if not fname.endswith((".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte")):
+                        continue
+                    fpath = os.path.join(root_dir, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
+                            content = fh.read()
+                    except Exception:
+                        continue
+                    m = src_re.search(content)
+                    if m:
+                        return m.group(1), f"{os.path.relpath(fpath, self.ws)}"
+
+        # No declared base: fall back to the live backend URL when we have one,
+        # so the connectivity probe still proves the backend answers requests.
+        if backend_base:
+            return backend_base, "live backend (no frontend API base declared)"
+        return "", ""
 
     # ── stage 5: contract route coverage ─────────────────────────────────────
 
@@ -908,17 +1321,35 @@ class VerificationEngine:
 
     # ── orchestrator ─────────────────────────────────────────────────────────
 
-    def run_full_verification(self, stages: list[str] | None = None) -> VerificationReport:
-        """Run the appropriate gates for the detected project types.
+    #: stage name → runner. The plan (plan_stages) decides which run; nothing
+    #: here is project-specific, so a new stack only needs a new detect rule.
+    def _stage_runner(self, name: str):
+        return {
+            "imports": lambda kinds: self.check_imports(kinds),
+            "build": lambda kinds: self.check_build(kinds),
+            "boot": lambda kinds: self.check_boot(kinds),
+            "serve": lambda kinds: self.check_serve(kinds),
+            "contract": lambda kinds: self.check_contract_routes(),
+            "connectivity": lambda kinds: self.check_connectivity(kinds),
+        }.get(name)
 
-        stages: optional subset filter, e.g. ["foundation", "imports"].
+    def run_full_verification(self, stages: list[str] | None = None) -> VerificationReport:
+        """Run the gates that apply to the project found on disk.
+
+        Stage selection is DYNAMIC (plan_stages) — derived from the detected
+        project kinds. `stages` may narrow that plan explicitly (e.g. for a
+        targeted re-check), but no caller is required to know any stage names.
         """
         t0 = time.time()
         kinds = detect_project_kinds(self.ws)
         report = VerificationReport(project_kinds=kinds)
-        want = set(stages or ["foundation", "imports", "build", "boot", "contract"])
 
-        self._post("verification_started", {"project_kinds": kinds, "stages": sorted(want)})
+        planned = plan_stages(kinds)
+        want = [s for s in (stages or planned) if s in planned or s == "foundation"]
+        if not want:
+            want = planned
+
+        self._post("verification_started", {"project_kinds": kinds, "stages": want})
 
         # Unknown stack: never fail on what we can't recognize, but never pass
         # silently either — record the limitation explicitly for human review.
@@ -944,17 +1375,21 @@ class VerificationEngine:
         except Exception as sync_err:
             self._post("verification_progress", {"stage": "dependencies", "message": f"Dependency sync note: {sync_err}"})
 
-        if "imports" in want:
-            report.stages.append(self.check_imports(kinds))
-
-        if "build" in want and ("node_frontend" in kinds or "node_backend" in kinds):
-            report.stages.append(self.check_build(kinds))
-
-        if "boot" in want and "python_backend" in kinds:
-            report.stages.append(self.check_boot(kinds))
-
-        if "contract" in want and "python_backend" in kinds:
-            report.stages.append(self.check_contract_routes())
+        for name in want:
+            if name == "foundation":
+                continue
+            runner = self._stage_runner(name)
+            if not runner:
+                continue
+            self._post("verification_progress", {"stage": name, "message": f"Running {name} gate..."})
+            try:
+                result = runner(kinds)
+            except Exception as stage_err:
+                result = CheckResult(
+                    name=name, passed=False,
+                    detail=f"{name} gate raised {type(stage_err).__name__}: {stage_err}",
+                )
+            report.stages.append(result)
 
         report.duration_s = time.time() - t0
         report.error_signature = report.compute_error_signature()

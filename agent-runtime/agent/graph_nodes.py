@@ -2179,15 +2179,15 @@ def build_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
 
         print("[Graph:BuildNode] Build succeeded! Running platform runnability verification (Gate B)...")
         # ── Gate B: platform-owned runnability verification ──────────────────
-        # Independent of the agent: foundation / imports / backend boot + health /
-        # contract route coverage (npm build was just proven by install_and_build).
-        # Checks that cannot run are recorded as skipped — never silently passed.
+        # Independent of the agent. Stage selection is DYNAMIC (the engine derives
+        # the applicable gates from the project kinds found on disk): foundation /
+        # imports / build+typecheck / backend boot + health / frontend serve /
+        # contract route coverage / cross-service connectivity. Checks that cannot
+        # run are recorded as skipped — never silently passed.
         try:
             ws = state["workspace_path"]
             engine = VerificationEngine(ws, event_cb=ctx.post_event)
-            report = engine.run_full_verification(
-                stages=["foundation", "imports", "boot", "contract"]
-            )
+            report = engine.run_full_verification()
             report_dict = report.to_dict()
             ctx.post_event("platform_verification", {
                 "session_id": state["session_id"],
