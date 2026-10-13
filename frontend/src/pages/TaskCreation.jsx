@@ -63,12 +63,14 @@ function extractEntityName(item, key) {
     return fallback || '';
 }
 
-const DEFAULT_SPRINTS = [
-    { id: 'sprint_1', name: 'Sprint 1', subtitle: 'Foundation & Interactive Prototype', total: 7, done: 0, due: '2026-10-02' },
-    { id: 'sprint_2', name: 'Sprint 2', subtitle: 'Core Services & Authentication', total: 7, done: 0, due: '2026-10-06' },
-    { id: 'sprint_3', name: 'Sprint 3', subtitle: 'Real-time System & Full Integration', total: 8, done: 0, due: '2026-10-10' },
-    { id: 'sprint_4', name: 'Sprint 4', subtitle: 'Production Readiness & Optimization', total: 6, done: 0, due: '2026-10-16' },
-];
+const EMPTY_DEFAULT_SPRINT = {
+    id: 'sprint_1',
+    name: 'Sprint 1',
+    subtitle: '',
+    total: 0,
+    done: 0,
+    due: '',
+};
 
 export default function TaskCreation({
     projects = [],
@@ -119,6 +121,26 @@ export default function TaskCreation({
         released_sprints: [],
         released_tasks: []
     });
+    const [showGenerationModal, setShowGenerationModal] = useState(true);
+
+    // Keep progress bar smoothly moving during AI generation
+    useEffect(() => {
+        let smoothTimer = null;
+        if (isGenerating) {
+            smoothTimer = setInterval(() => {
+                setGenerationStatus(prev => {
+                    if (!prev.is_generating || prev.progress_percent >= 94) return prev;
+                    return {
+                        ...prev,
+                        progress_percent: Math.min(94, (prev.progress_percent || 15) + 1),
+                    };
+                });
+            }, 850);
+        }
+        return () => {
+            if (smoothTimer) clearInterval(smoothTimer);
+        };
+    }, [isGenerating]);
 
     const [projectType, setProjectType] = useState(() => {
         if (selectedProjectKey) {
@@ -165,22 +187,25 @@ export default function TaskCreation({
                 });
 
                 if (sprintMap.size > 0) {
-                    const derivedSprints = Array.from(sprintMap.values()).map((s, idx) => {
+                    const derivedSprints = Array.from(sprintMap.values()).map((s) => {
                         const total = s.tasks.length;
                         const done = s.tasks.filter(t => (t.status || 'TODO').toUpperCase() === 'DONE').length;
-                        const defaultInfo = DEFAULT_SPRINTS[idx] || DEFAULT_SPRINTS[0];
+                        const firstMilestone = s.tasks.find(t => t.milestone)?.milestone;
+                        const firstDesc = s.tasks[0]?.description?.slice(0, 45);
+                        const firstTitle = s.tasks[0]?.taskName || s.tasks[0]?.title;
+                        const subtitle = firstMilestone || firstDesc || firstTitle || '';
                         return {
                             id: s.id,
                             name: s.name,
-                            subtitle: s.tasks[0]?.description?.slice(0, 40) || defaultInfo.subtitle,
+                            subtitle,
                             total,
                             done,
-                            due: s.tasks[0]?.deadline || defaultInfo.due,
+                            due: s.tasks[0]?.deadline || '',
                         };
                     });
                     setSprints(derivedSprints);
                 } else {
-                    setSprints(DEFAULT_SPRINTS);
+                    setSprints([]);
                 }
 
                 setMilestones(Array.from(milestoneMap.values()));
@@ -195,14 +220,69 @@ export default function TaskCreation({
 
     useEffect(() => {
         loadData();
-    }, [loadData]);
+
+        // Check if an AI task generation job is already active on the backend
+        let pollTimer = null;
+        const checkActiveJob = async () => {
+            if (!selectedProjectKey) return;
+            try {
+                const res = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${encodeURIComponent(selectedProjectKey)}`, {
+                    headers: buildHeaders(),
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && data.is_generating && data.status === 'generating') {
+                        setIsGenerating(true);
+                        setShowGenerationModal(true);
+                        setGenerationStatus(data);
+                        pollTimer = setInterval(async () => {
+                            try {
+                                const pRes = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${encodeURIComponent(selectedProjectKey)}`, {
+                                    headers: buildHeaders(),
+                                });
+                                if (pRes.ok) {
+                                    const pData = await pRes.json();
+                                    setGenerationStatus(pData);
+                                    if (Array.isArray(pData.released_tasks) && pData.released_tasks.length > 0) {
+                                        setTasks(prev => {
+                                            const existingIds = new Set(prev.map(t => t.task_id || t.id));
+                                            const newTasks = pData.released_tasks.filter(t => !existingIds.has(t.task_id || t.id));
+                                            return newTasks.length > 0 ? [...prev, ...newTasks] : prev;
+                                        });
+                                    }
+                                    if (!pData.is_generating || pData.status === 'completed' || pData.status === 'failed') {
+                                        clearInterval(pollTimer);
+                                        setIsGenerating(false);
+                                        setShowGenerationModal(false);
+                                        loadData();
+                                    }
+                                }
+                            } catch {
+                                // silent
+                            }
+                        }, 2500);
+                    }
+                }
+            } catch {
+                // silent
+            }
+        };
+
+        checkActiveJob();
+        return () => {
+            if (pollTimer) clearInterval(pollTimer);
+        };
+    }, [loadData, selectedProjectKey, buildHeaders]);
 
     // Active sprint
     const activeSprint = useMemo(() => {
         if (sprints.length > 0 && sprints[activeSprintIndex]) {
             return sprints[activeSprintIndex];
         }
-        return DEFAULT_SPRINTS[0];
+        if (sprints.length > 0) {
+            return sprints[0];
+        }
+        return EMPTY_DEFAULT_SPRINT;
     }, [sprints, activeSprintIndex]);
 
     // Filter tasks for the active sprint & filters
@@ -272,17 +352,49 @@ export default function TaskCreation({
         return { todo, inProgress, blocked, done };
     }, [displayedTasks]);
 
+    // Helper to persist task selection to DB
+    const syncTaskSelection = async (taskIds, selected) => {
+        if (!selectedProjectKey || !taskIds || taskIds.length === 0) return;
+        try {
+            await fetch(`${API_BASE_URL}/api/agent/tasks/selection/`, {
+                method: 'PATCH',
+                headers: {
+                    ...buildHeaders(),
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    task_ids: taskIds,
+                    selected: selected,
+                    project_token: selectedProjectKey,
+                }),
+            });
+        } catch (err) {
+            console.error('Failed to sync task selection to backend:', err);
+        }
+    };
+
     // Selection handlers
     const handleSelectAll = () => {
-        setTasks(prev => prev.map(t => ({ ...t, selected: true })));
+        const idsToSelect = (displayedTasks.length > 0 ? displayedTasks : tasks)
+            .map(t => t.task_id || t.id)
+            .filter(Boolean);
+        setTasks(prev => prev.map(t => idsToSelect.includes(t.task_id || t.id) ? { ...t, selected: true } : t));
+        syncTaskSelection(idsToSelect, true);
     };
 
     const handleDeselectAll = () => {
-        setTasks(prev => prev.map(t => ({ ...t, selected: false })));
+        const idsToDeselect = (displayedTasks.length > 0 ? displayedTasks : tasks)
+            .map(t => t.task_id || t.id)
+            .filter(Boolean);
+        setTasks(prev => prev.map(t => idsToDeselect.includes(t.task_id || t.id) ? { ...t, selected: false } : t));
+        syncTaskSelection(idsToDeselect, false);
     };
 
     const handleToggleTaskSelect = (taskId) => {
-        setTasks(prev => prev.map(t => (t.task_id === taskId || t.id === taskId) ? { ...t, selected: !t.selected } : t));
+        const target = tasks.find(t => (t.task_id === taskId || t.id === taskId));
+        const newSelected = target ? !target.selected : true;
+        setTasks(prev => prev.map(t => (t.task_id === taskId || t.id === taskId) ? { ...t, selected: newSelected } : t));
+        syncTaskSelection([taskId], newSelected);
     };
 
     // Change task status (1-click move)
@@ -312,30 +424,52 @@ export default function TaskCreation({
         }
 
         setIsGenerating(true);
+        setShowGenerationModal(true);
         setError('');
         setSuccess('');
+        setGenerationStatus({
+            is_generating: true,
+            status: 'generating',
+            current_sprint: 1,
+            current_sprint_name: 'Analyzing Project Architecture & Technical Scope...',
+            total_sprints: 4,
+            progress_percent: 15,
+            status_message: 'Master AI Agent evaluating project BRD and technical architecture...',
+            released_sprints: [],
+            released_tasks: []
+        });
+
+        let activePoll = true;
+        let pollInterval = null;
 
         try {
-            const pollInterval = setInterval(async () => {
+            pollInterval = setInterval(async () => {
+                if (!activePoll) return;
                 try {
-                    const statusRes = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${selectedProjectKey}`, {
+                    const statusRes = await fetch(`${API_BASE_URL}/api/agent/tasks/generation-status/${encodeURIComponent(selectedProjectKey)}`, {
                         headers: buildHeaders(),
                     });
                     if (statusRes.ok) {
                         const statusData = await statusRes.json();
-                        setGenerationStatus(statusData);
-                        if (Array.isArray(statusData.released_tasks) && statusData.released_tasks.length > 0) {
-                            setTasks(prev => {
-                                const existingIds = new Set(prev.map(t => t.task_id));
-                                const newTasks = statusData.released_tasks.filter(t => !existingIds.has(t.task_id));
-                                return newTasks.length > 0 ? [...prev, ...newTasks] : prev;
-                            });
+                        if (statusData && activePoll) {
+                            setGenerationStatus(prev => ({
+                                ...prev,
+                                ...statusData,
+                                progress_percent: Math.max(prev.progress_percent || 0, statusData.progress_percent || 0),
+                            }));
+                            if (Array.isArray(statusData.released_tasks) && statusData.released_tasks.length > 0) {
+                                setTasks(prev => {
+                                    const existingIds = new Set(prev.map(t => t.task_id || t.id));
+                                    const newTasks = statusData.released_tasks.filter(t => !existingIds.has(t.task_id || t.id));
+                                    return newTasks.length > 0 ? [...prev, ...newTasks] : prev;
+                                });
+                            }
                         }
                     }
                 } catch {
                     // silent
                 }
-            }, 5000);
+            }, 2500);
 
             const res = await fetch(API_ENDPOINTS.AGENT_TASKS_GENERATE_LOCAL, {
                 method: 'POST',
@@ -351,19 +485,34 @@ export default function TaskCreation({
                 }),
             });
 
-            clearInterval(pollInterval);
+            activePoll = false;
+            if (pollInterval) clearInterval(pollInterval);
 
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
                 throw new Error(errData.detail || 'Failed to generate sprint plan');
             }
 
+            setGenerationStatus(prev => ({
+                ...prev,
+                is_generating: false,
+                status: 'completed',
+                progress_percent: 100,
+                status_message: 'Sprint plan and work breakdown generated successfully!',
+            }));
+
             setSuccess('AI Sprint Plan generated successfully!');
             await loadData();
+            setTimeout(() => {
+                setIsGenerating(false);
+                setShowGenerationModal(false);
+            }, 800);
         } catch (err) {
+            activePoll = false;
+            if (pollInterval) clearInterval(pollInterval);
             setError(err.message || 'Generation failed. Please try again.');
-        } finally {
             setIsGenerating(false);
+            setShowGenerationModal(false);
         }
     };
 
@@ -372,8 +521,8 @@ export default function TaskCreation({
         let targetTasks = tasks.filter(t => t.selected);
         if (targetTasks.length === 0) {
             // Auto select all in active sprint if none selected
-            targetTasks = displayedTasks;
-            setTasks(prev => prev.map(t => displayedTasks.some(dt => (dt.task_id || dt.id) === (t.task_id || t.id)) ? { ...t, selected: true } : t));
+            targetTasks = displayedTasks.length > 0 ? displayedTasks : tasks;
+            setTasks(prev => prev.map(t => targetTasks.some(dt => (dt.task_id || dt.id) === (t.task_id || t.id)) ? { ...t, selected: true } : t));
         }
 
         const taskIds = targetTasks.map(t => t.id || t.task_id).filter(Boolean);
@@ -401,8 +550,8 @@ export default function TaskCreation({
         navigate('/resource-onboarding', {
             state: {
                 projectToken: selectedProjectKey,
-                startSprint: activeSprint.name,
-                selectedTasks: targetTasks.map(t => t.task_id || t.id),
+                startSprint: activeSprint?.name || 'Sprint 1',
+                selectedTasks: taskIds,
             }
         });
     };
@@ -456,7 +605,7 @@ export default function TaskCreation({
                         </div>
 
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                            {sprints.length || 4} Sprints
+                            {sprints.length} {sprints.length === 1 ? 'Sprint' : 'Sprints'}
                         </span>
                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
                             {tasks.length} Work Items
@@ -575,49 +724,66 @@ export default function TaskCreation({
                 </div>
             </div>
 
-            {/* ── 2. COMPACT HORIZONTAL SPRINT CARDS ── */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-2.5">
-                {(sprints.length > 0 ? sprints : DEFAULT_SPRINTS).slice(0, 4).map((sprint, idx) => {
-                    const isActive = activeSprintIndex === idx;
-                    const sprintTasks = tasks.filter(t => {
-                        const ts = String(t.sprint || '').toLowerCase();
-                        const sn = String(sprint.name || '').toLowerCase();
-                        return ts.includes(sn) || sn.includes(ts) || t.sprint === sprint.id;
-                    });
-                    const total = sprintTasks.length || sprint.total || 7;
-                    const done = sprintTasks.filter(t => (t.status || '').toUpperCase() === 'DONE').length;
-
-                    const defaultInfo = DEFAULT_SPRINTS[idx] || DEFAULT_SPRINTS[0];
-                    let label = sprint.name || `Sprint ${idx + 1}`;
-                    if (!label.includes(':')) {
-                        const sub = sprint.subtitle || defaultInfo.subtitle;
-                        if (sub && !label.toLowerCase().includes(sub.toLowerCase())) {
-                            label = `${label}: ${sub}`;
-                        }
-                    }
-
-                    return (
-                        <div
-                            key={sprint.id || idx}
-                            onClick={() => setActiveSprintIndex(idx)}
-                            className={`rounded-lg py-2 px-3 transition-all cursor-pointer flex items-center justify-between gap-2 ${
-                                isActive
-                                    ? 'bg-blue-600 text-white shadow-sm border border-blue-600'
-                                    : 'bg-white border border-slate-200 text-slate-800 shadow-2xs hover:border-slate-300 hover:shadow-xs'
-                            }`}
-                        >
-                            <span className={`text-xs font-bold truncate leading-tight ${isActive ? 'text-white' : 'text-slate-800'}`} title={label}>
-                                {label}
-                            </span>
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                                isActive ? 'bg-blue-500/70 text-white' : 'text-slate-500 font-mono bg-slate-100'
-                            }`}>
-                                {done}/{total}
-                            </span>
+            {/* Background Generating Notice Banner (shown if modal is minimized) */}
+            {isGenerating && !showGenerationModal && (
+                <div className="mb-3 p-3 bg-blue-50/90 border border-blue-200 rounded-xl text-xs flex items-center justify-between shadow-2xs animate-in fade-in">
+                    <div className="flex items-center gap-2.5">
+                        <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+                        <div>
+                            <span className="font-bold text-blue-900">AI Task Generation in Progress: </span>
+                            <span className="text-blue-700">{generationStatus.status_message} ({generationStatus.progress_percent}%)</span>
                         </div>
-                    );
-                })}
-            </div>
+                    </div>
+                    <button
+                        onClick={() => setShowGenerationModal(true)}
+                        className="text-xs font-semibold text-blue-600 bg-white border border-blue-200 hover:bg-blue-50 px-2.5 py-1 rounded-lg shadow-2xs transition-colors"
+                    >
+                        View Live Progress
+                    </button>
+                </div>
+            )}
+
+            {/* ── 2. DYNAMIC HORIZONTAL SPRINT CARDS (SCROLLABLE ON NARROW SCREENS) ── */}
+            {sprints.length > 0 && (
+                <div className="flex items-center gap-2 overflow-x-auto pb-2 mb-2.5 min-w-0 scrollbar-thin">
+                    {sprints.map((sprint, idx) => {
+                        const isActive = activeSprintIndex === idx;
+                        const sprintTasks = tasks.filter(t => {
+                            const ts = String(t.sprint || '').toLowerCase();
+                            const sn = String(sprint.name || '').toLowerCase();
+                            return ts.includes(sn) || sn.includes(ts) || t.sprint === sprint.id;
+                        });
+                        const total = sprintTasks.length || sprint.total || 0;
+                        const done = sprintTasks.filter(t => (t.status || '').toUpperCase() === 'DONE').length;
+
+                        let label = sprint.name || `Sprint ${idx + 1}`;
+                        if (!label.includes(':') && sprint.subtitle && sprint.subtitle.trim()) {
+                            label = `${label}: ${sprint.subtitle}`;
+                        }
+
+                        return (
+                            <div
+                                key={sprint.id || idx}
+                                onClick={() => setActiveSprintIndex(idx)}
+                                className={`rounded-lg py-2 px-3 transition-all cursor-pointer flex items-center justify-between gap-2.5 shrink-0 min-w-[210px] flex-1 max-w-[340px] ${
+                                    isActive
+                                        ? 'bg-blue-600 text-white shadow-sm border border-blue-600'
+                                        : 'bg-white border border-slate-200 text-slate-800 shadow-2xs hover:border-slate-300 hover:shadow-xs'
+                                }`}
+                            >
+                                <span className={`text-xs font-bold truncate leading-tight ${isActive ? 'text-white' : 'text-slate-800'}`} title={label}>
+                                    {label}
+                                </span>
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
+                                    isActive ? 'bg-blue-500/70 text-white' : 'text-slate-500 font-mono bg-slate-100'
+                                }`}>
+                                    {done}/{total}
+                                </span>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
 
             {/* ── 3. SELECTION & ACTION TOOLBAR ── */}
             <div className="flex flex-wrap items-center justify-between gap-2.5 mb-2.5">
@@ -782,76 +948,217 @@ export default function TaskCreation({
                     </div>
                 </div>
             ) : (
-                /* ── KANBAN BOARD VIEW (FULL LENGTH & FULL WIDTH, WHOLE PAGE SCROLLABLE) ── */
-                <div className="w-full flex flex-col lg:flex-row gap-4 items-stretch">
-                    {/* The 4 Columns */}
-                    <div className="flex-1 w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 items-stretch">
-                        {/* ── COLUMN 1: TO DO ── */}
-                        <div
-                            onDragOver={(e) => {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = 'move';
-                                if (dragOverColumn !== 'TODO') setDragOverColumn('TODO');
-                            }}
-                            onDragLeave={(e) => {
-                                if (e.currentTarget.contains(e.relatedTarget)) return;
-                                setDragOverColumn(null);
-                            }}
-                            onDrop={(e) => {
-                                e.preventDefault();
-                                setDragOverColumn(null);
-                                const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
-                                if (taskId) handleUpdateTaskStatus(taskId, 'TODO');
-                                setDraggingTaskId(null);
-                            }}
-                            className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] shadow-2xs transition-all duration-150 ${
-                                dragOverColumn === 'TODO'
-                                    ? 'bg-blue-50/80 border-blue-400 ring-2 ring-blue-400/50 shadow-md'
-                                    : 'bg-[#F1F5F9]/70 border-slate-200/90'
-                            }`}
-                        >
-                            <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
-                                <span className="font-bold text-xs text-slate-800">To Do</span>
-                                <span className="text-[11px] text-slate-500 font-medium bg-slate-200/60 px-1.5 py-0.5 rounded">{columnsData.todo.length} items</span>
+                /* ── KANBAN BOARD VIEW (RESPONSIVE GRID, PROTECTED FROM SIDEBAR COLLAPSE) ── */
+                <div className="w-full flex flex-col 2xl:flex-row gap-4 items-start min-w-0">
+                    {/* The 4 Columns in an overflow-protected container */}
+                    <div className="flex-1 w-full overflow-x-auto pb-3 min-w-0 scrollbar-thin">
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 items-stretch min-w-[960px] xl:min-w-0">
+                            {/* ── COLUMN 1: TO DO ── */}
+                            <div
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = 'move';
+                                    if (dragOverColumn !== 'TODO') setDragOverColumn('TODO');
+                                }}
+                                onDragLeave={(e) => {
+                                    if (e.currentTarget.contains(e.relatedTarget)) return;
+                                    setDragOverColumn(null);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverColumn(null);
+                                    const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
+                                    if (taskId) handleUpdateTaskStatus(taskId, 'TODO');
+                                    setDraggingTaskId(null);
+                                }}
+                                className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] min-w-[230px] shadow-2xs transition-all duration-150 ${
+                                    dragOverColumn === 'TODO'
+                                        ? 'bg-blue-50/80 border-blue-400 ring-2 ring-blue-400/50 shadow-md'
+                                        : 'bg-[#F1F5F9]/70 border-slate-200/90'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
+                                    <span className="font-bold text-xs text-slate-800">To Do</span>
+                                    <span className="text-[11px] text-slate-500 font-medium bg-slate-200/60 px-1.5 py-0.5 rounded">{columnsData.todo.length} items</span>
+                                </div>
+
+                                {columnsData.todo.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
+                                        <div className="w-10 h-10 rounded-full border border-slate-200/90 flex items-center justify-center text-slate-400 mb-2.5 bg-white shadow-2xs">
+                                            <ListTodo className="w-4 h-4 text-slate-400" />
+                                        </div>
+                                        <h5 className="font-bold text-xs text-slate-700">No tasks to do</h5>
+                                        <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">All tasks in this sprint have been moved or completed.</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {/* Milestone Group Subheader */}
+                                        <div className="flex items-center justify-between px-1 py-1 mb-2 text-xs font-semibold text-slate-700 shrink-0">
+                                            <label className="flex items-center space-x-1.5 cursor-pointer truncate">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={columnsData.todo.length > 0 && columnsData.todo.every(t => t.selected)}
+                                                    onChange={(e) => {
+                                                        const sel = e.target.checked;
+                                                        setTasks(prev => prev.map(t => columnsData.todo.some(ct => ct.task_id === t.task_id) ? { ...t, selected: sel } : t));
+                                                    }}
+                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                                                />
+                                                <span className="truncate text-[11px] max-w-[140px] sm:max-w-[180px]">{columnsData.todo[0]?.milestone || 'Project Foundation'}</span>
+                                            </label>
+                                            <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-1">
+                                                0/{columnsData.todo.length}
+                                            </span>
+                                        </div>
+
+                                        {/* Task Cards - natural full length */}
+                                        <div className="space-y-2">
+                                            {columnsData.todo.map((task) => (
+                                                <TaskCardItem
+                                                    key={task.id || task.task_id}
+                                                    task={task}
+                                                    allTasks={tasks}
+                                                    columnIndex={0}
+                                                    onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
+                                                    isDragging={draggingTaskId === (task.task_id || task.id)}
+                                                    onDragStart={(id) => setDraggingTaskId(id)}
+                                                    onDragEnd={() => {
+                                                        setDraggingTaskId(null);
+                                                        setDragOverColumn(null);
+                                                    }}
+                                                />
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
                             </div>
 
-                            {columnsData.todo.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
-                                    <div className="w-10 h-10 rounded-full border border-slate-200/90 flex items-center justify-center text-slate-400 mb-2.5 bg-white shadow-2xs">
-                                        <ListTodo className="w-4 h-4 text-slate-400" />
-                                    </div>
-                                    <h5 className="font-bold text-xs text-slate-700">No tasks to do</h5>
-                                    <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">All tasks in this sprint have been moved or completed.</p>
+                            {/* ── COLUMN 2: IN PROGRESS ── */}
+                            <div
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = 'move';
+                                    if (dragOverColumn !== 'IN_PROGRESS') setDragOverColumn('IN_PROGRESS');
+                                }}
+                                onDragLeave={(e) => {
+                                    if (e.currentTarget.contains(e.relatedTarget)) return;
+                                    setDragOverColumn(null);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverColumn(null);
+                                    const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
+                                    if (taskId) handleUpdateTaskStatus(taskId, 'IN_PROGRESS');
+                                    setDraggingTaskId(null);
+                                }}
+                                className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] min-w-[230px] shadow-2xs transition-all duration-150 ${
+                                    dragOverColumn === 'IN_PROGRESS'
+                                        ? 'bg-blue-100/70 border-blue-400 ring-2 ring-blue-500/50 shadow-md'
+                                        : 'bg-[#EFF6FF]/50 border-blue-100'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
+                                    <span className="font-bold text-xs text-blue-700">In Progress</span>
+                                    <span className="text-[11px] text-blue-600 font-medium bg-blue-100/70 px-1.5 py-0.5 rounded">{columnsData.inProgress.length} items</span>
                                 </div>
-                            ) : (
-                                <>
-                                    {/* Milestone Group Subheader */}
-                                    <div className="flex items-center justify-between px-1 py-1 mb-2 text-xs font-semibold text-slate-700 shrink-0">
-                                        <label className="flex items-center space-x-1.5 cursor-pointer truncate">
-                                            <input
-                                                type="checkbox"
-                                                checked={columnsData.todo.length > 0 && columnsData.todo.every(t => t.selected)}
-                                                onChange={(e) => {
-                                                    const sel = e.target.checked;
-                                                    setTasks(prev => prev.map(t => columnsData.todo.some(ct => ct.task_id === t.task_id) ? { ...t, selected: sel } : t));
-                                                }}
-                                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
-                                            />
-                                            <span className="truncate text-[11px]">{columnsData.todo[0]?.milestone || 'Project Foundation'}</span>
-                                        </label>
-                                        <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-1">
-                                            0/{columnsData.todo.length}
-                                        </span>
-                                    </div>
 
-                                    {/* Task Cards - natural full length */}
+                                {columnsData.inProgress.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
+                                        <div className="w-10 h-10 rounded-full border border-blue-200/80 flex items-center justify-center text-blue-500 mb-2.5 bg-white shadow-2xs">
+                                            <Clock className="w-4 h-4 text-blue-500" />
+                                        </div>
+                                        <h5 className="font-bold text-xs text-slate-700">No tasks in progress</h5>
+                                        <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Tasks currently being worked on will appear here.</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {/* Milestone Group Subheader */}
+                                        <div className="flex items-center justify-between px-1 py-1 mb-2 text-xs font-semibold text-slate-700 shrink-0">
+                                            <label className="flex items-center space-x-1.5 cursor-pointer truncate">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={columnsData.inProgress.length > 0 && columnsData.inProgress.every(t => t.selected)}
+                                                    onChange={(e) => {
+                                                        const sel = e.target.checked;
+                                                        setTasks(prev => prev.map(t => columnsData.inProgress.some(ct => ct.task_id === t.task_id) ? { ...t, selected: sel } : t));
+                                                    }}
+                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                                                />
+                                                <ChevronDown className="w-3 h-3 text-slate-500 shrink-0" />
+                                                <span className="truncate text-[11px] max-w-[140px] sm:max-w-[180px]">{columnsData.inProgress[0]?.milestone || 'Core Implementation'}</span>
+                                            </label>
+                                            <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-1">
+                                                0/{columnsData.inProgress.length}
+                                            </span>
+                                        </div>
+
+                                        {/* Task Cards - natural full length */}
+                                        <div className="space-y-2">
+                                            {columnsData.inProgress.map((task) => (
+                                                <TaskCardItem
+                                                    key={task.id || task.task_id}
+                                                    task={task}
+                                                    allTasks={tasks}
+                                                    columnIndex={1}
+                                                    onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
+                                                    isDragging={draggingTaskId === (task.task_id || task.id)}
+                                                    onDragStart={(id) => setDraggingTaskId(id)}
+                                                    onDragEnd={() => {
+                                                        setDraggingTaskId(null);
+                                                        setDragOverColumn(null);
+                                                    }}
+                                                />
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+
+                            {/* ── COLUMN 3: BLOCKED ── */}
+                            <div
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = 'move';
+                                    if (dragOverColumn !== 'BLOCKED') setDragOverColumn('BLOCKED');
+                                }}
+                                onDragLeave={(e) => {
+                                    if (e.currentTarget.contains(e.relatedTarget)) return;
+                                    setDragOverColumn(null);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverColumn(null);
+                                    const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
+                                    if (taskId) handleUpdateTaskStatus(taskId, 'BLOCKED');
+                                    setDraggingTaskId(null);
+                                }}
+                                className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] min-w-[230px] shadow-2xs transition-all duration-150 ${
+                                    dragOverColumn === 'BLOCKED'
+                                        ? 'bg-rose-100/60 border-rose-300 ring-2 ring-rose-400/50 shadow-md'
+                                        : 'bg-[#FFF1F2]/40 border-rose-100'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
+                                    <span className="font-bold text-xs text-rose-600">Blocked</span>
+                                    <span className="text-[11px] text-rose-500 font-medium bg-rose-100/70 px-1.5 py-0.5 rounded">{columnsData.blocked.length} items</span>
+                                </div>
+
+                                {columnsData.blocked.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
+                                        <div className="w-10 h-10 rounded-full border border-slate-200/90 flex items-center justify-center text-slate-400 mb-2.5 bg-white shadow-2xs">
+                                            <Minus className="w-4 h-4 text-slate-400" />
+                                        </div>
+                                        <h5 className="font-bold text-xs text-slate-700">No blocked tasks</h5>
+                                        <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Tasks that are blocked will appear here.</p>
+                                    </div>
+                                ) : (
                                     <div className="space-y-2">
-                                        {columnsData.todo.map((task) => (
+                                        {columnsData.blocked.map((task) => (
                                             <TaskCardItem
                                                 key={task.id || task.task_id}
                                                 task={task}
                                                 allTasks={tasks}
-                                                columnIndex={0}
+                                                columnIndex={2}
                                                 onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
                                                 isDragging={draggingTaskId === (task.task_id || task.id)}
                                                 onDragStart={(id) => setDraggingTaskId(id)}
@@ -862,77 +1169,54 @@ export default function TaskCreation({
                                             />
                                         ))}
                                     </div>
-                                </>
-                            )}
-                        </div>
-
-                        {/* ── COLUMN 2: IN PROGRESS ── */}
-                        <div
-                            onDragOver={(e) => {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = 'move';
-                                if (dragOverColumn !== 'IN_PROGRESS') setDragOverColumn('IN_PROGRESS');
-                            }}
-                            onDragLeave={(e) => {
-                                if (e.currentTarget.contains(e.relatedTarget)) return;
-                                setDragOverColumn(null);
-                            }}
-                            onDrop={(e) => {
-                                e.preventDefault();
-                                setDragOverColumn(null);
-                                const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
-                                if (taskId) handleUpdateTaskStatus(taskId, 'IN_PROGRESS');
-                                setDraggingTaskId(null);
-                            }}
-                            className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] shadow-2xs transition-all duration-150 ${
-                                dragOverColumn === 'IN_PROGRESS'
-                                    ? 'bg-blue-100/70 border-blue-400 ring-2 ring-blue-500/50 shadow-md'
-                                    : 'bg-[#EFF6FF]/50 border-blue-100'
-                            }`}
-                        >
-                            <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
-                                <span className="font-bold text-xs text-blue-700">In Progress</span>
-                                <span className="text-[11px] text-blue-600 font-medium bg-blue-100/70 px-1.5 py-0.5 rounded">{columnsData.inProgress.length} items</span>
+                                )}
                             </div>
 
-                            {columnsData.inProgress.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
-                                    <div className="w-10 h-10 rounded-full border border-blue-200/80 flex items-center justify-center text-blue-500 mb-2.5 bg-white shadow-2xs">
-                                        <Clock className="w-4 h-4 text-blue-500" />
-                                    </div>
-                                    <h5 className="font-bold text-xs text-slate-700">No tasks in progress</h5>
-                                    <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Tasks currently being worked on will appear here.</p>
+                            {/* ── COLUMN 4: DONE ── */}
+                            <div
+                                onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = 'move';
+                                    if (dragOverColumn !== 'DONE') setDragOverColumn('DONE');
+                                }}
+                                onDragLeave={(e) => {
+                                    if (e.currentTarget.contains(e.relatedTarget)) return;
+                                    setDragOverColumn(null);
+                                }}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverColumn(null);
+                                    const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
+                                    if (taskId) handleUpdateTaskStatus(taskId, 'DONE');
+                                    setDraggingTaskId(null);
+                                }}
+                                className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] min-w-[230px] shadow-2xs transition-all duration-150 ${
+                                    dragOverColumn === 'DONE'
+                                        ? 'bg-emerald-100/60 border-emerald-300 ring-2 ring-emerald-400/50 shadow-md'
+                                        : 'bg-[#F0FDF4]/50 border-emerald-100'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
+                                    <span className="font-bold text-xs text-emerald-600">Done</span>
+                                    <span className="text-[11px] text-emerald-600 font-medium bg-emerald-100/70 px-1.5 py-0.5 rounded">{columnsData.done.length} items</span>
                                 </div>
-                            ) : (
-                                <>
-                                    {/* Milestone Group Subheader */}
-                                    <div className="flex items-center justify-between px-1 py-1 mb-2 text-xs font-semibold text-slate-700 shrink-0">
-                                        <label className="flex items-center space-x-1.5 cursor-pointer truncate">
-                                            <input
-                                                type="checkbox"
-                                                checked={columnsData.inProgress.length > 0 && columnsData.inProgress.every(t => t.selected)}
-                                                onChange={(e) => {
-                                                    const sel = e.target.checked;
-                                                    setTasks(prev => prev.map(t => columnsData.inProgress.some(ct => ct.task_id === t.task_id) ? { ...t, selected: sel } : t));
-                                                }}
-                                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
-                                            />
-                                            <ChevronDown className="w-3 h-3 text-slate-500 shrink-0" />
-                                            <span className="truncate text-[11px]">{columnsData.inProgress[0]?.milestone || 'Core Implementation'}</span>
-                                        </label>
-                                        <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-1">
-                                            0/{columnsData.inProgress.length}
-                                        </span>
-                                    </div>
 
-                                    {/* Task Cards - natural full length */}
+                                {columnsData.done.length === 0 ? (
+                                    <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
+                                        <div className="w-10 h-10 rounded-full border border-emerald-200/90 text-emerald-500 flex items-center justify-center mb-2.5 bg-white shadow-2xs">
+                                            <Check className="w-4 h-4 text-emerald-600 stroke-[2.5]" />
+                                        </div>
+                                        <h5 className="font-bold text-xs text-slate-700">No completed tasks</h5>
+                                        <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Completed tasks will appear here.</p>
+                                    </div>
+                                ) : (
                                     <div className="space-y-2">
-                                        {columnsData.inProgress.map((task) => (
+                                        {columnsData.done.map((task) => (
                                             <TaskCardItem
                                                 key={task.id || task.task_id}
                                                 task={task}
                                                 allTasks={tasks}
-                                                columnIndex={1}
+                                                columnIndex={3}
                                                 onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
                                                 isDragging={draggingTaskId === (task.task_id || task.id)}
                                                 onDragStart={(id) => setDraggingTaskId(id)}
@@ -943,129 +1227,13 @@ export default function TaskCreation({
                                             />
                                         ))}
                                     </div>
-                                </>
-                            )}
-                        </div>
-
-                        {/* ── COLUMN 3: BLOCKED ── */}
-                        <div
-                            onDragOver={(e) => {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = 'move';
-                                if (dragOverColumn !== 'BLOCKED') setDragOverColumn('BLOCKED');
-                            }}
-                            onDragLeave={(e) => {
-                                if (e.currentTarget.contains(e.relatedTarget)) return;
-                                setDragOverColumn(null);
-                            }}
-                            onDrop={(e) => {
-                                e.preventDefault();
-                                setDragOverColumn(null);
-                                const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
-                                if (taskId) handleUpdateTaskStatus(taskId, 'BLOCKED');
-                                setDraggingTaskId(null);
-                            }}
-                            className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] shadow-2xs transition-all duration-150 ${
-                                dragOverColumn === 'BLOCKED'
-                                    ? 'bg-rose-100/60 border-rose-300 ring-2 ring-rose-400/50 shadow-md'
-                                    : 'bg-[#FFF1F2]/40 border-rose-100'
-                            }`}
-                        >
-                            <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
-                                <span className="font-bold text-xs text-rose-600">Blocked</span>
-                                <span className="text-[11px] text-rose-500 font-medium bg-rose-100/70 px-1.5 py-0.5 rounded">{columnsData.blocked.length} items</span>
+                                )}
                             </div>
-
-                            {columnsData.blocked.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
-                                    <div className="w-10 h-10 rounded-full border border-slate-200/90 flex items-center justify-center text-slate-400 mb-2.5 bg-white shadow-2xs">
-                                        <Minus className="w-4 h-4 text-slate-400" />
-                                    </div>
-                                    <h5 className="font-bold text-xs text-slate-700">No blocked tasks</h5>
-                                    <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Tasks that are blocked will appear here.</p>
-                                </div>
-                            ) : (
-                                <div className="space-y-2">
-                                    {columnsData.blocked.map((task) => (
-                                        <TaskCardItem
-                                            key={task.id || task.task_id}
-                                            task={task}
-                                            allTasks={tasks}
-                                            columnIndex={2}
-                                            onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
-                                            isDragging={draggingTaskId === (task.task_id || task.id)}
-                                            onDragStart={(id) => setDraggingTaskId(id)}
-                                            onDragEnd={() => {
-                                                setDraggingTaskId(null);
-                                                setDragOverColumn(null);
-                                            }}
-                                        />
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* ── COLUMN 4: DONE ── */}
-                        <div
-                            onDragOver={(e) => {
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = 'move';
-                                if (dragOverColumn !== 'DONE') setDragOverColumn('DONE');
-                            }}
-                            onDragLeave={(e) => {
-                                if (e.currentTarget.contains(e.relatedTarget)) return;
-                                setDragOverColumn(null);
-                            }}
-                            onDrop={(e) => {
-                                e.preventDefault();
-                                setDragOverColumn(null);
-                                const taskId = e.dataTransfer.getData('text/plain') || draggingTaskId;
-                                if (taskId) handleUpdateTaskStatus(taskId, 'DONE');
-                                setDraggingTaskId(null);
-                            }}
-                            className={`rounded-xl border p-2.5 flex flex-col h-full min-h-[520px] shadow-2xs transition-all duration-150 ${
-                                dragOverColumn === 'DONE'
-                                    ? 'bg-emerald-100/60 border-emerald-300 ring-2 ring-emerald-400/50 shadow-md'
-                                    : 'bg-[#F0FDF4]/50 border-emerald-100'
-                            }`}
-                        >
-                            <div className="flex items-center justify-between px-2 py-1 mb-1.5 shrink-0">
-                                <span className="font-bold text-xs text-emerald-600">Done</span>
-                                <span className="text-[11px] text-emerald-600 font-medium bg-emerald-100/70 px-1.5 py-0.5 rounded">{columnsData.done.length} items</span>
-                            </div>
-
-                            {columnsData.done.length === 0 ? (
-                                <div className="flex-1 flex flex-col items-center justify-start text-center p-4 pt-14 pb-12">
-                                    <div className="w-10 h-10 rounded-full border border-emerald-200/90 text-emerald-500 flex items-center justify-center mb-2.5 bg-white shadow-2xs">
-                                        <Check className="w-4 h-4 text-emerald-600 stroke-[2.5]" />
-                                    </div>
-                                    <h5 className="font-bold text-xs text-slate-700">No completed tasks</h5>
-                                    <p className="text-[10px] text-slate-400 mt-1 max-w-[170px] leading-tight">Completed tasks will appear here.</p>
-                                </div>
-                            ) : (
-                                <div className="space-y-2">
-                                    {columnsData.done.map((task) => (
-                                        <TaskCardItem
-                                            key={task.id || task.task_id}
-                                            task={task}
-                                            allTasks={tasks}
-                                            columnIndex={3}
-                                            onToggleSelect={() => handleToggleTaskSelect(task.task_id)}
-                                            isDragging={draggingTaskId === (task.task_id || task.id)}
-                                            onDragStart={(id) => setDraggingTaskId(id)}
-                                            onDragEnd={() => {
-                                                setDraggingTaskId(null);
-                                                setDragOverColumn(null);
-                                            }}
-                                        />
-                                    ))}
-                                </div>
-                            )}
                         </div>
                     </div>
 
-                    {/* ── RIGHT SIDEBAR: SPRINT PROGRESS (STICKY ON DESKTOP, NATURAL FULL HEIGHT) ── */}
-                    <div className="w-full lg:w-72 bg-white rounded-xl border border-slate-200 p-3.5 shadow-2xs flex flex-col shrink-0 space-y-3.5 lg:sticky lg:top-4">
+                    {/* ── RIGHT SIDEBAR: SPRINT PROGRESS ── */}
+                    <div className="w-full 2xl:w-72 bg-white rounded-xl border border-slate-200 p-3.5 shadow-2xs flex flex-col shrink-0 space-y-3.5 2xl:sticky 2xl:top-4">
                         <h4 className="font-bold text-xs text-slate-800 tracking-tight">Sprint Progress</h4>
 
                         {/* Donut progress ring */}
@@ -1184,6 +1352,14 @@ export default function TaskCreation({
                 </div>
             )}
 
+            {/* ── AI TASK GENERATION PROGRESS MODAL OVERLAY ── */}
+            <TaskGenerationModal
+                isOpen={isGenerating && showGenerationModal}
+                generationStatus={generationStatus}
+                tasksCount={tasks.length}
+                projectName={selectedProject?.name}
+                onMinimize={() => setShowGenerationModal(false)}
+            />
         </div>
     );
 }
@@ -1364,7 +1540,7 @@ function TaskCardItem({
                             <span className="text-slate-400 shrink-0">
                                 {isFeature ? <FileText className="w-3.5 h-3.5 text-purple-500 shrink-0" /> : <CheckSquare className="w-3.5 h-3.5 text-blue-500 shrink-0" />}
                             </span>
-                            <h5 className="font-bold text-xs text-slate-800 leading-snug truncate" title={task.taskName || task.task_name || task.title}>
+                            <h5 className="font-bold text-xs text-slate-800 leading-snug line-clamp-2 break-words" title={task.taskName || task.task_name || task.title}>
                                 {task.taskName || task.task_name || task.title || 'Task'}
                             </h5>
                         </div>
@@ -1400,16 +1576,16 @@ function TaskCardItem({
 
                     {/* Metadata: Priority dot + Due date */}
                     <div className="flex items-center justify-between gap-2 mt-2 pt-1.5 border-t border-slate-100 text-[10px] text-slate-500">
-                        <div className="flex items-center gap-1 font-semibold">
+                        <div className="flex items-center gap-1 font-semibold shrink-0">
                             <span className={`w-1.5 h-1.5 rounded-full ${isHigh ? 'bg-red-500' : isMedium ? 'bg-amber-400' : 'bg-emerald-500'}`} />
                             <span className={isHigh ? 'text-red-600' : isMedium ? 'text-amber-600' : 'text-emerald-600'}>
                                 {isHigh ? 'High' : isMedium ? 'Medium' : 'Low'}
                             </span>
                         </div>
 
-                        <div className="flex items-center gap-1 text-slate-400 font-mono text-[10px]">
-                            <Calendar className="w-3 h-3 text-slate-400" />
-                            <span>Due: {dueDate}</span>
+                        <div className="flex items-center gap-1 text-slate-400 font-mono text-[10px] whitespace-nowrap shrink-0">
+                            <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span className="whitespace-nowrap">Due: {dueDate}</span>
                         </div>
                     </div>
                 </div>
@@ -1568,6 +1744,178 @@ function TaskCardItem({
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+// ── AI TASK GENERATION PROGRESS MODAL ──
+function TaskGenerationModal({
+    isOpen,
+    generationStatus,
+    tasksCount = 0,
+    projectName = 'Project Roadmap',
+    onMinimize,
+}) {
+    if (!isOpen) return null;
+
+    const progress = Math.min(100, Math.max(10, Math.round(generationStatus?.progress_percent || 15)));
+    const statusMsg = generationStatus?.status_message || 'Analyzing project architecture and synthesizing sprint plan...';
+    const releasedSprints = Array.isArray(generationStatus?.released_sprints) ? generationStatus.released_sprints : [];
+
+    const phases = [
+        { id: 1, name: 'BRD & Scope Analysis', desc: 'Parsing requirements, modules & constraints', threshold: 20 },
+        { id: 2, name: 'Architecture & Sprints', desc: 'Establishing sprint boundaries & tech milestones', threshold: 45 },
+        { id: 3, name: 'Atomic Task Decomposition', desc: 'Generating user stories, acceptance criteria & tags', threshold: 75 },
+        { id: 4, name: 'Dependency & Role Mapping', desc: 'Linking prerequisites & AI agent role assignments', threshold: 95 },
+    ];
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200 select-none">
+            <div className="relative w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 sm:p-7 overflow-hidden animate-in zoom-in-95 duration-200">
+                {/* Top ambient color bar */}
+                <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500" />
+
+                {/* Header */}
+                <div className="flex items-start justify-between gap-3 mb-5">
+                    <div className="flex items-center gap-3">
+                        <div className="relative flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25 shrink-0">
+                            <Sparkles className="w-6 h-6 text-white animate-pulse" />
+                            <span className="absolute -inset-1 rounded-xl bg-blue-500/20 animate-ping -z-10" />
+                        </div>
+                        <div>
+                            <h3 className="text-base font-bold text-slate-900 leading-snug">
+                                AI Task Orchestrator
+                            </h3>
+                            <p className="text-xs text-slate-500">
+                                Generating sprints and work items for <span className="font-semibold text-slate-700">{projectName}</span>
+                            </p>
+                        </div>
+                    </div>
+                    {onMinimize && (
+                        <button
+                            type="button"
+                            onClick={onMinimize}
+                            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+                            title="Run in background"
+                        >
+                            <X className="w-4 h-4" />
+                        </button>
+                    )}
+                </div>
+
+                {/* Progress bar & Percent */}
+                <div className="mb-5 bg-slate-50 p-3.5 rounded-xl border border-slate-100">
+                    <div className="flex items-center justify-between text-xs mb-2">
+                        <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                            <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
+                            <span className="truncate max-w-[280px] sm:max-w-[340px]">{statusMsg}</span>
+                        </span>
+                        <span className="font-mono font-bold text-blue-600 text-sm">
+                            {progress}%
+                        </span>
+                    </div>
+
+                    <div className="w-full bg-slate-200/80 rounded-full h-2.5 overflow-hidden p-0.5">
+                        <div
+                            className="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500 rounded-full transition-all duration-500 ease-out shadow-xs"
+                            style={{ width: `${progress}%` }}
+                        />
+                    </div>
+                </div>
+
+                {/* 4-Stage AI Pipeline Tracker */}
+                <div className="space-y-2.5 mb-5">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-0.5">
+                        Generation Pipeline
+                    </div>
+                    {phases.map((phase) => {
+                        const isDone = progress >= phase.threshold;
+                        const isCurrent = !isDone && (progress >= phase.threshold - 25 || phase.id === 1);
+                        return (
+                            <div
+                                key={phase.id}
+                                className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
+                                    isDone
+                                        ? 'bg-emerald-50/50 border-emerald-200/70 text-slate-700'
+                                        : isCurrent
+                                        ? 'bg-blue-50/60 border-blue-200 text-blue-900 shadow-2xs ring-1 ring-blue-400/20'
+                                        : 'bg-white border-slate-100 text-slate-400 opacity-60'
+                                }`}
+                            >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                    <div className="shrink-0">
+                                        {isDone ? (
+                                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                        ) : isCurrent ? (
+                                            <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                                        ) : (
+                                            <div className="w-4 h-4 rounded-full border-2 border-slate-300" />
+                                        )}
+                                    </div>
+                                    <div className="min-w-0">
+                                        <div className={`text-xs font-semibold leading-tight ${isDone ? 'text-slate-800' : isCurrent ? 'text-blue-900' : 'text-slate-400'}`}>
+                                            {phase.name}
+                                        </div>
+                                        <div className="text-[10px] text-slate-500 truncate">
+                                            {phase.desc}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ml-2 ${
+                                    isDone
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : isCurrent
+                                        ? 'bg-blue-100 text-blue-700 animate-pulse'
+                                        : 'bg-slate-100 text-slate-400'
+                                }`}>
+                                    {isDone ? 'Done' : isCurrent ? 'Active' : 'Queued'}
+                                </span>
+                            </div>
+                        );
+                    })}
+                </div>
+
+                {/* Released Sprints pills (if any released yet) */}
+                {releasedSprints.length > 0 && (
+                    <div className="mb-4 pt-3 border-t border-slate-100">
+                        <div className="flex items-center justify-between text-xs mb-2">
+                            <span className="font-bold text-slate-700">Released Sprints</span>
+                            <span className="text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                                {tasksCount} work items ready
+                            </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                            {releasedSprints.map((rs, idx) => (
+                                <span
+                                    key={idx}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-medium"
+                                >
+                                    <Check className="w-3 h-3 text-emerald-600" />
+                                    <span>{rs.sprint_name || `Sprint ${rs.sprint_number || idx + 1}`}</span>
+                                    <span className="text-emerald-600/70 font-mono text-[10px]">({rs.task_count || 0})</span>
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Footer action */}
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
+                    <span className="text-[11px] text-slate-400">
+                        Live AI streaming &bull; Auto-updating board
+                    </span>
+                    {onMinimize && (
+                        <button
+                            type="button"
+                            onClick={onMinimize}
+                            className="text-xs font-semibold text-slate-600 hover:text-blue-600 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                        >
+                            Run in Background
+                        </button>
+                    )}
+                </div>
+            </div>
         </div>
     );
 }

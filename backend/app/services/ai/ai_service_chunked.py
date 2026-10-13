@@ -13,6 +13,34 @@ from app.core.llm_logs import log_llm_interaction_ai_service
 
 logger = logging.getLogger(__name__)
 
+def _get_job(job_id: Optional[str]):
+    if not job_id:
+        return None
+    try:
+        import sys
+        for mod_name in ("analysis_job_manager", "app.workers.analysis_job_manager"):
+            if mod_name in sys.modules:
+                mod = sys.modules[mod_name]
+                if hasattr(mod, "get_job_manager"):
+                    mgr = mod.get_job_manager()
+                    job = mgr.get_job(job_id) if mgr else None
+                    if job:
+                        return job
+        try:
+            import analysis_job_manager
+            mgr = analysis_job_manager.get_job_manager()
+            job = mgr.get_job(job_id) if mgr else None
+            if job:
+                return job
+        except ImportError:
+            pass
+        from app.workers.analysis_job_manager import get_job_manager as _gjm
+        mgr = _gjm()
+        return mgr.get_job(job_id) if mgr else None
+    except Exception as e:
+        logger.warning(f"Failed to lookup analysis job {job_id}: {e}")
+        return None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PREREQUISITES CONFIGURATION & HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -562,15 +590,9 @@ async def analyze_document_chunked(
     
     # Helper to update job progress if job_id is provided
     def update_job_progress(progress: int, message: str):
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_progress(progress, message)
-            except Exception as e:
-                logger.warning(f"Failed to update job progress: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_progress(progress, message)
     
     if not llm_gateway.check_api_key(api_key):
         error = "API key not configured. Please set AI_API_KEY in your environment."
@@ -636,15 +658,9 @@ async def analyze_document_chunked(
         logger.info(f"Stage 1 complete: Extracted {len(stage1_data.get('functional_requirements', []))} functional requirements")
         
         # Save stage 1 result to job
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_stage("stage1_requirements", stage1_data)
-            except Exception as e:
-                logger.warning(f"Failed to save stage 1 result: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_stage("stage1_requirements", stage1_data)
         
         # ─────────────────────────────────────────────────────────────────
         # STAGE 2: Architecture Design
@@ -671,15 +687,9 @@ async def analyze_document_chunked(
         logger.info(f"Stage 2 complete: Architecture pattern = {stage2_data.get('architecture_pattern', 'N/A')}")
         
         # Save stage 2 result to job
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_stage("stage2_architecture", stage2_data)
-            except Exception as e:
-                logger.warning(f"Failed to save stage 2 result: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_stage("stage2_architecture", stage2_data)
         
         # ─────────────────────────────────────────────────────────────────
         # STAGE 3: Data Models & API Design
@@ -717,15 +727,9 @@ async def analyze_document_chunked(
         logger.info(f"Stage 3 complete: Designed {len(stage3_data.get('api_endpoints', []))} API endpoints")
         
         # Save stage 3 result to job
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_stage("stage3_data_api", stage3_data)
-            except Exception as e:
-                logger.warning(f"Failed to save stage 3 result: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_stage("stage3_data_api", stage3_data)
         
         # ─────────────────────────────────────────────────────────────────
         # STAGE 4: Implementation Plan
@@ -760,18 +764,13 @@ async def analyze_document_chunked(
         )
         
         stage4_data = _extract_json_from_response(stage4_result)
+        stage4_data = _normalize_stage4_schema(stage4_data)
         logger.info(f"Stage 4 complete: Created {len(stage4_data.get('file_creation_plan', []))} file specifications")
         
         # Save stage 4 result to job
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.update_stage("stage4_implementation", stage4_data)
-            except Exception as e:
-                logger.warning(f"Failed to save stage 4 result: {e}")
+        job = _get_job(job_id)
+        if job:
+            job.update_stage("stage4_implementation", stage4_data)
 
         # STAGE 5: Final Synthesis
         # ─────────────────────────────────────────────────────────────────
@@ -801,7 +800,7 @@ async def analyze_document_chunked(
         )
         
         logger.info("Stage 5 complete: Final report generated")
-        update_job_progress(95, "Finalizing analysis...")
+        update_job_progress(88, "Stage 5 complete: Processing metrics and architecture...")
         
         # Extract final JSON from the report
         final_json = _extract_json_from_response(stage5_result)
@@ -823,8 +822,54 @@ async def analyze_document_chunked(
             final_json["metrics"]["project_type"] = "greenfield"
             logger.info("Enforced 'greenfield' project_type from Stage 1 intelligent classification")
 
+        # Auto-synthesize baseline enterprise HLD and LLD specifications
+        hld_data = None
+        lld_data = None
+        try:
+            from app.services.ai.architecture_design_service import architecture_design_service
+            analysis_meta = {
+                "title": final_json.get("title"),
+                "stages": {
+                    "stage1_requirements": stage1_data,
+                    "stage2_architecture": stage2_data,
+                    "stage3_data_api": stage3_data,
+                    "stage4_implementation": stage4_data
+                }
+            }
+            project_label = final_json.get("title") or "Enterprise Solution"
+            
+            update_job_progress(90, f"Generating High-Level Design (HLD) for {project_label}...")
+            logger.info(f"Generating AI HLD and LLD for project '{project_label}'...")
+            hld_res = await architecture_design_service.generate_high_level_design(
+                brd_content=document_content,
+                analysis_data=analysis_meta,
+                project_name=project_label
+            )
+            update_job_progress(95, f"Generating Low-Level Design (LLD) for {project_label}...")
+            lld_res = await architecture_design_service.generate_low_level_design(
+                brd_content=document_content,
+                hld_content=hld_res.get("markdown"),
+                analysis_data=analysis_meta,
+                project_name=project_label
+            )
+
+            hld_data = {
+                "title": f"High-Level Design (HLD) — {project_label}",
+                "markdown": hld_res.get("markdown", ""),
+                "version": "1.0.0",
+                "generated_at": datetime.utcnow().isoformat()
+            }
+            lld_data = {
+                "title": f"Low-Level Design (LLD) — {project_label}",
+                "markdown": lld_res.get("markdown", ""),
+                "version": "1.0.0",
+                "generated_at": datetime.utcnow().isoformat()
+            }
+        except Exception as synth_err:
+            logger.warning(f"Auto-synthesis of HLD/LLD failed: {synth_err}")
+
         update_job_progress(100, "Analysis complete!")
-        
+
         return {
             "status": "success",
             "analysis": stage5_result,
@@ -836,6 +881,8 @@ async def analyze_document_chunked(
             "user_flow": final_json.get("user_flow"),
             "title": final_json.get("title"),
             "revision_delta": final_json.get("revision_delta"),
+            "hld": hld_data,
+            "lld": lld_data,
             "stages": {
                 "stage1_requirements": stage1_data,
                 "stage2_architecture": stage2_data,
@@ -849,15 +896,9 @@ async def analyze_document_chunked(
         error_message = str(e) if str(e) else "Unknown error occurred during analysis"
         
         # Update job status if job_id is provided
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.set_failed(error_message)
-            except Exception as job_err:
-                logger.warning(f"Failed to update job failure status: {job_err}")
+        job = _get_job(job_id)
+        if job:
+            job.set_failed(error_message)
         
         return {
             "status": "error",
@@ -876,8 +917,34 @@ def _extract_json_from_response(text: str) -> dict:
     
     # Remove think tags
     text = re.sub(r"ქ.*?ქ", "", text, flags=re.DOTALL)
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+
+    # 1. First try: clean outer markdown code fences if response is wrapped as ```json ... ```
+    cleaned = text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:].strip()
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:].strip()
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3].strip()
+
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            pass
+
+    # 2. Try greedy extraction between outermost { and }
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        candidate = cleaned[first_brace:last_brace + 1].strip()
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
     
-    # Try to find JSON in markdown fence
+    # 3. Try to find JSON in markdown fence
     fenced_regex = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
     for match in fenced_regex.finditer(text):
         candidate = match.group(1).strip()
@@ -887,7 +954,7 @@ def _extract_json_from_response(text: str) -> dict:
             except:
                 continue
     
-    # Try to find trailing JSON object
+    # 4. Try to find trailing JSON object
     trimmed = text.strip()
     for i in range(len(trimmed) - 1, -1, -1):
         if trimmed[i] == "{":
@@ -898,6 +965,81 @@ def _extract_json_from_response(text: str) -> dict:
                 continue
     
     return {}
+
+
+def _normalize_stage4_schema(stage4_data: dict) -> dict:
+    """
+    P1.5-02: Normalize Stage 4 implementation plan output keys to canonical schema.
+    Canonical key: file_creation_plan
+    Supported aliases: implementation_files, files, file_plan, implementation_plan, file_list
+    """
+    if not isinstance(stage4_data, dict):
+        return {}
+    
+    normalized = dict(stage4_data)
+    
+    # Check canonical key first
+    files_list = normalized.get("file_creation_plan")
+    
+    # If missing or empty or not a list, check supported aliases
+    if not files_list or not isinstance(files_list, list) or len(files_list) == 0:
+        known_aliases = [
+            "implementation_files",
+            "files",
+            "file_plan",
+            "implementation_plan",
+            "file_list"
+        ]
+        for alias in known_aliases:
+            candidate = normalized.get(alias)
+            if candidate:
+                if isinstance(candidate, list) and len(candidate) > 0:
+                    files_list = candidate
+                    logger.info(f"Normalized Stage 4 key '{alias}' to canonical 'file_creation_plan' ({len(candidate)} items)")
+                    break
+                elif isinstance(candidate, dict):
+                    flattened = []
+                    for cat, items in candidate.items():
+                        if isinstance(items, list):
+                            for item in items:
+                                if isinstance(item, dict):
+                                    if "phase" not in item:
+                                        item["phase"] = str(cat)
+                                    flattened.append(item)
+                                elif isinstance(item, str):
+                                    flattened.append({
+                                        "file_path": item,
+                                        "purpose": f"Implementation file for {cat}",
+                                        "content_type": "source",
+                                        "priority": "high",
+                                        "phase": str(cat)
+                                    })
+                    if flattened:
+                        files_list = flattened
+                        logger.info(f"Normalized nested Stage 4 key '{alias}' to canonical 'file_creation_plan' ({len(flattened)} items)")
+                        break
+
+    # Normalize file items inside file_creation_plan
+    canonical_files = []
+    if isinstance(files_list, list):
+        for item in files_list:
+            if isinstance(item, dict):
+                f_path = item.get("file_path") or item.get("path") or item.get("file") or item.get("filename") or ""
+                normalized_item = dict(item)
+                if f_path:
+                    normalized_item["file_path"] = str(f_path)
+                canonical_files.append(normalized_item)
+            elif isinstance(item, str) and item.strip():
+                canonical_files.append({
+                    "file_path": item.strip(),
+                    "purpose": "Implementation file",
+                    "content_type": "source",
+                    "priority": "high",
+                    "phase": "Implementation"
+                })
+
+    normalized["file_creation_plan"] = canonical_files
+    return normalized
 
 
 def _format_governance_context(governance_context: Optional[Dict[str, Any]]) -> str:
@@ -1078,9 +1220,7 @@ async def update_analysis_targeted(
     def update_job_progress(progress: int, message: str):
         if job_id:
             try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
+                job = _get_job(job_id)
                 if job:
                     job.update_progress(progress, message)
             except Exception as e:
@@ -1266,15 +1406,9 @@ async def update_analysis_targeted(
         logger.error(f"Targeted update failed: {str(e)}", exc_info=True)
         error_message = str(e) if str(e) else "Unknown error during targeted update"
 
-        if job_id:
-            try:
-                from analysis_job_manager import get_job_manager
-                job_manager = get_job_manager()
-                job = job_manager.get_job(job_id)
-                if job:
-                    job.set_failed(error_message)
-            except Exception:
-                pass
+        job = _get_job(job_id)
+        if job:
+            job.set_failed(error_message)
 
         return {"status": "error", "error": f"Targeted update failed: {error_message}"}
 
