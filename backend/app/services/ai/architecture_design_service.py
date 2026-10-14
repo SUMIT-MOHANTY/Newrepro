@@ -64,7 +64,7 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
 ## REQUIRED DOCUMENT STRUCTURE
 
 # HIGH-LEVEL DESIGN (HLD) — {PRODUCT_NAME}
-**Date:** Current Date  
+**Date:** {CURRENT_DATE}  
 **Version:** 1.0.0  
 
 ---
@@ -169,7 +169,7 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
 ## REQUIRED DOCUMENT STRUCTURE
 
 # LOW-LEVEL DESIGN (LLD) — {PROJECT_CODE}
-**Date:** Current Date  
+**Date:** {CURRENT_DATE}  
 **Version:** 1.0.0  
 
 ---
@@ -261,9 +261,20 @@ Full directory tree from the root down to individual source files, with a file c
 """
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# DYNAMIC SCHEMA & ENTITY PARSERS (Zero Hardcoding)
-# ═══════════════════════════════════════════════════════════════════════════
+def sanitize_design_markdown_date(markdown: str, date_str: Optional[str] = None) -> str:
+    """Ensure the design markdown header contains the valid, current generation date."""
+    if not markdown:
+        return ""
+    cur_date = date_str or datetime.now(timezone.utc).strftime('%B %d, %Y')
+    pattern = re.compile(r'(\*\*Date:\*\*)\s*([^\n\r]+)', re.IGNORECASE)
+    if pattern.search(markdown):
+        return pattern.sub(rf'\1 {cur_date}  ', markdown, count=1)
+    else:
+        title_pattern = re.compile(r'^(#\s+[^\n\r]+\n)', re.MULTILINE)
+        if title_pattern.search(markdown):
+            return title_pattern.sub(rf'\1**Date:** {cur_date}  \n**Version:** 1.0.0  \n\n', markdown, count=1)
+    return markdown
+
 
 def _clean_mermaid(code: str) -> str:
     """Sanitize mermaid code to ensure valid parsing and clean labels."""
@@ -1376,15 +1387,17 @@ class ArchitectureDesignService:
             "user_preferences": user_preferences or ""
         }
 
+        current_date_str = datetime.now(timezone.utc).strftime('%B %d, %Y')
         user_prompt = (
             f"Generate an industry-grade High-Level Design (HLD) document for:\n\n"
             f"{json.dumps(context, indent=2, default=str)}\n\n"
+            f"Current Date: {current_date_str}\n"
             f"Produce the COMPLETE, un-truncated Markdown specification with all diagrams, tables, and sections."
             f"\nDo NOT include IEEE/TOGAF standard references, Document IDs, or Classification headers — keep it clean and professional."
         )
 
         messages = [
-            {"role": "system", "content": HLD_SYSTEM_PROMPT.format(PROJECT_CODE=p_code, PRODUCT_NAME=p_name)},
+            {"role": "system", "content": HLD_SYSTEM_PROMPT.format(PROJECT_CODE=p_code, PRODUCT_NAME=p_name, CURRENT_DATE=current_date_str)},
             {"role": "user", "content": user_prompt}
         ]
 
@@ -1452,6 +1465,8 @@ class ArchitectureDesignService:
             except Exception as rem_err:
                 logger.warning(f"HLD remediation attempt failed: {rem_err}. Preserving best generated HLD.")
 
+        markdown_result = sanitize_design_markdown_date(markdown_result, current_date_str)
+
         return {
             "title": f"High-Level Design (HLD) — {p_name}",
             "markdown": markdown_result.strip(),
@@ -1511,14 +1526,16 @@ class ArchitectureDesignService:
             "user_preferences": user_preferences or ""
         }
 
+        current_date_str = datetime.now(timezone.utc).strftime('%B %d, %Y')
         user_prompt = (
             f"Generate an industry-grade Low-Level Design (LLD) document with complete ER diagram, DDL, and OpenAPI specs for:\n\n"
             f"{json.dumps(context, indent=2, default=str)}\n\n"
+            f"Current Date: {current_date_str}\n"
             f"Produce the COMPLETE, un-truncated Markdown specification with all diagrams, tables, DDL, and contracts."
         )
 
         messages = [
-            {"role": "system", "content": LLD_SYSTEM_PROMPT.format(PROJECT_CODE=p_code)},
+            {"role": "system", "content": LLD_SYSTEM_PROMPT.format(PROJECT_CODE=p_code, CURRENT_DATE=current_date_str)},
             {"role": "user", "content": user_prompt}
         ]
 
@@ -1560,6 +1577,8 @@ class ArchitectureDesignService:
             f"HLD ↔ LLD Consistency: {consistency['status']} (score {consistency['score']}%). "
             f"Traceability status: {traceability['status']} ({traceability.get('total_traced', 0)} requirements mapped)."
         )
+
+        markdown_result = sanitize_design_markdown_date(markdown_result, current_date_str)
 
         return {
             "title": f"Low-Level Design (LLD) — {p_name}",
