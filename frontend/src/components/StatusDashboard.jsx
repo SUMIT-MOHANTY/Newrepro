@@ -10,10 +10,7 @@ import { API_ENDPOINTS, VIBE_WORKSPACE_URL } from '../config';
 import { getNeutralAgentLabel, getNeutralAgentName } from '../utils/agentNames';
 import AgentChatPanel from './AgentChatPanel';
 import VSCodeWorkspaceViewer from './VSCodeWorkspaceViewer';
-import SwarmFlightControl from './SwarmFlightControl';
-import ExecutionStream from './ExecutionStream';
-import InFlightSwarmWorkspaceModal from './InFlightSwarmWorkspaceModal';
-import AgentSwarmLiveModal from './AgentSwarmLiveModal';
+import AgentDedicatedLogModal from './AgentDedicatedLogModal';
 
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
@@ -2905,42 +2902,6 @@ export default function StatusDashboard({
                                             </div>
                                         </div>
 
-                                        {/* ── Swarm Flight Control (Live Inter-Agent Coordination) ── */}
-                                        <SwarmFlightControl
-                                            agents={orderedAgents}
-                                            activeAgentId={activeSwarmAgent}
-                                            activeFile={activeSwarmFile}
-                                            contractInfo={contractInfo}
-                                            isLive={agents.some(a => a.status === 'running') || isDeploying}
-                                            onOpenLogs={(agentId) => setShowLogModal(agentId)}
-                                            onOpenWorkspace={() => setShowInFlightWorkspace(true)}
-                                        />
-
-                                        {/* ── In-Flight Swarm Workspace Modal (3-Column View) ── */}
-                                        <InFlightSwarmWorkspaceModal
-                                            isOpen={showInFlightWorkspace}
-                                            onClose={() => setShowInFlightWorkspace(false)}
-                                            agents={orderedAgents}
-                                            activeAgentId={activeSwarmAgent}
-                                            activeFile={activeSwarmFile}
-                                            executionSteps={executionSteps}
-                                            contractInfo={contractInfo}
-                                            previewUrl={previewStatus?.preview_url || 'http://localhost:8085'}
-                                            projectToken={selectedProjectKey}
-                                        />
-
-                                        {/* ── Live Multi-Agent Execution Stream ── */}
-                                        {executionSteps.length > 0 && (
-                                            <div className="mb-6">
-                                                <ExecutionStream
-                                                    steps={executionSteps}
-                                                    isLive={agents.some(a => a.status === 'running') || isDeploying}
-                                                    timestamp={agentRunStartTime}
-                                                    completedAt={agentRunCompletedTime}
-                                                />
-                                            </div>
-                                        )}
-
                                         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
 
                                             {orderedAgents.map(agent => renderAgentCard(agent))}
@@ -3215,7 +3176,7 @@ export default function StatusDashboard({
                 showLogModal && (() => {
                     const agent = orderedAgents.find(a => a.id === showLogModal) || agents.find(a => a.id === showLogModal) || { id: showLogModal, name: 'Swarm Runtime' };
                     return (
-                        <AgentSwarmLiveModal
+                        <AgentDedicatedLogModal
                             agent={agent}
                             projectToken={selectedProjectKey}
                             token={token}
