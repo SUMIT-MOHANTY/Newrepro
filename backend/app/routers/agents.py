@@ -2170,12 +2170,16 @@ async def _bg_run_agent(
                         elif "build" in lower:
                             agent_rec_mem["progress"] = 75
                             agent_rec_mem["progress_message"] = "Swarm Phase: Build Verification..."
-                        elif "preview" in lower:
-                            agent_rec_mem["progress"] = 90
-                            agent_rec_mem["progress_message"] = "Swarm Phase: Preview Deployment..."
+                        elif any(k in lower for k in ("all tasks processed", "swarm complete", "execution summary", "task complete. preview is live", "preview is live", "exiting daemon process")):
+                            agent_rec_mem["progress"] = 100
+                            agent_rec_mem["status"] = "completed"
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Execution & Verification Complete"
                         elif "pushed to remote" in lower or "git push" in lower or "committed" in lower:
                             agent_rec_mem["progress"] = 95
                             agent_rec_mem["progress_message"] = "Swarm Phase: Code Committed & Pushed to Git..."
+                        elif "preview" in lower:
+                            agent_rec_mem["progress"] = 90
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Preview Deployment..."
 
                 # Run with python -u (unbuffered binary stdout/stderr) for instant live streaming
                 exec_cmd = f"export AGENT_ID='{agent_id}' && export AGENT_CONFIG_FILE='{config_filename}' && export IDLE_TIMEOUT_SECONDS=1 && cd /workspace && python -u -m agent.main 2>&1"

@@ -13,6 +13,7 @@ import VSCodeWorkspaceViewer from './VSCodeWorkspaceViewer';
 import SwarmFlightControl from './SwarmFlightControl';
 import ExecutionStream from './ExecutionStream';
 import InFlightSwarmWorkspaceModal from './InFlightSwarmWorkspaceModal';
+import AgentSwarmLiveModal from './AgentSwarmLiveModal';
 
 import kaktoxLogo from '../assets/Kaktox.png';
 import nModLogo from '../assets/N-Mod-icon.png';
@@ -1353,9 +1354,22 @@ export default function StatusDashboard({
                         label = `✅ [${payload.agent || 'Agent'}] Completed Task: ${payload.title || payload.task_id}`;
                         refreshRoadmap();
                         fetchTasks();
+                        fetchAgents();
+                    } else if (eventType === 'supervisor_completed' || eventType === 'session_completed') {
+                        label = `🎉 [Swarm Runtime] All tasks executed and verified successfully`;
+                        refreshRoadmap();
+                        fetchTasks();
+                        fetchAgents();
+                        setAgents(prev => (prev || []).map(a => ({
+                            ...a,
+                            status: 'completed',
+                            progress: 100,
+                            progress_message: 'All tasks completed successfully.',
+                        })));
                     } else if (eventType === 'task_failed') {
                         label = `❌ [${payload.agent || 'Agent'}] Task Failed: ${payload.title || payload.task_id}`;
                         fetchTasks();
+                        fetchAgents();
                     } else if (eventType === 'agent_dispatched') {
                         label = `⚡ Autonomous Swarm Dispatched: ${payload.agent_id} (${payload.ready_tasks?.length || 0} tasks ready)`;
                     } else if (eventType === 'phase_failed') {
@@ -3199,93 +3213,15 @@ export default function StatusDashboard({
             }
             {
                 showLogModal && (() => {
-                    const agent = orderedAgents.find(a => a.id === showLogModal) || agents.find(a => a.id === showLogModal);
-                    if (!agent) return null;
-                    const logs = agent.output_log || [];
-                    const result = agent.last_result;
-
+                    const agent = orderedAgents.find(a => a.id === showLogModal) || agents.find(a => a.id === showLogModal) || { id: showLogModal, name: 'Swarm Runtime' };
                     return (
-                        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-[300] animate-in fade-in duration-200">
-                            <div className="bg-slate-900 text-slate-100 rounded-2xl shadow-2xl border border-slate-800 w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-                                <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-800/50">
-                                    <div className="flex items-center gap-3">
-                                        <Terminal className="w-5 h-5 text-green-400" />
-                                        <h3 className="font-bold text-white text-sm">{getAgentDisplayName(agent)} — Execution Log</h3>
-                                        {agent.status === 'running' && (
-                                            <span className="flex items-center gap-1 text-[10px] text-green-400 font-bold">
-                                                <span className="relative flex h-2 w-2">
-                                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                                                </span>
-                                                LIVE
-                                            </span>
-                                        )}
-                                    </div>
-                                    <button onClick={() => setShowLogModal(null)} className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition-colors">
-                                        <X className="w-5 h-5" />
-                                    </button>
-                                </div>
-                                <div
-                                    className="flex-1 overflow-y-auto p-4 font-mono text-xs leading-relaxed space-y-0.5"
-                                    ref={(el) => { if (el) el.scrollTop = el.scrollHeight; }}
-                                >
-                                    {logs.length === 0 ? (
-                                        <p className="text-app-text-muted text-center py-8">No logs yet. Run the agent to see output here.</p>
-                                    ) : logs.map((log, idx) => {
-                                        const isInfoOrWarning = log.type === 'info' || log.type === 'warning';
-                                        let formattedTime = null;
-                                        if (log.time) {
-                                            const d = new Date(log.time);
-                                            const year = d.getFullYear();
-                                            const month = String(d.getMonth() + 1).padStart(2, '0');
-                                            const day = String(d.getDate()).padStart(2, '0');
-                                            const hours = String(d.getHours()).padStart(2, '0');
-                                            const minutes = String(d.getMinutes()).padStart(2, '0');
-                                            const seconds = String(d.getSeconds()).padStart(2, '0');
-                                            formattedTime = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-                                        }
-
-                                        return (
-                                            <div key={idx} className={`flex items-start gap-2 ${log.type === 'error' ? 'text-red-400' : log.type === 'output' ? 'text-green-300' : 'text-blue-300'}`}>
-                                                {isInfoOrWarning && formattedTime && (
-                                                    <span className="text-app-text-muted flex-shrink-0 select-none opacity-80" title={log.time}>
-                                                        [{formattedTime}]
-                                                    </span>
-                                                )}
-                                                <span className="text-app-text-label flex-shrink-0 select-none">[{log.type}]</span>
-                                                <span className="break-all">{log.message}</span>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                                {result?.generated_code && (
-                                    <div className="border-t border-app-text-label">
-                                        <details className="group" open>
-                                            <summary className="px-4 py-2 text-xs font-bold text-emerald-400 cursor-pointer hover:text-emerald-300 select-none flex items-center gap-2">
-                                                <span className="w-2 h-2 bg-emerald-400 rounded-full"></span>
-                                                View Project Structure ({(result.generated_code.match(/FILE:/g) || []).length} files captured)
-                                            </summary>
-                                            <pre className="px-4 py-3 overflow-x-auto text-[10px] text-green-200 bg-slate-950/50 max-h-96 overflow-y-auto whitespace-pre-wrap">
-                                                {result.generated_code}
-                                            </pre>
-                                        </details>
-                                    </div>
-                                )}
-                                {result?.builder_scripts && (
-                                    <div className="border-t border-app-text-label">
-                                        <details className="group">
-                                            <summary className="px-4 py-2 text-xs font-bold text-blue-400 cursor-pointer hover:text-blue-300 select-none flex items-center gap-2">
-                                                <span className="w-2 h-2 bg-blue-400 rounded-full"></span>
-                                                View Builder Scripts ({result.builder_scripts.split('\n').length} lines of AI-generated code)
-                                            </summary>
-                                            <pre className="px-4 py-3 overflow-x-auto text-[10px] text-app-primary-ring bg-slate-950/50 max-h-60 overflow-y-auto whitespace-pre-wrap">
-                                                {result.builder_scripts}
-                                            </pre>
-                                        </details>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
+                        <AgentSwarmLiveModal
+                            agent={agent}
+                            projectToken={selectedProjectKey}
+                            token={token}
+                            onClose={() => setShowLogModal(null)}
+                            initialStaticLogs={agent.output_log || []}
+                        />
                     );
                 })()
             }

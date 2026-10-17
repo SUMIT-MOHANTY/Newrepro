@@ -145,6 +145,8 @@ export const API_ENDPOINTS = {
     AGENT_TOOLS_AVAILABLE: `${API_BASE_URL}/agents/tools/available`,
     AGENT_MODELS_AVAILABLE: `${API_BASE_URL}/agents/models/available`,
     AGENT_TELEMETRY: (projectToken) => `${API_BASE_URL}/api/agent/telemetry/${projectToken}`,
+    AGENT_EVENTS_STREAM: (projectToken) => `${API_BASE_URL}/api/v1/projects/${encodeURIComponent(projectToken || 'default_project')}/agent-events`,
+    AGENT_LOGS_BUFFERED: (projectToken) => `${API_BASE_URL}/api/v1/projects/${encodeURIComponent(projectToken || 'default_project')}/agent-logs`,
     AGENT_WORKSPACE_FILES: (projectToken) => `${API_BASE_URL}/agents/workspace/files?project_token=${encodeURIComponent(projectToken || 'default_project')}`,
     AGENT_WORKSPACE_FILE_CONTENT: (projectToken, filePath) => `${API_BASE_URL}/agents/workspace/file-content?project_token=${encodeURIComponent(projectToken || 'default_project')}&file_path=${encodeURIComponent(filePath || '')}`,
 

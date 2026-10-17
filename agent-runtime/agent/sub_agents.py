@@ -54,7 +54,8 @@ class SubAgent(ABC):
 
     @abstractmethod
     def execute_task(self, task: Any, workspace_path: str,
-                     mcp: Any, router: ModelRouter) -> TaskResult:
+                     mcp: Any, router: ModelRouter, context: dict | None = None,
+                     on_event: Any | None = None) -> TaskResult:
         """Execute a task using the ReAct tool loop."""
         pass
 
@@ -272,7 +273,8 @@ class BaseReActAgent(SubAgent):
     """Sub-agent that executes tasks using the ClaudeToolClient ReAct loop."""
 
     def execute_task(self, task: Any, workspace_path: str,
-                     mcp: Any, router: ModelRouter, context: dict | None = None) -> TaskResult:
+                     mcp: Any, router: ModelRouter, context: dict | None = None,
+                     on_event: Any | None = None) -> TaskResult:
         """Execute a task through the ReAct tool loop with autonomous self-healing recovery."""
         task_id = getattr(task, "task_id", "unknown")
         title = getattr(task, "title", "Unknown task")
@@ -380,6 +382,7 @@ class BaseReActAgent(SubAgent):
                     messages=messages,
                     tool_executor=executor,
                     max_iterations=40,
+                    on_event=on_event,
                     task_tracker=task_tracker,
                 )
 

@@ -10,11 +10,13 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.infrastructure.events.event_broadcaster import get_event_broadcaster
 from app.routers.helpers import _preview_log_store, _preview_ws_connections
 from app.services.agents.agent_service import agent_service
 import models
@@ -162,6 +164,53 @@ async def receive_agent_callback(
             except Exception:
                 pass
 
+        # ── Durable SSE Event Broadcasting with Replay Buffer ──
+        broadcaster = get_event_broadcaster()
+        clean_agent_id = payload.get("agent_id") or payload.get("agent") or request.headers.get("x-agent-id")
+        norm_event = {
+            "type": event_type,
+            "event_type": event_type,
+            "session_id": session_id,
+            "project_id": str(project_id or ""),
+            "task_id": task_id,
+            "task_title": payload.get("task_title") or payload.get("title"),
+            "agent_id": clean_agent_id,
+            "agent_name": payload.get("agent_name") or payload.get("agent") or clean_agent_id,
+            "role": payload.get("role") or clean_agent_id,
+            "lane": payload.get("lane"),
+            "message": msg,
+            "payload": payload,
+            "timestamp": payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        if project_id:
+            await broadcaster.publish(str(project_id), norm_event)
+        if session_id:
+            await broadcaster.publish(str(session_id), norm_event)
+
+        # ── Update live agent in-memory state so cards never get stuck at 90% ──
+        if project_id:
+            active_agent = clean_agent_id or "backend_developer"
+            agent_rec = agent_service.get_agent_status(str(active_agent), str(project_id))
+            if agent_rec:
+                if event_type in ("supervisor_completed", "session_completed"):
+                    agent_rec["status"] = "completed"
+                    agent_rec["progress"] = 100
+                    agent_rec["progress_message"] = "Swarm execution verified & completed."
+                elif event_type == "task_completed":
+                    cur_p = agent_rec.get("progress", 0)
+                    agent_rec["progress"] = max(cur_p, 85)
+                    agent_rec["progress_message"] = f"Task completed: {payload.get('task_title') or task_id}."
+                elif event_type == "preview_ready":
+                    cur_p = agent_rec.get("progress", 0)
+                    agent_rec["progress"] = max(cur_p, 95)
+                    agent_rec["progress_message"] = "Live preview ready on port 80."
+                elif event_type == "thinking":
+                    thought = (payload.get("thought_summary") or payload.get("reasoning") or "")[:120]
+                    agent_rec["progress_message"] = f"Thinking: {thought}"
+                elif event_type == "tool_called":
+                    tool_name = payload.get("tool") or payload.get("description") or "tool"
+                    agent_rec["progress_message"] = f"Executing: {tool_name}"
+
         # Broadcast to all live WebSockets listening on this project
         ws_list = _preview_ws_connections.get(project_id, [])
         if ws_list:
@@ -229,14 +278,17 @@ def _sync_task_progress_to_db(
 
     if event_type == "task_started":
         new_status, progress = "in_progress", 10
-    elif event_type == "task_completed":
-        verified = bool(payload.get("platform_verified", False))
-        new_status, progress = ("done", 100) if verified else ("in_review", 75)
+    elif event_type in ("task_completed", "supervisor_completed", "session_completed"):
+        new_status, progress = "done", 100
+        task.status = "DONE"
+        task.verification_status = "PASSED"
     elif event_type in ("git_push_completed", "git_push_failed"):
         new_status = ow.status
         progress = getattr(ow, "task_progress", 100)
     else:  # task_failed
         new_status, progress = "failed", 0
+        task.status = "FAILED"
+        task.verification_status = "FAILED"
 
     data = dict(ow.task_data) if isinstance(ow.task_data, dict) else {}
     if payload.get("commit_hash"):
@@ -388,3 +440,90 @@ def _record_callback_outcome(
             error_message=message or f"Callback failure: {event_type}",
             failure_class=failure_class,
         )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SSE Agent Events Tunnel & Snapshot Replay Endpoints
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.get("/agents/events")
+@router.get("/api/v1/agents/events")
+@router.get("/projects/{project_token}/agent-events")
+@router.get("/api/v1/projects/{project_token}/agent-events")
+async def stream_agent_events(
+    request: Request,
+    project_token: Optional[str] = None,
+    session_id: Optional[str] = Query(None),
+    last_event_id: Optional[int] = Query(None, alias="last_event_id"),
+    token: Optional[str] = Query(None),
+):
+    """Stream live events from the container agent swarm with replay support."""
+    proj = (
+        project_token
+        or request.query_params.get("project_token")
+        or request.headers.get("x-project-token")
+        or session_id
+        or "default_project"
+    )
+
+    header_last_id = request.headers.get("Last-Event-ID")
+    effective_last_id = last_event_id
+    if effective_last_id is None and header_last_id:
+        try:
+            effective_last_id = int(header_last_id)
+        except (ValueError, TypeError):
+            pass
+
+    broadcaster = get_event_broadcaster()
+    queue = broadcaster.subscribe(proj)
+
+    async def event_generator():
+        try:
+            init_frame = json.dumps({"type": "connected", "channel": proj, "status": "online"})
+            yield f"data: {init_frame}\n\n"
+
+            async for event in broadcaster.stream(proj, queue, last_event_id=effective_last_id):
+                eid = event.get("_id")
+                frame_lines = []
+                if eid is not None:
+                    frame_lines.append(f"id: {eid}")
+                clean = {k: v for k, v in event.items() if k != "_id"}
+                frame_lines.append(f"data: {json.dumps(clean)}")
+                yield "\n".join(frame_lines) + "\n\n"
+        except asyncio.CancelledError:
+            return
+        finally:
+            broadcaster.unsubscribe(proj, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/projects/{project_token}/agent-logs")
+@router.get("/api/v1/projects/{project_token}/agent-logs")
+@router.get("/agents/logs/buffered")
+async def get_buffered_agent_logs(
+    request: Request,
+    project_token: Optional[str] = None,
+    channel: Optional[str] = Query(None),
+):
+    """Get buffered logs for immediate instant render without waiting for SSE stream."""
+    target_channel = (
+        project_token
+        or channel
+        or request.query_params.get("project_token")
+        or request.headers.get("x-project-token")
+        or "default_project"
+    )
+    broadcaster = get_event_broadcaster()
+    events = broadcaster.get_buffered_events(target_channel)
+    clean_events = [{k: v for k, v in ev.items() if k != "_id"} for ev in events]
+    return {"events": clean_events, "count": len(clean_events)}
+

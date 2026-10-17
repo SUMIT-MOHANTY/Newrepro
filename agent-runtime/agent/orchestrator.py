@@ -1854,10 +1854,11 @@ class Orchestrator:
                     "X-Session-Id": getattr(s, "session_id", "") or "",
                     "X-Task-Id": getattr(s, "task_id", "") or "",
                     "X-Project-Id": getattr(s, "project_id", "") or os.environ.get("PROJECT_ID", "") or "",
+                    "X-Agent-Id": str(payload.get("agent_id") or payload.get("agent") or ""),
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 print(f"[Orchestrator] Event '{event_type}' posted: {resp.status}")
         except urllib.error.URLError as exc:
             # Non-fatal: agent continues even if callback fails

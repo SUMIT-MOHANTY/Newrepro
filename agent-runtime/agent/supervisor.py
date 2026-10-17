@@ -429,8 +429,26 @@ class SupervisorAgent:
         # ═══════════════════════════════════════════════════
         # DELEGATE: Sub-agent runs its ReAct tool loop
         # ═══════════════════════════════════════════════════
+        def _agent_event_callback(event_type: str, data: dict[str, Any]):
+            event_payload = dict(data) if isinstance(data, dict) else {"message": str(data)}
+            event_payload.setdefault("agent", agent.name)
+            event_payload.setdefault("agent_id", agent.name)
+            event_payload.setdefault("agent_name", agent.name)
+            event_payload.setdefault("role", getattr(agent, "role", agent.name))
+            event_payload.setdefault("lane", getattr(agent, "lane", getattr(task, "lane", "backend")))
+            event_payload.setdefault("task_id", task_id)
+            event_payload.setdefault("task_title", getattr(task, "title", ""))
+            self._post_event(event_type, event_payload)
+
         start_time = time.time()
-        result = agent.execute_task(task, self.workspace_path, self.mcp, self.router, context=self.task_config)
+        result = agent.execute_task(
+            task,
+            self.workspace_path,
+            self.mcp,
+            self.router,
+            context=self.task_config,
+            on_event=_agent_event_callback,
+        )
 
         # ── Gate A+: Platform-owned per-task verification with Autonomous Self-Healing ──
         # If verification detects broken imports, syntax, or contract mismatches,
@@ -457,7 +475,14 @@ class SupervisorAgent:
                     f"INSTRUCTIONS: Locate the referenced files, resolve the missing imports, syntax, or "
                     f"unexported symbols using real tool calls, and ensure the code compiles cleanly."
                 )
-                result = agent.execute_task(repair_task, self.workspace_path, self.mcp, self.router, context=self.task_config)
+                result = agent.execute_task(
+                    repair_task,
+                    self.workspace_path,
+                    self.mcp,
+                    self.router,
+                    context=self.task_config,
+                    on_event=_agent_event_callback,
+                )
                 continue
 
             # Check verification engine if execution was reported successful
@@ -482,7 +507,14 @@ class SupervisorAgent:
                             f"INSTRUCTIONS: Fix the root cause immediately using write_file or replace_file_content. "
                             f"Ensure all imported files exist and all exports are present."
                         )
-                        result = agent.execute_task(repair_task, self.workspace_path, self.mcp, self.router, context=self.task_config)
+                        result = agent.execute_task(
+                            repair_task,
+                            self.workspace_path,
+                            self.mcp,
+                            self.router,
+                            context=self.task_config,
+                            on_event=_agent_event_callback,
+                        )
                         continue
                     else:
                         print(f"[Supervisor] ✅ Task {task_id} verification PASSED.")
@@ -591,12 +623,17 @@ class SupervisorAgent:
             self._post_event("task_completed", {
                 "task_id": task_id,
                 "agent": agent.name,
+                "agent_id": agent.name,
+                "agent_name": agent.name,
+                "role": getattr(agent, "role", agent.name),
+                "lane": getattr(agent, "lane", getattr(task, "lane", "backend")),
                 "elapsed_seconds": round(elapsed, 1),
                 "files_changed": len(result.files_changed),
                 "commit_hash": commit_hash,
                 "feature_branch": feature_branch,
                 "push_success": push_success,
                 "push_message": push_message,
+                "platform_verified": True,
             })
 
             # Notify dependent tasks via IPC
