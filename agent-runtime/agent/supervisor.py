@@ -96,6 +96,8 @@ class SupervisorAgent:
 
         # Git Tools — available for final delivery
         self.git_tools = GitTools(workspace_path)
+        import threading
+        self._git_lock = threading.RLock()
 
         # Sub-Agent Pool — one per lane
         self.agents: dict[str, SubAgent] = {
@@ -300,10 +302,28 @@ class SupervisorAgent:
         else:
             agent = self.agents.get(canonical_lane, self.agents["backend"])
 
+        from agent.nodes.discovery.discover_workspace import build_feature_branch_name
         task_id = task.task_id
+        feature_branch = build_feature_branch_name(task_id, getattr(task, "title", ""))
+        base_branch = os.environ.get("GIT_BRANCH", "main")
+
+        # Feature Branch Isolation for Brownfield / Swarm tasks
+        with self._git_lock:
+            try:
+                self.git_tools.checkout_branch(feature_branch, create=True, base_branch=base_branch)
+                print(f"[Supervisor] 🌿 Task {task_id} isolated on feature branch: {feature_branch} (base: {base_branch})")
+                self._post_event("branch_checked_out", {
+                    "task_id": task_id,
+                    "agent": agent.name,
+                    "feature_branch": feature_branch,
+                    "base_branch": base_branch,
+                })
+            except Exception as branch_err:
+                logger.debug(f"[Supervisor] Feature branch checkout note: {branch_err}")
+
         print(f"\n{'='*60}")
         print(f"[Supervisor] 🚀 Dispatching task to {agent.name}: {task.title}")
-        print(f"[Supervisor]    Task ID: {task_id} | Lane: {task.lane}")
+        print(f"[Supervisor]    Task ID: {task_id} | Lane: {task.lane} | Branch: {feature_branch}")
         
         # ═══════════════════════════════════════════════════════════════════════
         # DYNAMIC CHECKLIST GENERATION (Agent creates their own checklist)
@@ -443,6 +463,7 @@ class SupervisorAgent:
             # Check verification engine if execution was reported successful
             if _VERIFICATION_AVAILABLE:
                 try:
+                    print(f"\n[Supervisor] 🧪 Testing & verifying task {task_id} changes ({len(result.files_changed)} files)...")
                     gate = VerificationEngine(self.workspace_path).verify_task_changes(result.files_changed)
                     result.verification = gate.to_dict()
                     if not gate.passed:
@@ -464,7 +485,7 @@ class SupervisorAgent:
                         result = agent.execute_task(repair_task, self.workspace_path, self.mcp, self.router, context=self.task_config)
                         continue
                     else:
-                        # Passed cleanly
+                        print(f"[Supervisor] ✅ Task {task_id} verification PASSED.")
                         break
                 except Exception as gate_err:
                     result.verification = {"skipped": True, "reason": str(gate_err)[:300]}
@@ -506,11 +527,76 @@ class SupervisorAgent:
             print(f"\n[Supervisor] ✅ Task {task_id} completed by {agent.name} "
                   f"in {elapsed:.1f}s ({len(result.files_changed)} files changed)")
 
+            # Auto-commit feature checkpoint & push feature branch
+            commit_hash = "unknown"
+            push_success = False
+            push_message = ""
+            with self._git_lock:
+                try:
+                    commit_res = self.git_tools.commit_checkpoint(
+                        task_id=task_id,
+                        summary=task.title,
+                        files_changed=result.files_changed,
+                    )
+                    if commit_res.success:
+                        commit_hash = commit_res.data.get("commit_hash", "unknown")
+                        print(f"[Supervisor] 💾 Committed feature checkpoint {commit_hash[:8]} on branch {feature_branch}")
+                    else:
+                        print(f"[Supervisor] ⚠️ Checkpoint commit failed: {commit_res.error}")
+
+                    # Push feature branch if remote repository is configured
+                    repo_url = os.environ.get("GIT_REPO_URL")
+                    auth_token = os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN")
+                    if repo_url:
+                        print(f"[Supervisor] 🚀 Pushing feature branch '{feature_branch}' to remote: {repo_url}...")
+                        push_res = self.git_tools.push(branch=feature_branch, auth_token=auth_token, repo_url=repo_url)
+                        if push_res.success:
+                            push_success = True
+                            push_message = f"Pushed {feature_branch} to {repo_url}"
+                            print(f"[Supervisor] ✅ Successfully pushed feature branch '{feature_branch}' to remote: {repo_url}")
+                            self._post_event("git_push_completed", {
+                                "task_id": task_id,
+                                "feature_branch": feature_branch,
+                                "commit_hash": commit_hash,
+                                "repo_url": repo_url,
+                                "status": "success",
+                            })
+                        else:
+                            push_message = f"Push failed: {push_res.error}"
+                            print(f"[Supervisor] ❌ Feature branch push failed: {push_res.error}")
+                            self._post_event("git_push_failed", {
+                                "task_id": task_id,
+                                "feature_branch": feature_branch,
+                                "commit_hash": commit_hash,
+                                "error": str(push_res.error),
+                            })
+                    else:
+                        push_message = "GIT_REPO_URL not configured - remote push skipped"
+                        print(f"[Supervisor] ℹ️ Remote push skipped: GIT_REPO_URL is not configured.")
+
+                    # Merge feature branch into base_branch with automatic conflict abort, and push base_branch
+                    try:
+                        merge_res = self.git_tools.merge_branch(feature_branch=feature_branch, base_branch=base_branch, no_ff=True)
+                        if merge_res.success:
+                            print(f"[Supervisor] 🔀 Merged '{feature_branch}' into '{base_branch}'")
+                            if repo_url:
+                                self.git_tools.push(branch=base_branch, auth_token=auth_token, repo_url=repo_url)
+                        else:
+                            print(f"[Supervisor] ⚠️ Merge conflict/error (auto-aborted cleanly): {merge_res.error}")
+                    except Exception as merge_err:
+                        logger.debug(f"[Supervisor] Base branch merge note: {merge_err}")
+                except Exception as git_err:
+                    logger.warning(f"[Supervisor] Feature git workflow note: {git_err}")
+
             self._post_event("task_completed", {
                 "task_id": task_id,
                 "agent": agent.name,
                 "elapsed_seconds": round(elapsed, 1),
                 "files_changed": len(result.files_changed),
+                "commit_hash": commit_hash,
+                "feature_branch": feature_branch,
+                "push_success": push_success,
+                "push_message": push_message,
             })
 
             # Notify dependent tasks via IPC

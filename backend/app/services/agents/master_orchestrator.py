@@ -373,6 +373,148 @@ def extract_backend_contracts(workspace_dir: str) -> Dict[str, Any]:
     return contract_data
 
 
+def export_architecture_blueprints_to_workspace(
+    workspace_dir: str,
+    project_token: str,
+    db: Session,
+) -> Dict[str, Any]:
+    """Export authoritative Dsuite Executive Summary, HLD, and LLD into workspace .agent/docs/
+
+    This enables the in-container agents (via MCP tool or file reading) to inspect
+    actual database DDL, API contracts, C4 diagrams, and business goals without
+    saturating LLM context windows.
+    """
+    docs_dir = os.path.join(workspace_dir, ".agent", "docs")
+    os.makedirs(docs_dir, exist_ok=True)
+
+    result = {
+        "docs_dir": docs_dir,
+        "executive_summary_path": None,
+        "hld_path": None,
+        "lld_path": None,
+        "manifest_path": None,
+        "has_content": False,
+        "available_documents": [],
+    }
+
+    try:
+        doc = db.query(models.Document).filter(
+            models.Document.project_token == project_token
+        ).first()
+
+        gov = db.query(models.GovernanceResponse).filter(
+            models.GovernanceResponse.project_token == project_token
+        ).first()
+
+        analysis_data: Dict[str, Any] = {}
+        if doc and getattr(doc, "analysis_result", None):
+            try:
+                raw_res = doc.analysis_result
+                analysis_data = json.loads(raw_res) if isinstance(raw_res, str) else dict(raw_res)
+            except Exception:
+                analysis_data = {}
+
+        p_name = analysis_data.get("title") or (doc.filename if doc and getattr(doc, "filename", None) else "Enterprise Solution")
+        stages = analysis_data.get("stages") or {}
+        stage1 = stages.get("stage1_requirements") or analysis_data.get("stage1_requirements") or {}
+
+        # ── 1. Executive Summary ──
+        exec_summary_content = ""
+        if stage1.get("product_vision") or stage1.get("project_description"):
+            pv = stage1.get("product_vision") or stage1.get("project_description") or ""
+            scope = stage1.get("scope") or stage1.get("project_scope") or ""
+            objectives = stage1.get("objectives") or stage1.get("business_objectives") or []
+            if isinstance(objectives, list):
+                obj_str = "\n".join(f"- {o}" for o in objectives)
+            else:
+                obj_str = str(objectives)
+            exec_summary_content = (
+                f"# EXECUTIVE SUMMARY — {p_name}\n\n"
+                f"## 1. Product Vision\n{pv}\n\n"
+                f"## 2. Business Objectives & Success Criteria\n{obj_str}\n\n"
+                f"## 3. Scope & Target Archetype\n{scope}\n"
+            )
+        elif gov and getattr(gov, "recommendation", None):
+            exec_summary_content = f"# EXECUTIVE SUMMARY — {p_name}\n\n{gov.recommendation}\n"
+        elif doc and getattr(doc, "full_content", None):
+            exec_summary_content = f"# EXECUTIVE SUMMARY — {p_name}\n\n{doc.full_content[:4000]}\n"
+
+        if exec_summary_content:
+            summary_file = os.path.join(docs_dir, "EXECUTIVE_SUMMARY.md")
+            with open(summary_file, "w", encoding="utf-8") as f:
+                f.write(exec_summary_content)
+            result["executive_summary_path"] = summary_file
+            result["has_content"] = True
+
+        # ── 2. High-Level Design (HLD) ──
+        hld_content = ""
+        hld_obj = analysis_data.get("hld")
+        if isinstance(hld_obj, dict) and hld_obj.get("markdown"):
+            hld_content = hld_obj["markdown"]
+        elif analysis_data:
+            try:
+                from app.services.ai.architecture_design_service import synthesize_hld_from_analysis
+                hld_content = synthesize_hld_from_analysis(analysis_data, project_name=p_name)
+            except Exception as e:
+                logger.debug(f"HLD synthesis note: {e}")
+
+        if hld_content:
+            hld_file = os.path.join(docs_dir, "HLD.md")
+            with open(hld_file, "w", encoding="utf-8") as f:
+                f.write(hld_content)
+            result["hld_path"] = hld_file
+            result["has_content"] = True
+
+        # ── 3. Low-Level Design (LLD) ──
+        lld_content = ""
+        lld_obj = analysis_data.get("lld")
+        if isinstance(lld_obj, dict) and lld_obj.get("markdown"):
+            lld_content = lld_obj["markdown"]
+        elif analysis_data:
+            try:
+                from app.services.ai.architecture_design_service import synthesize_lld_from_analysis
+                lld_content = synthesize_lld_from_analysis(analysis_data, project_name=p_name)
+            except Exception as e:
+                logger.debug(f"LLD synthesis note: {e}")
+
+        if lld_content:
+            lld_file = os.path.join(docs_dir, "LLD.md")
+            with open(lld_file, "w", encoding="utf-8") as f:
+                f.write(lld_content)
+            result["lld_path"] = lld_file
+            result["has_content"] = True
+
+        # ── 4. Structured Architecture Manifest ──
+        available_docs = [
+            f for f in ["EXECUTIVE_SUMMARY.md", "HLD.md", "LLD.md"]
+            if os.path.exists(os.path.join(docs_dir, f))
+        ]
+        result["available_documents"] = available_docs
+
+        manifest_data = {
+            "project_name": p_name,
+            "project_token": project_token,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "has_executive_summary": bool(result["executive_summary_path"]),
+            "has_hld": bool(result["hld_path"]),
+            "has_lld": bool(result["lld_path"]),
+            "available_documents": available_docs,
+            "recommended_query_sections": [
+                "database", "api", "components", "workflows", "security", "overview"
+            ]
+        }
+        manifest_file = os.path.join(docs_dir, "architecture_manifest.json")
+        with open(manifest_file, "w", encoding="utf-8") as f:
+            json.dump(manifest_data, f, indent=2)
+        result["manifest_path"] = manifest_file
+
+        logger.info(f"[MasterOrchestrator] Exported architecture blueprints to {docs_dir}: {available_docs}")
+    except Exception as exc:
+        logger.warning(f"[MasterOrchestrator] Failed exporting architecture blueprints: {exc}")
+
+    return result
+
+
 def organize_tasks_into_phases(assignments: List[Dict[str, Any]]) -> Dict[str, List[str]]:
     """Group assigned agents into execution phases (Dependency DAG).
 
@@ -968,6 +1110,30 @@ def build_agent_prompt(
             elif any(l in agent_lanes for l in ("frontend", "ui", "web")):
                 contracts_context += "\nConnect your UI pages and API client hooks directly to these verified routes.\n"
 
+    # ── Authoritative Architecture Blueprints Context (Executive Summary, HLD, LLD) ──
+    blueprints_context = ""
+    docs_dir = os.path.join(target_ws, ".agent", "docs") if target_ws else None
+    if docs_dir and os.path.isdir(docs_dir):
+        available = [
+            f for f in ("EXECUTIVE_SUMMARY.md", "HLD.md", "LLD.md")
+            if os.path.exists(os.path.join(docs_dir, f))
+        ]
+        if available:
+            blueprints_context = (
+                "\n## 🏛️ Authoritative Architecture Blueprints (Dsuite HLD & LLD Mounted)\n"
+                f"The authoritative design blueprints are mounted in your workspace under `.agent/docs/`:\n"
+            )
+            for doc_name in available:
+                blueprints_context += f"- `.agent/docs/{doc_name}`\n"
+            blueprints_context += (
+                "\n**Architectural Inspection Directive:**\n"
+                "- Call `get_architecture_spec(document='lld', section='database')` to retrieve exact table DDL schemas and relationships.\n"
+                "- Call `get_architecture_spec(document='lld', section='api')` to retrieve exact REST endpoint contracts and response models.\n"
+                "- Call `get_architecture_spec(document='hld', section='components')` to inspect UI component hierarchies.\n"
+                "- Alternatively, read `.agent/docs/LLD.md` or `.agent/docs/HLD.md` with `read_file` or `grep_search`.\n"
+                "- **CRITICAL:** Do NOT invent arbitrary database schemas or endpoints when authoritative contracts exist in `LLD.md`!\n"
+            )
+
     # ── Phase 3 instructions based on agent role ──
     if is_qa_agent:
         phase3 = (
@@ -1011,7 +1177,7 @@ def build_agent_prompt(
         f"- Authorized Container Tools: {tools_str}\n"
         f"- Primary Focus Scope: {file_ownership}\n"
         + (f"- Skills & Focus: {skills_summary}\n" if skills_summary else "")
-        + f"\n{workspace_context}\n{contracts_context}\n"
+        + f"\n{workspace_context}\n{contracts_context}\n{blueprints_context}\n"
         + (f"## Business Requirements & Architecture:\n{brd_context}\n" if brd_context else "")
         + f"\n{task_summary}\n"
         "\n## ============================================================================\n"
@@ -1055,11 +1221,6 @@ def build_agent_prompt(
         "  Ensure all changes support a unified, runnable project.\n"
         "\n### PHASE 2: Execution Planning & Dependency-Ordered Subtask Breakdown\n"
         "- Formulate a dependency-ordered plan BEFORE writing any code:\n"
-        "  Data/Schema layer -> Service/Business Logic -> API/Route -> UI Integration -> Verification\n"
-        "- Identify which files need to be CREATED vs MODIFIED.\n"
-        "- Verify all imports reference real, existing modules before using them.\n"
-        "- Backend agents: define the API contract (endpoint, method, request/response schema) FIRST.\n"
-        "- Frontend agents: read_file('.agent/contracts/api_contract.json') BEFORE any API client code.\n"
         "  Data/Schema layer -> Service/Business Logic -> API/Route -> UI Integration -> Verification\n"
         "- Identify which files need to be CREATED vs MODIFIED.\n"
         "- Verify all imports reference real, existing modules before using them.\n"

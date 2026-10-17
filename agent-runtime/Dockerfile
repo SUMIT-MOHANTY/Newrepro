@@ -10,7 +10,7 @@
 
 FROM python:3.12-slim AS base
 
-# Install Node.js 20, npm, git, nginx, curl, build tools for any tech stack
+# Install Node.js 20, npm, git, nginx, curl, Java JDK, Maven, and build tools for any tech stack
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
@@ -18,12 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     build-essential \
     procps \
+    default-jdk-headless \
+    maven \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Verify installs
-RUN node --version && npm --version && git --version && nginx -v
+RUN node --version && npm --version && git --version && nginx -v && java -version && mvn -version
 
 # Create non-root agent user (§9.1: run as non-root)
 RUN groupadd -r agent && useradd -r -g agent -m -d /home/agent agent

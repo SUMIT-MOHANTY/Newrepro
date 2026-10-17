@@ -77,12 +77,35 @@ def main() -> None:
             "TOOL_USE_ENABLED": "tool_use_enabled",
             "WEB_SEARCH_ENABLED": "web_search_enabled",
             "GIT_REPO_URL": "git_repo_url",
+            "GIT_AUTH_TOKEN": "git_auth_token",
+            "GIT_PAT_TOKEN": "git_pat_token",
+            "GIT_BRANCH": "git_branch",
             "MAX_TOOL_CALLS": "max_tool_calls",
         }
         for env_key, config_key in env_mapping.items():
             if config_key in task_config and env_key not in os.environ:
                 val = task_config[config_key]
                 os.environ[env_key] = str(val) if not isinstance(val, bool) else str(val).lower()
+
+        # Fallback aliases for Git configuration
+        if "GIT_REPO_URL" not in os.environ and "repo_url" in task_config:
+            os.environ["GIT_REPO_URL"] = str(task_config["repo_url"])
+        if "GIT_AUTH_TOKEN" not in os.environ:
+            for tk in ("git_token", "token", "git_pat_token", "auth_token"):
+                if tk in task_config and task_config[tk]:
+                    os.environ["GIT_AUTH_TOKEN"] = str(task_config[tk])
+                    os.environ.setdefault("GIT_PAT_TOKEN", str(task_config[tk]))
+                    break
+        if "GIT_BRANCH" not in os.environ:
+            for bk in ("branch", "git_branch"):
+                if bk in task_config and task_config[bk]:
+                    os.environ["GIT_BRANCH"] = str(task_config[bk])
+                    break
+
+        git_repo = os.environ.get("GIT_REPO_URL")
+        git_tok = os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN")
+        git_br = os.environ.get("GIT_BRANCH", "main")
+        print(f"[AgentRuntime] 📦 Git Config: repo={'configured' if git_repo else 'NONE'}, token={'configured' if git_tok else 'NONE'}, branch={git_br}")
 
     try:
         state = AgentState.from_env()

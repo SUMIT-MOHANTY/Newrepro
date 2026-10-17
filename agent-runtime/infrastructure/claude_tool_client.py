@@ -211,7 +211,7 @@ class FileManifest:
         if not ws.exists():
             return
         
-        ignored_dirs = {".git", "node_modules", "dist", ".agent_history", ".vscode"}
+        ignored_dirs = {".git", "node_modules", "dist", ".agent_history", ".vscode", "target", "build", ".gradle", "venv", "__pycache__"}
         for root, dirs, files in os.walk(ws):
             dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith(".")]
             for f in files:
@@ -604,8 +604,8 @@ class TaskChecklistTracker:
             elif c_action == "install":
                 completed_names = ", ".join(f"`{f}`" for f in sorted(self.files_completed)) or "None"
                 lines.append(
-                    f"DIRECTIVE FOR THIS TURN (Task {curr_tid} of {total_tasks} â€” INSTALL):\n"
-                    f"- `package.json` was updated. Execute `install_dependencies` NOW to run `npm install`.\n"
+                    f"DIRECTIVE FOR THIS TURN (Task {curr_tid} of {total_tasks} — INSTALL):\n"
+                    f"- Dependencies were updated. Execute `install_dependencies` NOW to install them.\n"
                     f"- Do NOT read any files. Do NOT write any code files. ONLY call `install_dependencies`.\n"
                     f"- Once `install_dependencies` succeeds, the tracker will advance to Task {curr_tid + 1}."
                 )
@@ -2056,7 +2056,7 @@ class ClaudeToolClient:
                     "type": "tool_result",
                     "content": (
                         "Notice: The current active task is to install dependencies (action: 'install'). "
-                        "Please call `install_dependencies` now to run npm install. "
+                        "Please call `install_dependencies` now to install required dependencies. "
                         "Do NOT read or write files until dependencies are installed."
                     ),
                     "is_error": False,

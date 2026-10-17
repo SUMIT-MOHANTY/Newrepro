@@ -6,10 +6,19 @@ allowed_commands:
   - npm
   - npx
   - yarn
+  - pnpm
   - python
   - python3
   - pip
   - pip3
+  - pytest
+  - java
+  - javac
+  - mvn
+  - mvnw
+  - gradle
+  - gradlew
+  - go
   - git
   - nginx
   - sh

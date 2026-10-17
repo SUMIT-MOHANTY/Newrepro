@@ -281,7 +281,6 @@ class Orchestrator:
 
     def _initialize_workspace(self) -> None:
         """Ensure the workspace directory exists, is seeded or cloned, and has a git repo."""
-        from runtime.starter_scaffold import seed_starter_scaffold
         import os
 
         s = self._state
@@ -325,10 +324,12 @@ class Orchestrator:
                 "message": f"Repository cloned ({git_branch})" if success else f"Clone warning: {getattr(res, 'error', 'failed')}",
             })
             if not success:
-                seed_starter_scaffold(s.workspace_path)
+                print(f"[Orchestrator] Warning: Git clone failed. Initializing clean local git repository without injecting scaffold.")
                 self._mcp.call_tool("git", "init", {"workspace_path": s.workspace_path})
         else:
-            seed_starter_scaffold(s.workspace_path)
+            from agent.techstack_detector import detect_techstack
+            decision = detect_techstack(s.prompt or "", workspace_path=s.workspace_path)
+            print(f"[Orchestrator] Stack '{decision.get('stack')}' ({decision.get('architecture_type')}, mode: {decision.get('project_mode')}) detected — keeping workspace clean for autonomous stack setup.")
             self._mcp.call_tool("git", "init", {"workspace_path": s.workspace_path})
 
         # Sync authoritative filesystem state

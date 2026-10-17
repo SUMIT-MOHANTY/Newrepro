@@ -6,12 +6,120 @@ step-by-step checklist items that will be stored in the database and tracked.
 """
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List
 from agent.model_router import ModelRouter, TaskType
 from infrastructure.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+def _load_architecture_context(
+    workspace_path: str,
+    lane: str,
+    title: str,
+    description: str,
+    max_chars: int = 2500,
+) -> str:
+    """Extract relevant excerpts from HLD/LLD blueprints to ground checklist generation.
+
+    Caps retrieval to ~max_chars so the prompt stays strictly within LLM planning token budgets.
+    """
+    candidates = [
+        os.path.join(workspace_path, ".agent", "docs"),
+        os.path.join(workspace_path, "docs"),
+        "/workspace/.agent/docs",
+    ]
+    docs_dir = None
+    for cand in candidates:
+        if cand and os.path.isdir(cand):
+            docs_dir = cand
+            break
+
+    if not docs_dir:
+        return ""
+
+    doc_files = [
+        ("LLD", os.path.join(docs_dir, "LLD.md")),
+        ("HLD", os.path.join(docs_dir, "HLD.md")),
+        ("Executive Summary", os.path.join(docs_dir, "EXECUTIVE_SUMMARY.md")),
+    ]
+
+    lane_keywords = {
+        "backend": ["database", "schema", "ddl", "table", "model", "migration", "api", "endpoint", "route", "crud", "payload"],
+        "frontend": ["component", "ui", "screen", "page", "view", "state", "client", "layout", "workflow", "form"],
+        "qa": ["test", "api", "endpoint", "verification", "validation", "acceptance", "edge case", "schema"],
+    }.get(lane.lower(), ["schema", "api", "model", "component"])
+
+    task_text = f"{title} {description}".lower()
+    task_words = [
+        w.strip() for w in re.findall(r'[a-zA-Z]{4,}', task_text)
+        if w not in {"create", "implement", "update", "build", "task", "with", "from", "that", "this", "have", "need", "should"}
+    ][:8]
+
+    extracted_sections = []
+    total_len = 0
+
+    for doc_name, file_path in doc_files:
+        if not os.path.isfile(file_path):
+            continue
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception:
+            continue
+
+        sections = re.split(r'(?m)^(?=##\s+)', content)
+        scored_sections = []
+
+        for sec in sections:
+            sec_clean = sec.strip()
+            if not sec_clean:
+                continue
+            first_line = sec_clean.split("\n", 1)[0].lower()
+            sec_lower = sec_clean.lower()
+
+            score = 0
+            for kw in lane_keywords:
+                if kw in first_line:
+                    score += 5
+                elif kw in sec_lower[:400]:
+                    score += 1
+
+            for tw in task_words:
+                if tw in first_line:
+                    score += 6
+                elif tw in sec_lower[:400]:
+                    score += 2
+
+            if score > 0:
+                scored_sections.append((score, doc_name, sec_clean))
+
+        scored_sections.sort(key=lambda x: x[0], reverse=True)
+
+        for score, dname, sec_text in scored_sections[:3]:
+            if len(sec_text) > 1200:
+                sec_snippet = sec_text[:1200] + "\n...(truncated for context size)"
+            else:
+                sec_snippet = sec_text
+
+            if total_len + len(sec_snippet) > max_chars:
+                remaining = max_chars - total_len
+                if remaining > 200:
+                    extracted_sections.append(f"#### [{dname}] Excerpt:\n{sec_snippet[:remaining]}...")
+                break
+
+            extracted_sections.append(f"#### [{dname}] Excerpt:\n{sec_snippet}")
+            total_len += len(sec_snippet)
+
+        if total_len >= max_chars:
+            break
+
+    if not extracted_sections:
+        return ""
+
+    return "\n\n".join(extracted_sections)
 
 
 async def generate_task_checklist(
@@ -44,6 +152,16 @@ async def generate_task_checklist(
     task_type = getattr(task, "task_type", "TASK")
     
     logger.info(f"[ChecklistGen] Generating checklist for task {task_id}: {title}")
+
+    # Load architectural context if blueprints exist in workspace
+    arch_context = _load_architecture_context(
+        workspace_path=workspace_path,
+        lane=lane,
+        title=title,
+        description=description,
+    )
+    if arch_context:
+        logger.info(f"[ChecklistGen] Grounded checklist in {len(arch_context)} chars of HLD/LLD architecture blueprints")
     
     # Build the prompt for checklist generation
     prompt = _build_checklist_prompt(
@@ -52,6 +170,7 @@ async def generate_task_checklist(
         task_type=task_type,
         lane=lane,
         files_involved=files_involved,
+        arch_context=arch_context,
     )
     
     # Get LLM config
@@ -117,6 +236,7 @@ Your job is to break down a high-level task into a detailed, actionable checklis
 4. Keep items **actionable** - start with verbs (Create, Implement, Add, Update, Test)
 5. Aim for **5-10 items** - not too granular, not too high-level
 6. Each item should take **10-30 minutes** to complete
+7. **Architectural Fidelity** - If architecture blueprints (LLD/HLD) are provided, follow their exact entity schemas, table names, field types, and REST route paths.
 
 **OUTPUT FORMAT:**
 Return a JSON array of checklist items:
@@ -138,6 +258,7 @@ def _build_checklist_prompt(
     task_type: str,
     lane: str,
     files_involved: List[str],
+    arch_context: str = "",
 ) -> str:
     """Build the user prompt for checklist generation."""
     
@@ -146,6 +267,14 @@ def _build_checklist_prompt(
         files_str = "\n**Files to modify/create:**\n"
         for f in files_involved[:10]:  # Limit to 10 files
             files_str += f"- {f}\n"
+
+    arch_str = ""
+    if arch_context and arch_context.strip():
+        arch_str = (
+            f"\n**Authoritative Architecture Blueprint Specifications (from HLD/LLD):**\n"
+            f"{arch_context.strip()}\n\n"
+            f"*IMPORTANT: Use the exact table names, field schemas, API routes, and components specified in the architecture blueprint above.*\n"
+        )
     
     return f"""**Task:** {title}
 
@@ -156,7 +285,7 @@ def _build_checklist_prompt(
 {description[:1000]}
 
 {files_str}
-
+{arch_str}
 **Generate a step-by-step checklist** to complete this task.
 
 Focus on the {lane} lane responsibilities:

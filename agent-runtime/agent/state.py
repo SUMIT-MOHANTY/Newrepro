@@ -182,6 +182,12 @@ class LangGraphState(TypedDict, total=False):
     task_type: str
     model_name: str
 
+    # Multi-Mode & Git Feature Branching
+    project_mode: Optional[str]        # "greenfield" | "brownfield" | "migration"
+    has_existing_code: Optional[bool]
+    base_branch: Optional[str]         # e.g. "main"
+    feature_branch: Optional[str]      # e.g. "feature/task-101-order-management"
+
     # Living Product Spec (product_spec.json)
     spec: dict[str, Any]
 
@@ -219,6 +225,14 @@ class LangGraphState(TypedDict, total=False):
     # Backend lifecycle (detected port + health after self-heal)
     backend_port: Optional[int]
     backend_healthy: Optional[bool]
+    backend_error: Optional[str]
+
+    # Git & Final Deliverable Output
+    commit_hash: Optional[str]
+    push_success: Optional[bool]
+    push_message: Optional[str]
+    delivery_manifest: Optional[dict[str, Any]]
+    deliverable_archive_path: Optional[str]
 
     # Lifecycle status
     final_text: str

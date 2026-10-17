@@ -22,6 +22,15 @@ PROJECT_TYPES = {
     "react_vite": "vite",
     "react_cra": "react-scripts",
     "next_js": "next",
+    "vue_vite": "vue",
+    "node_generic": "node",
+    "python_fastapi": "fastapi",
+    "python_django": "django",
+    "python_flask": "flask",
+    "python_generic": "python",
+    "java_maven": "maven",
+    "java_gradle": "gradle",
+    "go_module": "go",
     "static_html": "static",
 }
 
@@ -190,213 +199,408 @@ class BuildTools:
         self._exec = ExecutionTools(workspace_path)
         self._limits = ResourceLimits()
 
-    def detect_project_type(self, workspace: str | None = None) -> ToolResult:
-        """Detect whether the project is react_vite, react_cra, next_js, or static_html."""
-        root = Path(workspace) if workspace else self._workspace
-        pkg = root / "package.json"
-        if pkg.exists():
+    def _inspect_dir_project(self, target_dir: Path) -> dict[str, Any] | None:
+        """Inspect a single directory for project manifests across stacks."""
+        if not target_dir.exists() or not target_dir.is_dir():
+            return None
+
+        # 1. Java Maven
+        if (target_dir / "pom.xml").exists():
+            return {"path": target_dir, "type": "java_maven", "tool": "mvn", "manifest": "pom.xml"}
+
+        # 2. Java Gradle
+        if (target_dir / "build.gradle").exists():
+            return {"path": target_dir, "type": "java_gradle", "tool": "gradle", "manifest": "build.gradle"}
+        if (target_dir / "build.gradle.kts").exists():
+            return {"path": target_dir, "type": "java_gradle", "tool": "gradle", "manifest": "build.gradle.kts"}
+
+        # 3. Go
+        if (target_dir / "go.mod").exists():
+            return {"path": target_dir, "type": "go_module", "tool": "go", "manifest": "go.mod"}
+
+        # 4. Python
+        py_manifest = None
+        for cand in ("requirements.txt", "pyproject.toml", "setup.py", "Pipfile"):
+            if (target_dir / cand).exists():
+                py_manifest = cand
+                break
+        if py_manifest:
+            ptype = "python_generic"
             try:
-                import json
-                data = json.loads(pkg.read_text())
-                deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
-                if "next" in deps:
-                    return ToolResult(success=True, data={"project_type": "next_js"})
-                if "vite" in deps:
-                    return ToolResult(success=True, data={"project_type": "react_vite"})
-                if "react-scripts" in deps:
-                    return ToolResult(success=True, data={"project_type": "react_cra"})
-                if "react" in deps:
-                    return ToolResult(success=True, data={"project_type": "react_vite"})
+                content = (target_dir / py_manifest).read_text(encoding="utf-8", errors="replace").lower()
+                if "fastapi" in content:
+                    ptype = "python_fastapi"
+                elif "django" in content:
+                    ptype = "python_django"
+                elif "flask" in content:
+                    ptype = "python_flask"
             except Exception:
                 pass
-        # Check for plain index.html
-        if (root / "index.html").exists():
-            return ToolResult(success=True, data={"project_type": "static_html"})
-        return ToolResult(success=True, data={"project_type": "unknown"})
+            return {"path": target_dir, "type": ptype, "tool": "pip", "manifest": py_manifest}
 
-    def _get_package_deps_hash(self, pkg_path: Path) -> str:
-        """Compute SHA256 hash of dependencies and devDependencies in package.json."""
-        import json
+        # 5. Node.js / Frontend
+        pkg = target_dir / "package.json"
+        if pkg.exists():
+            ptype = "node_generic"
+            try:
+                import json
+                data = json.loads(pkg.read_text(encoding="utf-8", errors="replace"))
+                deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
+                if "next" in deps:
+                    ptype = "next_js"
+                elif "vue" in deps or "@vitejs/plugin-vue" in deps:
+                    ptype = "vue_vite"
+                elif "vite" in deps or "react" in deps:
+                    ptype = "react_vite"
+                elif "react-scripts" in deps:
+                    ptype = "react_cra"
+            except Exception:
+                pass
+            return {"path": target_dir, "type": ptype, "tool": "npm", "manifest": "package.json"}
+
+        # 6. Static HTML (only if index.html exists)
+        if (target_dir / "index.html").exists():
+            return {"path": target_dir, "type": "static_html", "tool": "static", "manifest": "index.html"}
+
+        return None
+
+    def _find_all_project_dirs(self, root: Path) -> list[dict[str, Any]]:
+        """Discover all subprojects within the workspace across stacks."""
+        projects: list[dict[str, Any]] = []
+        root_proj = self._inspect_dir_project(root)
+        if root_proj:
+            projects.append(root_proj)
+
+        # Inspect common subdirectories and first-level children
+        subdirs_to_check = ["backend", "server", "api", "service", "frontend", "client", "ui", "web", "app"]
+        seen_paths = {root}
+        if root_proj:
+            seen_paths.add(root_proj["path"])
+
+        for sub in subdirs_to_check:
+            cand = root / sub
+            if cand.exists() and cand.is_dir() and cand not in seen_paths:
+                p_info = self._inspect_dir_project(cand)
+                if p_info:
+                    projects.append(p_info)
+                    seen_paths.add(cand)
+
+        try:
+            for child in root.iterdir():
+                if (
+                    child.is_dir()
+                    and not child.name.startswith(".")
+                    and child.name not in ("node_modules", "venv", "__pycache__", "target", "build", "dist", ".git")
+                    and child not in seen_paths
+                ):
+                    p_info = self._inspect_dir_project(child)
+                    if p_info:
+                        projects.append(p_info)
+                        seen_paths.add(child)
+        except Exception:
+            pass
+
+        return projects
+
+    def detect_project_type(self, workspace: str | None = None) -> ToolResult:
+        """Detect project stack dynamically across Java, Python, Go, Node, and HTML."""
+        root = Path(workspace) if workspace else self._workspace
+        projects = self._find_all_project_dirs(root)
+
+        if not projects:
+            # Check for loose python files
+            if list(root.glob("*.py")):
+                return ToolResult(success=True, data={"project_type": "python_generic", "manifests": []})
+            # Check for loose java files
+            if list(root.glob("*.java")):
+                return ToolResult(success=True, data={"project_type": "java_maven", "manifests": []})
+            return ToolResult(success=True, data={"project_type": "unknown", "manifests": []})
+
+        primary = projects[0]["type"]
+        if len(projects) > 1:
+            types = [p["type"] for p in projects]
+            has_backend = any("java" in t or "python" in t or "go" in t for t in types)
+            has_frontend = any("react" in t or "vue" in t or "next" in t or "node" in t for t in types)
+            if has_backend and has_frontend:
+                primary = "fullstack"
+
+        return ToolResult(
+            success=True,
+            data={
+                "project_type": primary,
+                "projects": [
+                    {
+                        "path": str(p["path"].relative_to(root)) if p["path"] != root else ".",
+                        "type": p["type"],
+                        "tool": p["tool"],
+                        "manifest": p["manifest"],
+                    }
+                    for p in projects
+                ],
+            },
+        )
+
+    def _get_manifest_hash(self, manifest_file: Path) -> str:
+        """Compute SHA256 hash of dependency manifest file."""
         import hashlib
         try:
-            data = json.loads(pkg_path.read_text(encoding="utf-8"))
-            deps = {
-                "dependencies": data.get("dependencies", {}),
-                "devDependencies": data.get("devDependencies", {}),
-            }
-            serialized = json.dumps(deps, sort_keys=True)
-            return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+            if not manifest_file.exists():
+                return ""
+            if manifest_file.name == "package.json":
+                import json
+                data = json.loads(manifest_file.read_text(encoding="utf-8", errors="replace"))
+                deps = {
+                    "dependencies": data.get("dependencies", {}),
+                    "devDependencies": data.get("devDependencies", {}),
+                }
+                serialized = json.dumps(deps, sort_keys=True)
+                return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+            else:
+                content = manifest_file.read_bytes()
+                return hashlib.sha256(content).hexdigest()
         except Exception:
             return ""
 
-    def _resolve_target_dir(self, workspace: str | None = None) -> Path:
-        """Find the directory containing package.json (root or frontend/client subdirectory)."""
-        root = Path(workspace) if workspace else self._workspace
-        if (root / "package.json").exists():
-            return root
-        for sub in ("frontend", "client", "ui", "web"):
-            cand = root / sub
-            if (cand / "package.json").exists():
-                return cand
-        try:
-            for child in root.iterdir():
-                if child.is_dir() and not child.name.startswith(".") and child.name not in ("node_modules", "venv", "__pycache__"):
-                    if (child / "package.json").exists():
-                        return child
-        except Exception:
-            pass
-        return root
-
     def install_dependencies(self, workspace: str | None = None) -> ToolResult:
-        """Run npm install only when package.json dependencies have changed."""
-        target_path = self._resolve_target_dir(workspace)
-        cwd = str(target_path)
-        pkg = target_path / "package.json"
-        if not pkg.exists():
-            return ToolResult(success=True, data={"message": "No package.json — skipping install"})
+        """Run dependency installation dynamically based on detected manifests."""
+        root = Path(workspace) if workspace else self._workspace
+        projects = self._find_all_project_dirs(root)
 
-        node_modules = target_path / "node_modules"
-        hash_file = target_path / ".package_deps_hash"
-        current_hash = self._get_package_deps_hash(pkg)
+        if not projects:
+            return ToolResult(success=True, data={"message": "No recognized dependency manifest found — skipping install"})
 
-        # If node_modules exists and hash matches cached hash, skip install completely
-        if node_modules.exists() and hash_file.exists() and current_hash:
-            cached_hash = hash_file.read_text(encoding="utf-8").strip()
-            if cached_hash == current_hash:
-                print(f"[BuildTools] Dependencies unchanged (hash={current_hash[:8]}) — skipping redundant npm install in {cwd}")
-                return ToolResult(success=True, data={"message": "SUCCESS: All dependencies already installed and up-to-date. npm install was skipped because package.json has not changed. Installation task is complete."})
+        installed_messages: list[str] = []
+        for p in projects:
+            target_path = p["path"]
+            cwd = str(target_path)
+            ptype = p["type"]
+            manifest_name = p["manifest"]
+            manifest_file = target_path / manifest_name
 
-        print(f"[BuildTools] Dependencies modified or initial install — running npm install in {cwd}...")
-        result = self._exec.run_command(
-            ["npm", "install", "--include=dev", "--prefer-offline", "--no-audit"],
-            cwd=cwd,
-            timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS,
+            # 1. Java Maven
+            if ptype == "java_maven":
+                hash_file = target_path / ".maven_deps_hash"
+                curr_hash = self._get_manifest_hash(manifest_file)
+                if hash_file.exists() and curr_hash and hash_file.read_text(encoding="utf-8").strip() == curr_hash:
+                    installed_messages.append(f"Maven dependencies up-to-date in {cwd}")
+                    continue
+                mvn_cmd = ["./mvnw", "dependency:resolve", "-B"] if (target_path / "mvnw").exists() else ["mvn", "dependency:resolve", "-B"]
+                res = self._exec.run_command(mvn_cmd, cwd=cwd, timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS)
+                if not res.success:
+                    err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Maven dependency resolution failed in {cwd}:\n{err}")
+                if curr_hash:
+                    try:
+                        hash_file.write_text(curr_hash, encoding="utf-8")
+                    except Exception:
+                        pass
+                installed_messages.append(f"Maven dependencies resolved in {cwd}")
+
+            # 2. Java Gradle
+            elif ptype == "java_gradle":
+                hash_file = target_path / ".gradle_deps_hash"
+                curr_hash = self._get_manifest_hash(manifest_file)
+                if hash_file.exists() and curr_hash and hash_file.read_text(encoding="utf-8").strip() == curr_hash:
+                    installed_messages.append(f"Gradle dependencies up-to-date in {cwd}")
+                    continue
+                gradle_cmd = ["./gradlew", "dependencies", "--no-daemon"] if (target_path / "gradlew").exists() else ["gradle", "dependencies"]
+                res = self._exec.run_command(gradle_cmd, cwd=cwd, timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS)
+                if not res.success:
+                    err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Gradle dependency resolution failed in {cwd}:\n{err}")
+                if curr_hash:
+                    try:
+                        hash_file.write_text(curr_hash, encoding="utf-8")
+                    except Exception:
+                        pass
+                installed_messages.append(f"Gradle dependencies resolved in {cwd}")
+
+            # 3. Go
+            elif ptype == "go_module":
+                hash_file = target_path / ".go_deps_hash"
+                curr_hash = self._get_manifest_hash(manifest_file)
+                if hash_file.exists() and curr_hash and hash_file.read_text(encoding="utf-8").strip() == curr_hash:
+                    installed_messages.append(f"Go module dependencies up-to-date in {cwd}")
+                    continue
+                res = self._exec.run_command(["go", "mod", "download"], cwd=cwd, timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS)
+                if not res.success:
+                    err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Go mod download failed in {cwd}:\n{err}")
+                if curr_hash:
+                    try:
+                        hash_file.write_text(curr_hash, encoding="utf-8")
+                    except Exception:
+                        pass
+                installed_messages.append(f"Go dependencies downloaded in {cwd}")
+
+            # 4. Python
+            elif ptype.startswith("python_"):
+                hash_file = target_path / ".pip_deps_hash"
+                curr_hash = self._get_manifest_hash(manifest_file)
+                if hash_file.exists() and curr_hash and hash_file.read_text(encoding="utf-8").strip() == curr_hash:
+                    installed_messages.append(f"Python dependencies up-to-date in {cwd}")
+                    continue
+                pip_cmd = ["pip", "install", "-r", manifest_name] if manifest_name == "requirements.txt" else ["pip", "install", "."]
+                res = self._exec.run_command(pip_cmd, cwd=cwd, timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS)
+                if not res.success:
+                    err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"pip install failed in {cwd}:\n{err}")
+                if curr_hash:
+                    try:
+                        hash_file.write_text(curr_hash, encoding="utf-8")
+                    except Exception:
+                        pass
+                installed_messages.append(f"Python dependencies installed in {cwd}")
+
+            # 5. Node.js
+            elif ptype in ("react_vite", "react_cra", "next_js", "vue_vite", "node_generic"):
+                node_modules = target_path / "node_modules"
+                hash_file = target_path / ".package_deps_hash"
+                curr_hash = self._get_manifest_hash(manifest_file)
+                if node_modules.exists() and hash_file.exists() and curr_hash:
+                    if hash_file.read_text(encoding="utf-8").strip() == curr_hash:
+                        installed_messages.append(f"Node dependencies up-to-date in {cwd}")
+                        continue
+                res = self._exec.run_command(
+                    ["npm", "install", "--include=dev", "--prefer-offline", "--no-audit"],
+                    cwd=cwd,
+                    timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS,
+                )
+                if not res.success:
+                    err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"npm install failed in {cwd}:\n{err}")
+                if curr_hash:
+                    try:
+                        hash_file.write_text(curr_hash, encoding="utf-8")
+                    except Exception:
+                        pass
+                installed_messages.append(f"npm dependencies installed in {cwd}")
+
+        return ToolResult(
+            success=True,
+            data={
+                "message": "Dependencies processed: " + "; ".join(installed_messages),
+                "installed_components": installed_messages,
+            },
         )
-
-        if result.success and current_hash:
-            try:
-                hash_file.write_text(current_hash, encoding="utf-8")
-                print(f"[BuildTools] Updated dependency hash cache ({current_hash[:8]})")
-            except Exception as e:
-                print(f"[BuildTools] Warning caching dependency hash: {e}")
-
-        return result
 
     def run_build(self, workspace: str | None = None) -> ToolResult:
-        """Run build in the workspace with multi-stack awareness."""
-        target_path = self._resolve_target_dir(workspace)
-        # If target has no package.json but is a Python project, delegate to stack-aware verification
-        if not (target_path / "package.json").exists() and ((target_path / "pyproject.toml").exists() or (target_path / "requirements.txt").exists() or any(target_path.glob("*.py"))):
-            return self.install_and_build(workspace)
-        cwd = str(target_path)
-        print(f"[BuildTools] Running npm run build in {cwd}...")
-        result = self._exec.run_command(
-            ["npm", "run", "build"],
-            cwd=cwd,
-            timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS,
-        )
-        return result
+        """Run build across all detected projects in the workspace."""
+        root = Path(workspace) if workspace else self._workspace
+        projects = self._find_all_project_dirs(root)
+
+        if not projects:
+            # Fallback Python syntax check if loose python files exist
+            py_files = [f for f in root.rglob("*.py") if "venv" not in f.parts and ".git" not in f.parts and "__pycache__" not in f.parts]
+            if py_files:
+                import py_compile
+                errors = []
+                for pf in py_files:
+                    try:
+                        py_compile.compile(str(pf), doraise=True)
+                    except py_compile.PyCompileError as pe:
+                        errors.append(str(pe))
+                if errors:
+                    return ToolResult(success=False, error="Python syntax errors:\n" + "\n".join(errors[:10]))
+                return ToolResult(success=True, data={"message": f"Syntax verified for {len(py_files)} Python file(s)"})
+            return ToolResult(success=True, data={"message": "No builds required for this project type"})
+
+        for p in projects:
+            target_path = p["path"]
+            cwd = str(target_path)
+            ptype = p["type"]
+
+            # Java Maven
+            if ptype == "java_maven":
+                mvn_cmd = ["./mvnw", "compile", "-B"] if (target_path / "mvnw").exists() else ["mvn", "compile", "-B"]
+                res = self._exec.run_command(mvn_cmd, cwd=cwd, timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS)
+                if not res.success:
+                    err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Maven compilation failed in {cwd}:\n{err}")
+
+            # Java Gradle
+            elif ptype == "java_gradle":
+                gradle_cmd = ["./gradlew", "build", "-x", "test", "--no-daemon"] if (target_path / "gradlew").exists() else ["gradle", "build", "-x", "test"]
+                res = self._exec.run_command(gradle_cmd, cwd=cwd, timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS)
+                if not res.success:
+                    err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Gradle build failed in {cwd}:\n{err}")
+
+            # Go
+            elif ptype == "go_module":
+                res = self._exec.run_command(["go", "build", "./..."], cwd=cwd, timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS)
+                if not res.success:
+                    err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Go build failed in {cwd}:\n{err}")
+
+            # Python
+            elif ptype.startswith("python_"):
+                import py_compile
+                py_files = [f for f in target_path.rglob("*.py") if "venv" not in f.parts and ".git" not in f.parts and "__pycache__" not in f.parts]
+                errors = []
+                for pf in py_files:
+                    try:
+                        py_compile.compile(str(pf), doraise=True)
+                    except py_compile.PyCompileError as pe:
+                        errors.append(str(pe))
+                if errors:
+                    return ToolResult(success=False, error=f"Python compilation failed in {cwd}:\n" + "\n".join(errors[:10]))
+
+            # Node.js
+            elif ptype in ("react_vite", "react_cra", "next_js", "vue_vite", "node_generic"):
+                pkg = target_path / "package.json"
+                has_build_script = False
+                if pkg.exists():
+                    try:
+                        import json
+                        data = json.loads(pkg.read_text(encoding="utf-8", errors="replace"))
+                        has_build_script = "build" in data.get("scripts", {})
+                    except Exception:
+                        pass
+                if has_build_script:
+                    res = self._exec.run_command(["npm", "run", "build"], cwd=cwd, timeout_seconds=self._limits.MAX_BUILD_TIME_SECONDS)
+                    if not res.success:
+                        err = res.data.get("stderr") or res.data.get("stdout") or res.error if isinstance(res.data, dict) else res.error
+                        return ToolResult(success=False, error=f"npm run build failed in {cwd}:\n{err}")
+
+        return ToolResult(success=True, data={"message": "All project components built and verified successfully", "workspace": str(root)})
 
     def install_and_build(self, workspace: str | None = None) -> ToolResult:
-        """Combined install + build. Multi-stack aware: Node.js, Python, or multi-language."""
-        target_path = self._resolve_target_dir(workspace)
-        cwd = str(target_path)
-        root = target_path
+        """Combined install + build across any project stack (Java, Python, Go, Node, Fullstack)."""
+        root = Path(workspace) if workspace else self._workspace
 
-        # Determine stack dynamically from manifests
-        has_pkg_json = (target_path / "package.json").exists()
-        has_python = (target_path / "pyproject.toml").exists() or (target_path / "requirements.txt").exists() or (target_path / "setup.py").exists()
+        # Step 1: Install dependencies
+        install_res = self.install_dependencies(str(root))
+        if not install_res.success:
+            return install_res
 
-        # If neither directly in target_path, check subdirectories (e.g. frontend/ or backend/)
-        if not has_pkg_json and not has_python:
-            try:
-                for child in target_path.iterdir():
-                    if child.is_dir() and not child.name.startswith(".") and child.name not in ("node_modules", "venv", "__pycache__"):
-                        if (child / "package.json").exists():
-                            target_path = child
-                            cwd = str(child)
-                            root = child
-                            has_pkg_json = True
-                            break
-                        elif (child / "pyproject.toml").exists() or (child / "requirements.txt").exists():
-                            target_path = child
-                            cwd = str(child)
-                            root = child
-                            has_python = True
-                            break
-            except Exception:
-                pass
+        # Step 2: Run build
+        build_res = self.run_build(str(root))
+        if not build_res.success:
+            err_detail = build_res.error or ""
 
-        # Python-only stack verification (no package.json)
-        if has_python and not has_pkg_json:
-            import py_compile
-            py_files = [f for f in target_path.rglob("*.py") if "venv" not in f.parts and ".git" not in f.parts and "__pycache__" not in f.parts]
-            errors = []
-            for pf in py_files:
-                try:
-                    py_compile.compile(str(pf), doraise=True)
-                except py_compile.PyCompileError as pe:
-                    errors.append(str(pe))
-            if errors:
-                return ToolResult(
-                    success=False,
-                    error="Python backend compilation failed with syntax errors:\n" + "\n".join(errors[:10]),
-                )
-            return ToolResult(
-                success=True,
-                data={
-                    "message": f"Python backend verification passed: {len(py_files)} Python file(s) compiled cleanly with zero syntax errors.",
-                    "workspace": cwd,
-                },
-            )
-
-        # Node / Frontend / Full-stack verification
-        install = self.install_dependencies(cwd)
-        if not install.success:
-            return ToolResult(success=False,
-                              error=f"npm install failed:\n{install.data.get('stderr','') if isinstance(install.data, dict) else install.error}")
-        build = self.run_build(cwd)
-        if not build.success:
-            err_detail = ""
-            if isinstance(build.data, dict):
-                # Prefer stderr, fall back to stdout
-                err_detail = (build.data.get("stderr") or "").strip() or (build.data.get("stdout") or "").strip()
-            if not err_detail:
-                err_detail = str(build.error or "Unknown build error")
-
-            # Bound output to avoid token blowout while keeping the relevant error lines
-            max_err_len = 3500
-            if len(err_detail) > max_err_len:
-                err_detail = "... [earlier output truncated]\n" + err_detail[-max_err_len:]
-
-            # Domain-specific diagnostics: Tailwind v3 @apply on undeclared custom classes is a
-            # fatal PostCSS error and one of the most common self-inflicted build failures.
+            # Tailwind CSS @apply diagnostic
             if "does not exist" in err_detail and ("@apply" in err_detail or "postcss" in err_detail.lower()):
                 err_detail += (
                     "\n\n[TAILWIND @apply DIAGNOSTIC]: In Tailwind CSS v3, `@apply` only works with classes that "
                     "actually exist (core Tailwind utilities, or colors/plugins declared in tailwind.config.js). "
-                    "Custom one-off class names like `border-razorpay-primary` are NOT valid inside @apply and crash the build. "
+                    "Custom one-off class names are NOT valid inside @apply. "
                     "Fix by using an arbitrary value instead (e.g. `@apply border-[#0F4C81]`), or declare the color in "
-                    "tailwind.config.js under theme.extend.colors, or write plain CSS properties (border-color: #0F4C81) "
-                    "inside the rule. Do NOT simply retry the build without changing the CSS."
+                    "tailwind.config.js under theme.extend.colors."
                 )
 
-            # Run static analysis to detect missing imports across the workspace
+            # Static unresolved imports check for JS/TS
             static_issues = scan_all_unresolved_imports(root)
-            extra_msg = ""
             if static_issues:
-                extra_msg = (
+                err_detail += (
                     "\n\n[DETECTED MISSING IMPORTS]:\n"
                     + "\n".join(static_issues[:15])
                     + "\n\nFix the missing imports or exports in the affected files before calling install_and_build again."
                 )
 
-            return ToolResult(
-                success=False,
-                error=f"$ npm run build\n{err_detail}{extra_msg}",
-            )
+            return ToolResult(success=False, error=err_detail)
 
-        # Scan for dangerous runtime hazards that compile fine but immediately crash the browser UI
+        # Step 3: Scan runtime browser hazards for frontend components
         hazards = scan_runtime_hazards(root)
         if hazards:
             return ToolResult(
@@ -412,11 +616,10 @@ class BuildTools:
             success=True,
             data={
                 "message": (
-                    "Build succeeded with 0 errors. Provide a clean, high-level functional summary "
-                    "for business users (describe user capabilities and workflow; do NOT list technical "
-                    "file paths, CSS class names, or build commands; avoid emoji clutter)."
+                    "Build succeeded with 0 errors across all stack components. Provide a clean, high-level functional "
+                    "summary for business users (describe user capabilities and workflow; omit technical paths and emoji clutter)."
                 ),
-                "workspace": cwd,
+                "workspace": str(root),
             },
         )
 
@@ -475,8 +678,28 @@ class BuildTools:
                 return ToolResult(success=False, error=f"Syntax error in {path}:\n{err}")
             return ToolResult(success=True, data={"status": "valid", "file": path, "message": "Syntax valid"})
 
-        # 4. JSX/TSX/TS syntax check via nearest project esbuild
-        if ext in (".ts", ".tsx", ".jsx", ".vue", ".svelte"):
+        # 4. Java syntax check
+        if ext == ".java":
+            javac_bin = shutil.which("javac")
+            if javac_bin:
+                res = self._exec.run_command([javac_bin, "-Xlint:none", str(target)], cwd=str(target.parent), timeout_seconds=10)
+                if not res.success:
+                    err = res.data.get("stderr", "") if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Java syntax error in {path}:\n{err}")
+                return ToolResult(success=True, data={"status": "valid", "file": path, "message": "Java syntax valid"})
+
+        # 5. Go syntax check
+        if ext == ".go":
+            go_bin = shutil.which("go")
+            if go_bin:
+                res = self._exec.run_command([go_bin, "vet", str(target)], cwd=str(target.parent), timeout_seconds=10)
+                if not res.success:
+                    err = res.data.get("stderr", "") if isinstance(res.data, dict) else res.error
+                    return ToolResult(success=False, error=f"Go syntax error in {path}:\n{err}")
+                return ToolResult(success=True, data={"status": "valid", "file": path, "message": "Go syntax valid"})
+
+        # 6. JSX/TSX/TS syntax check via nearest project esbuild
+        if ext in (".ts", ".tsx", ".jsx", ".vue", ".svelte", ".java", ".go"):
             esbuild_bin = None
             curr = target.parent
             while curr != curr.parent:

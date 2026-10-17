@@ -63,13 +63,29 @@ class GitTools:
             except Exception:
                 pass
         
+        base_branch = os.environ.get("GIT_BRANCH", "main")
         if (target / ".git").exists():
+            # If repo exists but has no commits (unborn HEAD), seed a root commit
+            try:
+                check_head = subprocess.run(
+                    ["git", "rev-parse", "--verify", "HEAD"],
+                    cwd=str(target),
+                    capture_output=True,
+                    text=True,
+                )
+                if check_head.returncode != 0:
+                    self._run(["git", "checkout", "-B", base_branch], cwd=str(target))
+                    self._run(["git", "commit", "--allow-empty", "-m", "Initialize project repository"], cwd=str(target))
+            except Exception:
+                pass
             return ToolResult(success=True, data={"message": "Already initialized"})
         try:
             self._run(["git", "init"], cwd=str(target))
+            self._run(["git", "checkout", "-B", base_branch], cwd=str(target))
             self._run(["git", "config", "user.email", "agent@vibecoding.internal"], cwd=str(target))
             self._run(["git", "config", "user.name", "Vibecoding Agent"], cwd=str(target))
-            return ToolResult(success=True, data={"path": str(target)})
+            self._run(["git", "commit", "--allow-empty", "-m", "Initialize project repository"], cwd=str(target))
+            return ToolResult(success=True, data={"path": str(target), "branch": base_branch})
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
@@ -165,10 +181,121 @@ class GitTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
-    def push(self, branch: str = "main", remote: str = "origin", auth_token: str | None = None, repo_url: str | None = None) -> ToolResult:
-        """Push local commits to remote repository."""
+    def current_branch(self) -> ToolResult:
+        """Get the current active branch name."""
+        try:
+            out = self._run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(self._workspace)).strip()
+            return ToolResult(success=True, data={"branch": out})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    def checkout_branch(self, branch: str, create: bool = False, base_branch: str | None = None) -> ToolResult:
+        """Checkout or create a Git branch for feature/task isolation (Brownfield & Swarm)."""
+        clean_branch = branch.strip().replace(" ", "-")
+        try:
+            if create:
+                # Check if branch already exists
+                check = subprocess.run(
+                    ["git", "rev-parse", "--verify", clean_branch],
+                    cwd=str(self._workspace),
+                    capture_output=True,
+                    text=True,
+                )
+                if check.returncode == 0:
+                    # Branch already exists locally — checkout directly
+                    self._run(["git", "checkout", clean_branch], cwd=str(self._workspace))
+                else:
+                    cmd = ["git", "checkout", "-b", clean_branch]
+                    if base_branch:
+                        check_base = subprocess.run(
+                            ["git", "rev-parse", "--verify", f"{base_branch}"],
+                            cwd=str(self._workspace),
+                            capture_output=True,
+                            text=True,
+                        )
+                        if check_base.returncode == 0:
+                            cmd.append(base_branch)
+                    self._run(cmd, cwd=str(self._workspace))
+            else:
+                self._run(["git", "checkout", clean_branch], cwd=str(self._workspace))
+
+            current = self.current_branch()
+            return ToolResult(success=True, data={
+                "branch": current.data.get("branch", clean_branch) if current.success else clean_branch,
+                "message": f"Switched to branch {clean_branch}",
+            })
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    def merge_branch(self, feature_branch: str, base_branch: str = "main", no_ff: bool = True) -> ToolResult:
+        """Merge feature_branch into base_branch, with automatic abort on conflict."""
+        try:
+            # Checkout base_branch
+            checkout_res = self.checkout_branch(base_branch, create=False)
+            if not checkout_res.success:
+                return checkout_res
+            cmd = ["git", "merge"]
+            if no_ff:
+                cmd.append("--no-ff")
+            cmd.extend([feature_branch, "-m", f"Merge {feature_branch} into {base_branch}"])
+            self._run(cmd, cwd=str(self._workspace))
+            return ToolResult(success=True, data={"merged": feature_branch, "base": base_branch})
+        except Exception as exc:
+            # Clean up aborted merge so repo is never left in MERGE_HEAD conflict state!
+            try:
+                self._run(["git", "merge", "--abort"], cwd=str(self._workspace))
+            except Exception:
+                pass
+            return ToolResult(success=False, error=str(exc))
+
+    def create_worktree(self, branch: str, worktree_path: str, base_branch: str | None = None) -> ToolResult:
+        """Create an isolated git worktree checked out to branch."""
+        clean_branch = branch.strip().replace(" ", "-")
+        target = Path(worktree_path)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            cmd = ["git", "worktree", "add"]
+            check = subprocess.run(
+                ["git", "rev-parse", "--verify", clean_branch],
+                cwd=str(self._workspace),
+                capture_output=True,
+                text=True,
+            )
+            if check.returncode == 0:
+                cmd.extend([str(target), clean_branch])
+            else:
+                cmd.extend(["-b", clean_branch, str(target)])
+                if base_branch:
+                    check_base = subprocess.run(
+                        ["git", "rev-parse", "--verify", f"{base_branch}"],
+                        cwd=str(self._workspace),
+                        capture_output=True,
+                        text=True,
+                    )
+                    if check_base.returncode == 0:
+                        cmd.append(base_branch)
+            self._run(cmd, cwd=str(self._workspace))
+            return ToolResult(success=True, data={"worktree_path": str(target), "branch": clean_branch})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    def remove_worktree(self, worktree_path: str) -> ToolResult:
+        """Remove a git worktree and prune worktree metadata."""
+        try:
+            self._run(["git", "worktree", "remove", "--force", str(worktree_path)], cwd=str(self._workspace))
+            self._run(["git", "worktree", "prune"], cwd=str(self._workspace))
+            return ToolResult(success=True, data={"removed": str(worktree_path)})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    def push(self, branch: str | None = None, remote: str = "origin", auth_token: str | None = None, repo_url: str | None = None) -> ToolResult:
+        """Push local commits to remote repository (supports feature branches)."""
         token = auth_token or os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN")
         url = repo_url or os.environ.get("GIT_REPO_URL")
+        target_branch = branch
+        if not target_branch:
+            cur = self.current_branch()
+            target_branch = cur.data.get("branch", "main") if cur.success else "main"
         
         try:
             # If we have a token and URL, we can set up an authenticated remote
@@ -187,12 +314,12 @@ class GitTools:
                     remote = "auth_origin"
                     temp_remote = True
             
-            self._run(["git", "push", remote, branch], cwd=str(self._workspace))
+            self._run(["git", "push", "-u", remote, target_branch], cwd=str(self._workspace))
             
             if temp_remote:
                 self._run(["git", "remote", "remove", "auth_origin"], cwd=str(self._workspace))
                 
-            return ToolResult(success=True, data={"message": f"Successfully pushed to {remote}/{branch}"})
+            return ToolResult(success=True, data={"message": f"Successfully pushed to {remote}/{target_branch}", "branch": target_branch})
         except Exception as exc:
             if 'temp_remote' in locals() and temp_remote:
                 try:

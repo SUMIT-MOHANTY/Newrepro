@@ -18,11 +18,13 @@ from runtime.resource_limits import ResourceLimits
 
 
 # §8.3 allowlist — only these executables may be invoked
-# NOTE: 'git' is intentionally excluded — git operations must use the
-# Git MCP (built-in) for local ops and GitHub MCP for remote ops.
 ALLOWED_COMMANDS: set[str] = {
-    "node", "npm", "npx", "yarn",
-    "python", "python3", "pip", "pip3",
+    "node", "npm", "npx", "yarn", "pnpm",
+    "python", "python3", "pip", "pip3", "pytest",
+    "java", "javac", "mvn", "mvnw",
+    "gradle", "gradlew",
+    "go",
+    "git",
     "nginx", "nginx-s",
     "sh", "bash",
     "ls", "cat", "mkdir", "pwd", "echo", "which",

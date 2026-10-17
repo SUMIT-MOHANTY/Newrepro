@@ -88,7 +88,7 @@ async def receive_agent_callback(
     # (Root cause of "progress stuck at 0/10% even though the app is live":
     # task_completed events were recorded as logs but never applied to the
     # AgentTaskOwnership rows the task-list endpoint reads.)
-    if task_id and project_id and event_type in ("task_started", "task_completed", "task_failed"):
+    if task_id and project_id and event_type in ("task_started", "task_completed", "task_failed", "git_push_completed", "git_push_failed"):
         try:
             _sync_task_progress_to_db(db, str(project_id), str(task_id), event_type, payload)
         except Exception as e:
@@ -232,14 +232,27 @@ def _sync_task_progress_to_db(
     elif event_type == "task_completed":
         verified = bool(payload.get("platform_verified", False))
         new_status, progress = ("done", 100) if verified else ("in_review", 75)
+    elif event_type in ("git_push_completed", "git_push_failed"):
+        new_status = ow.status
+        progress = getattr(ow, "task_progress", 100)
     else:  # task_failed
         new_status, progress = "failed", 0
 
     data = dict(ow.task_data) if isinstance(ow.task_data, dict) else {}
+    if payload.get("commit_hash"):
+        data["commit_hash"] = payload.get("commit_hash")
+    if payload.get("feature_branch"):
+        data["feature_branch"] = payload.get("feature_branch")
+    if payload.get("push_message"):
+        data["push_message"] = payload.get("push_message")
+    if "push_success" in payload:
+        data["push_success"] = payload.get("push_success")
+
     changed = (
         ow.status != new_status
         or data.get("task_progress") != progress
         or data.get("last_runtime_event") != event_type
+        or "commit_hash" in payload
     )
     if not changed:
         return
@@ -248,6 +261,10 @@ def _sync_task_progress_to_db(
     data["task_progress"] = progress
     data["last_runtime_event"] = event_type
     ow.task_data = data
+    if hasattr(task, "status") and new_status == "done":
+        task.status = "DONE"
+    if hasattr(task, "verification_status") and payload.get("platform_verified"):
+        task.verification_status = "PASSED"
     db.commit()
 
 

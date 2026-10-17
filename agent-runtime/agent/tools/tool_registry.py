@@ -23,6 +23,7 @@ class ToolPhase(str, Enum):
     editing = "editing"
     reviewing = "reviewing"
     build_fix = "build_fix"
+    migration = "migration"
     full = "full"  # All tools available
 
 
@@ -31,6 +32,38 @@ class ToolPhase(str, Enum):
 # ---------------------------------------------------------------------------
 
 _FILESYSTEM_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "write_files",
+        "description": (
+            "Write multiple related files in a single atomic batch operation. "
+            "Use this to write complete modules, packages, configs, or related components together "
+            "so import names, exported symbols, and component interfaces remain completely consistent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Absolute path or workspace-relative path to the file.",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "The complete content of the file.",
+                            },
+                        },
+                        "required": ["path", "content"],
+                    },
+                    "description": "List of files to write.",
+                },
+            },
+            "required": ["files"],
+        },
+    },
     {
         "name": "list_directory",
         "description": (
@@ -392,6 +425,32 @@ _HISTORY_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+_ARCHITECTURE_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "get_architecture_spec",
+        "description": (
+            "Query authoritative project architectural blueprints (Executive Summary, High-Level Design HLD, "
+            "or Low-Level Design LLD). Supports targeted section extraction: 'database' (SQL DDL/schemas), "
+            "'api' (REST endpoints/OpenAPI), 'components' (UI hierarchy), 'workflows' (sequence diagrams), "
+            "'security' (RBAC/auth), or 'overview'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document": {
+                    "type": "string",
+                    "enum": ["hld", "lld", "executive_summary", "all"],
+                    "description": "Which document blueprint to inspect. Defaults to 'lld'.",
+                },
+                "section": {
+                    "type": "string",
+                    "description": "Specific architectural section to retrieve (e.g. 'database', 'api', 'components', 'workflows', 'security', 'c4', 'overview'). If omitted, returns document structure and overview.",
+                },
+            },
+        },
+    },
+]
+
 _GIT_TOOLS: list[dict[str, Any]] = [
     {
         "name": "git_status",
@@ -423,15 +482,45 @@ _GIT_TOOLS: list[dict[str, Any]] = [
             "required": ["message"],
         },
     },
+    {
+        "name": "git_checkout_branch",
+        "description": "Checkout an existing branch or create a new feature branch (create=true) for task isolation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "The branch name to checkout or create (e.g. 'feature/auth-service').",
+                },
+                "create": {
+                    "type": "boolean",
+                    "description": "Set to true to create a new branch if it does not already exist.",
+                },
+                "base_branch": {
+                    "type": "string",
+                    "description": "Optional base branch to branch from (e.g. 'main').",
+                },
+            },
+            "required": ["branch"],
+        },
+    },
+    {
+        "name": "git_current_branch",
+        "description": "Get the name of the currently active Git branch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 _BUILD_TOOLS: list[dict[str, Any]] = [
     {
         "name": "install_and_build",
         "description": (
-            "Run 'npm install' followed by 'npm run build' in the workspace. "
-            "Returns the full stdout/stderr output so you can diagnose any build errors. "
-            "Use this after creating or modifying project files to verify the build succeeds."
+            "Run dependency installation followed by project compilation/build in the workspace. "
+            "Multi-stack aware: supports Java Maven/Gradle, Python (pip/pyproject), Node.js (npm/pnpm/yarn), and Go. "
+            "Returns full stdout/stderr and diagnostic reports to verify changes."
         ),
         "input_schema": {
             "type": "object",
@@ -445,7 +534,11 @@ _BUILD_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "install_dependencies",
-        "description": "Run 'npm install' in the workspace. Use when you only need to install deps without building.",
+        "description": (
+            "Install project dependencies based on detected manifests (npm/pnpm/yarn for Node, "
+            "pip for Python, mvn for Maven, gradle for Gradle, go mod download for Go). "
+            "Use when you only need to install or update dependencies without triggering a full build."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -458,7 +551,10 @@ _BUILD_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "run_build",
-        "description": "Run 'npm run build' in the workspace. Use after install_dependencies.",
+        "description": (
+            "Run project build or compilation based on detected project type (npm run build, "
+            "mvn compile, gradle build, go build, or python py_compile). Use after install_dependencies."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -472,7 +568,8 @@ _BUILD_TOOLS: list[dict[str, Any]] = [
     {
         "name": "check_syntax",
         "description": (
-            "Perform an instant (<100ms) syntax validation and parse check on a specific JS/JSX/TS/TSX file. "
+            "Perform an instant (<100ms) syntax validation and parse check on a specific source file "
+            "(Python, JavaScript, TypeScript, JSX, TSX, JSON, Java). "
             "Always call this IMMEDIATELY after using replace_file_content to verify that the edited file "
             "has valid syntax before proceeding to other files or full builds."
         ),
@@ -481,7 +578,7 @@ _BUILD_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to check syntax for (e.g. src/components/DataLineage.jsx).",
+                    "description": "Path to the file to check syntax for (e.g. src/App.jsx or app/main.py).",
                 },
             },
             "required": ["path"],
@@ -493,8 +590,9 @@ _EXECUTION_TOOLS: list[dict[str, Any]] = [
     {
         "name": "run_command",
         "description": (
-            "Run an approved shell command in the workspace. Only allowed commands: "
-            "node, npm, npx, yarn, python, python3, pip, pip3, git. "
+            "Run an approved shell command in the workspace. Allowed commands: "
+            "node, npm, npx, yarn, pnpm, python, python3, pip, pip3, pytest, "
+            "java, javac, mvn, mvnw, gradle, gradlew, go, git, ls, cat, mkdir, pwd, echo, which. "
             "Returns stdout, stderr, and exit code."
         ),
         "input_schema": {
@@ -717,10 +815,15 @@ _TOOL_TO_MCP_MAP: dict[str, tuple[str, str]] = {
     "get_conversation_history": ("search", "get_conversation_history"),
     "get_past_fixes": ("search", "get_past_fixes"),
     "update_product_spec": ("spec", "update_product_spec"),
+    # Architecture
+    "get_architecture_spec": ("architecture", "get_architecture_spec"),
     # Git
     "git_status": ("git", "status"),
     "git_diff": ("git", "diff"),
     "git_commit": ("git", "commit"),
+    "git_checkout_branch": ("git", "checkout_branch"),
+    "git_current_branch": ("git", "current_branch"),
+    "git_push": ("git", "push"),
     # Build
     "install_and_build": ("build", "install_and_build"),
     "install_dependencies": ("build", "install_dependencies"),
@@ -798,6 +901,8 @@ class ToolRegistry:
             return self._reviewing_tools()
         elif phase == ToolPhase.build_fix:
             return self._build_fix_tools()
+        elif phase == ToolPhase.migration:
+            return self._migration_tools()
         else:
             return self._all_tools()
 
@@ -810,9 +915,10 @@ class ToolRegistry:
     # ------------------------------------------------------------------
 
     def _planning_tools(self) -> list[dict[str, Any]]:
-        """Domain research & planning tools (submit_plan + web_search) to formulate architecture."""
+        """Domain research & planning tools (submit_plan + web_search + get_architecture_spec) to formulate architecture."""
         tools = [
             _SUBMIT_PLAN_TOOL,
+            _ARCHITECTURE_TOOLS[0],  # get_architecture_spec
         ]
         if self._web_search_enabled:
             tools.append(_WEB_SEARCH_TOOLS[0])  # web_search only (clean snippets, no page fetching)
@@ -823,13 +929,14 @@ class ToolRegistry:
     def _followup_planning_tools(self) -> list[dict[str, Any]]:
         """Inspection & planning tools for follow-up change requests.
         
-        Equips the AI architect with read-only inspection tools (read_file, grep_search, list_directory)
-        and submit_plan to inspect disk ground truth before committing to a plan.
+        Equips the AI architect with read-only inspection tools (read_file, grep_search, list_directory),
+        architecture specs, and submit_plan to inspect disk ground truth before committing to a plan.
         """
         return [
             _FILESYSTEM_TOOLS[2],          # read_file
             _SEARCH_TOOLS[0],              # grep_search
             _FILESYSTEM_TOOLS[1],          # list_directory
+            _ARCHITECTURE_TOOLS[0],        # get_architecture_spec
             _SUBMIT_FOLLOWUP_PLAN_TOOL,    # submit_plan
         ]
 
@@ -854,6 +961,7 @@ class ToolRegistry:
             _FILESYSTEM_TOOLS[0],  # write_files
             _FILESYSTEM_TOOLS[6],  # delete_file — for explicit remove/delete requests (files only)
             _SEARCH_TOOLS[0],      # grep_search
+            _ARCHITECTURE_TOOLS[0],# get_architecture_spec
             _HISTORY_TOOLS[0],     # get_past_fixes
             _SEARCH_TOOLS[4],      # get_conversation_history
             _BUILD_TOOLS[1],       # install_dependencies (run npm install after package.json changes)
@@ -866,6 +974,7 @@ class ToolRegistry:
             _FILESYSTEM_TOOLS[1],  # list_directory
             _FILESYSTEM_TOOLS[2],  # read_file
             _FILESYSTEM_TOOLS[7],  # file_exists
+            _ARCHITECTURE_TOOLS[0],# get_architecture_spec
             *_SEARCH_TOOLS[:1],    # grep_search only
         ]
 
@@ -876,6 +985,7 @@ class ToolRegistry:
             *_SEARCH_TOOLS,
             *_HISTORY_TOOLS,
             *_GIT_TOOLS,
+            *_ARCHITECTURE_TOOLS,
             *_BUILD_TOOLS,
             *_EXECUTION_TOOLS,
             _SUBMIT_FOLLOWUP_TASKS_TOOL,  # dynamic swarm task creation (scheduled after current task)
@@ -906,6 +1016,36 @@ class ToolRegistry:
             *_BUILD_TOOLS,
         ]
 
+    def _migration_tools(self) -> list[dict[str, Any]]:
+        """Inspection, transpile/porting, and verification tools for Codebase Migration.
+
+        Equips the agent to:
+        1. Inspect legacy codebase: read_file, grep_search, list_directory, file_exists
+        2. Write modern codebase: write_file, write_files, replace_file_content, create_directory, delete_file
+        3. Verify target stack: check_syntax, install_dependencies, run_build, install_and_build, run_command
+        4. Architect & document: get_architecture_spec, update_product_spec
+        """
+        tools = [
+            _FILESYSTEM_TOOLS[1],  # list_directory
+            _FILESYSTEM_TOOLS[2],  # read_file
+            _FILESYSTEM_TOOLS[7],  # file_exists
+            _SEARCH_TOOLS[0],      # grep_search
+            _FILESYSTEM_TOOLS[0],  # write_files
+            _FILESYSTEM_TOOLS[4],  # write_file
+            _SEARCH_TOOLS[1],      # replace_file_content
+            _FILESYSTEM_TOOLS[5],  # create_directory
+            _FILESYSTEM_TOOLS[6],  # delete_file
+            _ARCHITECTURE_TOOLS[0],# get_architecture_spec
+            _BUILD_TOOLS[3],       # check_syntax
+            _BUILD_TOOLS[1],       # install_dependencies
+            _BUILD_TOOLS[2],       # run_build
+            _BUILD_TOOLS[0],       # install_and_build
+            _EXECUTION_TOOLS[0],   # run_command
+        ]
+        if self._dynamic_tools:
+            tools.extend(self._dynamic_tools)
+        return tools
+
     def _all_tools(self) -> list[dict[str, Any]]:
         """All tools for the single-pass agentic mode."""
         tools = [
@@ -913,6 +1053,7 @@ class ToolRegistry:
             *_SEARCH_TOOLS,
             *_HISTORY_TOOLS,
             *_GIT_TOOLS,
+            *_ARCHITECTURE_TOOLS,
             *_BUILD_TOOLS,
             *_EXECUTION_TOOLS,
         ]

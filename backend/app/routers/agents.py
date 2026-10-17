@@ -1958,6 +1958,22 @@ async def _bg_run_agent(
             # ── Analyze workspace for context ──
             workspace_analysis = analyze_workspace(workspace_dir)
 
+            # ── Export Authoritative Architecture Blueprints (Executive Summary, HLD, LLD) ──
+            blueprint_info = {}
+            try:
+                from app.services.agents.master_orchestrator import export_architecture_blueprints_to_workspace
+                blueprint_info = export_architecture_blueprints_to_workspace(workspace_dir, project_token, db)
+                if blueprint_info.get("has_content"):
+                    docs_avail = ", ".join(blueprint_info.get("available_documents", []))
+                    agent_service.append_agent_log(
+                        agent_id,
+                        f"Mounted architectural blueprints ({docs_avail}) in /workspace/.agent/docs/",
+                        "info",
+                        project_token,
+                    )
+            except Exception as bp_err:
+                logger.warning(f"Architecture blueprint export note: {bp_err}")
+
             # ── Build the full agent prompt (dynamic, tech-stack agnostic) ──
             agent_service.append_agent_log(
                 agent_id,
@@ -2048,12 +2064,26 @@ async def _bg_run_agent(
                         git_repo_url = git_repo_url or cred.git_repo_url
                         git_token = git_token or cred.git_token
 
-            # Embed structured tasks for the Supervisor DAG scheduler
+            # Embed structured tasks and Git credentials for the Supervisor DAG scheduler & runtime
             if git_repo_url:
                 task_config["repo_url"] = git_repo_url
+                task_config["git_repo_url"] = git_repo_url
             if git_token:
                 task_config["git_token"] = git_token
+                task_config["git_auth_token"] = git_token
+                task_config["git_pat_token"] = git_token
                 task_config["has_git_token"] = True
+
+            base_branch = (
+                (cred.git_branch if "cred" in locals() and cred and getattr(cred, "git_branch", None) else None)
+                or (gov.dest_repo_branch if "gov" in locals() and gov and getattr(gov, "dest_repo_branch", None) else None)
+                or os.environ.get("GIT_BRANCH", "main")
+            )
+            task_config["git_branch"] = base_branch
+            task_config["branch"] = base_branch
+            if blueprint_info.get("has_content"):
+                task_config["has_architecture_blueprints"] = True
+                task_config["blueprint_docs"] = blueprint_info.get("available_documents", [])
 
             task_config["tasks"] = [
                 {

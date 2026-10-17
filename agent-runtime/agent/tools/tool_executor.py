@@ -107,6 +107,10 @@ class ToolExecutor:
         if tool_name == "submit_followup_tasks":
             return self._execute_submit_followup_tasks(tool_input)
 
+        # Handle architecture blueprint retrieval (Executive Summary, HLD, LLD)
+        if tool_name in ("get_architecture_spec", "read_architecture_spec"):
+            return self._execute_get_architecture_spec(tool_input)
+
         mapping = self._registry.get_mcp_mapping(tool_name)
         if mapping is None:
             return self._error_result(f"Unknown tool: {tool_name}")
@@ -1216,6 +1220,133 @@ class ToolExecutor:
         except UnicodeEncodeError:
             print("[ToolExecutor] Follow-up tasks queued")
         return self._success_result(msg)
+
+    def _execute_get_architecture_spec(self, tool_input: dict[str, Any] | str) -> dict[str, Any]:
+        """Retrieve authoritative project architectural blueprints (Executive Summary, HLD, LLD).
+
+        Supports targeted section extraction (e.g. 'database', 'api', 'components', 'workflows', 'security')
+        to avoid saturating LLM context windows with entire 50k-token documents.
+        """
+        import os
+        import re
+        from pathlib import Path
+
+        if isinstance(tool_input, str):
+            try:
+                tool_input = json.loads(tool_input)
+            except Exception:
+                tool_input = {}
+
+        doc_type = (tool_input.get("document") or "lld").lower().strip()
+        section = (tool_input.get("section") or "").lower().strip()
+
+        workspace_path = getattr(self._mcp, "_workspace_path", None) or os.environ.get("WORKSPACE_PATH", "/workspace")
+        docs_dir = Path(workspace_path) / ".agent" / "docs"
+
+        if not docs_dir.exists():
+            return self._error_result(
+                f"No architectural blueprints found in `{docs_dir}`. "
+                "Ensure Dsuite has generated and mounted the project architecture documents."
+            )
+
+        # Candidate files to check based on doc_type
+        target_files = []
+        if doc_type in ("lld", "all"):
+            target_files.append(("Low-Level Design (LLD)", docs_dir / "LLD.md"))
+        if doc_type in ("hld", "all"):
+            target_files.append(("High-Level Design (HLD)", docs_dir / "HLD.md"))
+        if doc_type in ("executive_summary", "summary", "all"):
+            target_files.append(("Executive Summary", docs_dir / "EXECUTIVE_SUMMARY.md"))
+
+        if not target_files:
+            target_files.append(("Low-Level Design (LLD)", docs_dir / "LLD.md"))
+
+        # Section keyword mappings to Markdown headers
+        section_keywords = {
+            "database": ["database", "ddl", "schema", "entities", "migration", "table", "relational", "sql"],
+            "api": ["api", "endpoints", "openapi", "routes", "rest", "contracts", "payload"],
+            "components": ["component", "architecture", "layers", "presentation", "ui", "clean architecture"],
+            "workflows": ["sequence", "workflow", "interaction", "c4", "journey"],
+            "security": ["security", "rbac", "auth", "jwt", "permission", "token"],
+            "c4": ["c4", "container", "topology", "system context"],
+            "overview": ["executive summary", "overview", "scope", "introduction", "vision"],
+        }
+
+        keywords = []
+        for k, kw_list in section_keywords.items():
+            if k in section:
+                keywords.extend(kw_list)
+        if not keywords and section:
+            keywords = [section]
+
+        output_sections = []
+        available_sections_found = []
+
+        for doc_label, file_path in target_files:
+            if not file_path.exists():
+                continue
+
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except Exception as e:
+                output_sections.append(f"### {doc_label}: (Error reading file: {e})")
+                continue
+
+            # Parse sections by markdown headers (## ...)
+            raw_sections = re.split(r'(?m)^(?=##\s+)', content)
+
+            matched_in_doc = []
+            doc_sections_list = []
+
+            for sec_text in raw_sections:
+                sec_text_clean = sec_text.strip()
+                if not sec_text_clean:
+                    continue
+                first_line = sec_text_clean.split("\n", 1)[0].strip()
+                doc_sections_list.append(first_line)
+
+                if keywords:
+                    # Check if any keyword matches header or first 4 lines
+                    search_zone = "\n".join(sec_text_clean.split("\n")[:5]).lower()
+                    if any(kw in search_zone for kw in keywords):
+                        matched_in_doc.append(sec_text_clean)
+
+            if keywords:
+                if matched_in_doc:
+                    output_sections.append(f"## 🏛️ {doc_label} (Filtered for: '{section}')\n\n" + "\n\n---\n\n".join(matched_in_doc[:3]))
+                else:
+                    available_sections_found.extend([f"{doc_label}: {s}" for s in doc_sections_list[:10]])
+            else:
+                # No section filter specified: return summary + Table of Contents
+                toc_lines = "\n".join(f"- {s}" for s in doc_sections_list[:12])
+                preview = "\n".join(content.split("\n")[:40])
+                output_sections.append(
+                    f"## 🏛️ {doc_label} Overview\n\n"
+                    f"**Available Sections (Query with `get_architecture_spec(document='{doc_type}', section='...')`):**\n"
+                    f"{toc_lines}\n\n"
+                    f"### Blueprint Preview:\n{preview}\n..."
+                )
+
+        if not output_sections:
+            help_msg = (
+                f"No sections matching '{section}' were found in `{doc_type}`.\n\n"
+                f"Available sections across blueprints:\n" + "\n".join(f"- {s}" for s in available_sections_found[:15]) +
+                "\n\nTry querying with section='database', 'api', 'components', 'workflows', or 'security'."
+            )
+            return self._error_result(help_msg)
+
+        # Read architecture manifest if available
+        manifest_file = docs_dir / "architecture_manifest.json"
+        manifest_note = ""
+        if manifest_file.exists():
+            try:
+                manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                manifest_note = f"\n\n*(Blueprints project: '{manifest_data.get('project_name', 'Enterprise Solution')}' | Available: {', '.join(manifest_data.get('available_documents', []))})*"
+            except Exception:
+                pass
+
+        final_result = "\n\n═══════════════════════════════════════════════════════════════\n\n".join(output_sections) + manifest_note
+        return self._success_result(final_result)
 
     def _error_result(self, error: str) -> dict[str, Any]:
         """Format a failed tool result for Claude."""
