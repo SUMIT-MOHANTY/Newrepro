@@ -63,3 +63,11 @@ modules:
     tools:
       - fetch_docs
       - search_npm
+
+  preview_qa:
+    enabled: true
+    tools:
+      - verify_live_dom_and_console
+      - run_api_contract_fuzzer
+      - execute_user_journey_e2e
+      - visual_regression_and_a11y_audit

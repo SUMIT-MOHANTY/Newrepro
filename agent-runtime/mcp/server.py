@@ -65,6 +65,10 @@ class MCPServer:
         self._modules["build"] = BuildTools(self._workspace_path)
         self._modules["search"] = SearchTools(self._workspace_path)
 
+        from mcp.preview_qa_tools import PreviewQATools
+        self._modules["preview_qa"] = PreviewQATools(self._workspace_path)
+        print("[MCP] Preview QA & browser testing tools enabled")
+
         # Opt-in modules — only register if configured
         import os
         if os.environ.get("WEB_SEARCH_ENABLED", "").lower() == "true":

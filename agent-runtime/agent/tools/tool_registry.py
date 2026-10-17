@@ -24,6 +24,7 @@ class ToolPhase(str, Enum):
     reviewing = "reviewing"
     build_fix = "build_fix"
     migration = "migration"
+    testing = "testing"
     full = "full"  # All tools available
 
 
@@ -663,14 +664,111 @@ _WEB_SEARCH_TOOLS: list[dict[str, Any]] = [
 
 
 
+_PREVIEW_QA_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "verify_live_dom_and_console",
+        "description": (
+            "Launches headless Chromium via Playwright against the live running preview application. "
+            "Detects White Screen of Death (WSOD), uncaught runtime JS exceptions, console errors, "
+            "horizontal layout overflow, and tests interactive button clicks. "
+            "Returns exact error messages and stack traces to guide immediate self-healing repairs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preview_url": {
+                    "type": "string",
+                    "description": "The preview URL to test (defaults to http://localhost:80).",
+                },
+                "routes_to_visit": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of subroutes to verify, e.g. ['/', '/dashboard', '/orders'].",
+                },
+                "viewport_width": {
+                    "type": "integer",
+                    "description": "Browser viewport width in px (defaults to 850 for iframe fidelity).",
+                },
+            },
+        },
+    },
+    {
+        "name": "run_api_contract_fuzzer",
+        "description": (
+            "Executes real HTTP requests against live running backend endpoints defined in the "
+            "project contract (.agent/contracts/api_contract.json). Verifies status codes (2xx/4xx vs 500) "
+            "and CORS headers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "base_url": {
+                    "type": "string",
+                    "description": "Base URL of the running API server (e.g. http://localhost:80 or http://localhost:3001).",
+                },
+                "contract_path": {
+                    "type": "string",
+                    "description": "Optional custom path to the api_contract.json file.",
+                },
+            },
+        },
+    },
+    {
+        "name": "execute_user_journey_e2e",
+        "description": (
+            "Runs a multi-step end-to-end user journey in headless Playwright against the live preview URL. "
+            "Executes clicks, text input filling, and text assertions across real DOM elements."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preview_url": {
+                    "type": "string",
+                    "description": "The preview URL to execute the user journey on.",
+                },
+                "journey_steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["click", "fill", "assert_text", "wait"]},
+                            "selector": {"type": "string", "description": "CSS selector for click/fill"},
+                            "value": {"type": "string", "description": "Text value to fill"},
+                            "text": {"type": "string", "description": "Expected text for assert_text"},
+                            "ms": {"type": "integer", "description": "Wait time in ms for wait action"},
+                        },
+                        "required": ["action"],
+                    },
+                    "description": "List of sequential user action steps to execute.",
+                },
+            },
+            "required": ["preview_url", "journey_steps"],
+        },
+    },
+    {
+        "name": "visual_regression_and_a11y_audit",
+        "description": (
+            "Audits the live running preview application for visual quality and accessibility hygiene. "
+            "Detects broken image links (naturalWidth === 0), missing alt attributes, and unlabeled buttons."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preview_url": {
+                    "type": "string",
+                    "description": "The preview URL to audit.",
+                },
+            },
+        },
+    },
+]
+
 _SUBMIT_PLAN_TOOL = {
     "name": "submit_plan",
     "description": (
-        "Submit the implementation plan and conclude the planning phase. "
-        "For fast delivery of a runnable prototype, plan strictly 4-5 core files total: "
-        "1 data file (src/data/mockData.js), 1 service adapter (src/services/apiClient.js), "
-        "2 core components (e.g. DashboardView.jsx, DataTable.jsx), and src/App.jsx. "
-        "Do NOT plan secondary sub-pages or micro-services; those will be planned in future follow-up requests."
+        "Submit the implementation plan and conclude the architectural planning phase. "
+        "Formulate a complete, modular plan covering data structures, services, components, "
+        "and primary routing views."
     ),
     "input_schema": {
         "type": "object",
@@ -691,7 +789,7 @@ _SUBMIT_PLAN_TOOL = {
                     },
                     "required": ["step_number", "action", "description", "files_involved"],
                 },
-                "description": "List of 4-5 discrete implementation steps (1 per core file)",
+                "description": "List of discrete implementation steps",
             },
             "architecture_notes": {"type": "string", "description": "Key architectural decisions or entity models"},
         },
@@ -834,6 +932,11 @@ _TOOL_TO_MCP_MAP: dict[str, tuple[str, str]] = {
     # Web search
     "web_search": ("web_search", "web_search"),
     "fetch_page_content": ("web_search", "fetch_page_content"),
+    # Preview & Automated QA Testing
+    "verify_live_dom_and_console": ("preview_qa", "verify_live_dom_and_console"),
+    "run_api_contract_fuzzer": ("preview_qa", "run_api_contract_fuzzer"),
+    "execute_user_journey_e2e": ("preview_qa", "execute_user_journey_e2e"),
+    "visual_regression_and_a11y_audit": ("preview_qa", "visual_regression_and_a11y_audit"),
     # GitHub — handled by official MCP server (@modelcontextprotocol/server-github)
     # Tools like push_files, create_repository, get_file_contents, search_code
     # are registered dynamically via _dynamic_tools
@@ -903,6 +1006,8 @@ class ToolRegistry:
             return self._build_fix_tools()
         elif phase == ToolPhase.migration:
             return self._migration_tools()
+        elif phase == ToolPhase.testing:
+            return self._testing_tools()
         else:
             return self._all_tools()
 
@@ -997,14 +1102,29 @@ class ToolRegistry:
         return tools
 
     def _reviewing_tools(self) -> list[dict[str, Any]]:
-        """Read-only tools for code review."""
+        """Read-only and runtime verification tools for code review."""
         return [
             _FILESYSTEM_TOOLS[1],  # list_directory
             _FILESYSTEM_TOOLS[2],  # read_file
             _SEARCH_TOOLS[0],      # grep_search
             _GIT_TOOLS[0],         # git_status
             _GIT_TOOLS[1],         # git_diff
+            *_PREVIEW_QA_TOOLS,    # live DOM, console, visual QA, contract fuzzer
         ]
+
+    def _testing_tools(self) -> list[dict[str, Any]]:
+        """Automated functional testing, live DOM inspection, and E2E verification suite."""
+        tools = [
+            *_PREVIEW_QA_TOOLS,    # verify_live_dom_and_console, run_api_contract_fuzzer, execute_user_journey_e2e, visual_regression_and_a11y_audit
+            _FILESYSTEM_TOOLS[1],  # list_directory
+            _FILESYSTEM_TOOLS[2],  # read_file
+            _SEARCH_TOOLS[0],      # grep_search
+            _BUILD_TOOLS[3],       # check_syntax
+            _EXECUTION_TOOLS[0],   # run_command
+        ]
+        if self._dynamic_tools:
+            tools.extend(self._dynamic_tools)
+        return tools
 
     def _build_fix_tools(self) -> list[dict[str, Any]]:
         """Tools for diagnosing and fixing build errors."""
@@ -1056,6 +1176,7 @@ class ToolRegistry:
             *_ARCHITECTURE_TOOLS,
             *_BUILD_TOOLS,
             *_EXECUTION_TOOLS,
+            *_PREVIEW_QA_TOOLS,
         ]
         if self._web_search_enabled:
             tools.extend(_WEB_SEARCH_TOOLS)

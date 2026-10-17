@@ -637,7 +637,7 @@ export const generateRobustPDF = (result, options = {}) => {
     } = options;
 
     try {
-        const pdf = new jsPDF('p', 'mm', 'a4');
+        const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true });
         const components = new PdfComponents(pdf);
 
         // Normalize main analysis text

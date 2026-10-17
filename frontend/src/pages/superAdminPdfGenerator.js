@@ -15,7 +15,8 @@ export function generateSuperAdminPDF(orgs, stats, title, subtitle, filename, da
     const doc = new jsPDF({
       orientation: 'p',
       unit: 'mm',
-      format: 'a4'
+      format: 'a4',
+      compress: true
     });
 
     const pageWidth = 210;

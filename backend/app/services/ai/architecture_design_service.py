@@ -61,6 +61,11 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
 - Distinguish confirmed BRD requirements from architectural recommendations.
 - Establish clean, named components and service boundaries that can be directly elaborated in Low-Level Design (LLD).
 
+4. PROJECT LIFECYCLE MODE ADAPTATION (GREENFIELD vs. BROWNFIELD vs. MODERNIZATION):
+- **GREENFIELD**: Design the full target system topology and foundational components from scratch.
+- **BROWNFIELD**: You are extending or fixing an EXISTING codebase (`existing_repository_structure`). Do NOT invent a brand-new tech stack or replace existing architecture. In Section 2 (C4 Diagrams), highlight existing components vs. modified/newly added components. In Section 4 (Sequence Workflows), show how the new feature or bug fix integrates into existing services.
+- **MODERNIZATION / MIGRATION**: You are migrating a legacy application to a modern target architecture. In Section 2, include a **Legacy-to-Target Component Mapping Matrix** and Strangler Fig / phased cutover topology. In Section 6, include data migration & dual-run parity validation strategy.
+
 ## REQUIRED DOCUMENT STRUCTURE
 
 # HIGH-LEVEL DESIGN (HLD) — {PRODUCT_NAME}
@@ -140,8 +145,8 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
    * **If the project is an INFORMATIONAL / MARKETING / CONTENT WEBSITE:**
      - **Section 1 (Component Architecture):** Focus on UI component hierarchy, presentation architecture (Page templates, Responsive layout, Navigation bar, Hero, Feature showcases, Testimonials, Interactive Contact Form, Footer, SEO metadata head management, Asset optimization pipeline), and component state management.
      - **Section 2 (Database Design & Migration DDL):** Model what an informational site actually needs:
-       * `contact_inquiries` / `leads` (id UUID DEFAULT gen_random_uuid(), full_name, email, phone, subject, message, status, ip_hash, submitted_at)
-       * `newsletter_subscribers` (id UUID DEFAULT gen_random_uuid(), email, status, subscribed_at)
+       * `contact_inquiries` / `leads` (id VARCHAR(36) PRIMARY KEY, full_name, email, phone, subject, message, status, ip_hash, submitted_at)
+       * `newsletter_subscribers` (id VARCHAR(36) PRIMARY KEY, email, status, subscribed_at)
        * `content_pages` / `articles` / `seo_metadata` (if dynamic or CMS-backed)
        Do NOT invent complex multi-tenant business schemas that have no relation to the BRD.
      - **Section 3 (API Specification):** Focus on public website endpoints with full payload JSON schemas and field validations:
@@ -152,19 +157,25 @@ CRITICAL ARCHITECTURAL ADAPTATION RULES (DO NOT OVER-ENGINEER):
    * **If the project is a FULL-STACK APPLICATION / SAAS / ENTERPRISE PLATFORM:**
      - Provide comprehensive domain entities, relational models, foreign keys, transaction boundaries, and full domain REST APIs.
 
-2. GENERAL INSTRUCTIONS & STAFF ARCHITECT MERMAID FORMATTING RULES:
-- Design the entities, data dictionary, SQL DDL, and API specifications SPECIFICALLY for this project's domain.
-- Every table, endpoint, and interface contract must represent a real requirement from this BRD.
-- The SQL DDL must be syntactically valid and runnable (ANSI SQL / PostgreSQL compatible) with UUID primary keys (`gen_random_uuid()`), foreign keys with `ON DELETE CASCADE/SET NULL`, check constraints, composite B-Tree indexes, and automated `updated_at` trigger functions.
-- The OpenAPI specification MUST detail actual domain endpoints with request headers, body schemas, field validation rules, and full 200/201/400/401/403/404/409/422/500 JSON response payloads with realistic domain values.
-- Every Mermaid diagram (ER Diagram, State Machine, Sequence Flow) MUST be syntactically valid and use FULL, UN-TRUNCATED words for all node titles and edge text labels.
+2. STACK-CONSISTENT DDL, DUAL-MODE ORM & PREVIEW CONTRACT RULES:
+- **DATABASE & PREVIEW DEPLOYMENT RULE (CRITICAL FOR GREENFIELD):**
+  * For GREENFIELD projects, architect a **Dual-Mode Relational Persistence Layer** using the stack's standard ORM (e.g., SQLAlchemy for Python/FastAPI, Prisma/Drizzle for Node/TypeScript):
+    1. **Preview / Default Mode (Zero-Config)**: Default `DATABASE_URL` to embedded **SQLite** (`sqlite:///./app.db`) so the application can be built, migrated, seeded, and previewed immediately in any container without external database credentials.
+    2. **Enterprise Production Mode**: Support seamless switchover to **PostgreSQL 16** solely by overriding the `DATABASE_URL` environment variable.
+  * **Portable Schema Mandate**: In all LLD SQL DDL and ORM schemas, use portable ANSI SQL types (`VARCHAR(36)` for UUIDs generated in application code, `TIMESTAMP`, `NUMERIC`, `TEXT`/`JSON`). Do NOT use database-engine-locked extensions (like `gen_random_uuid()` or PL/pgSQL triggers) that would fail in SQLite preview mode.
+  * **Auto-Bootstrap on Startup**: The backend MUST automatically initialize tables and seed realistic demo data on startup if the database is empty, guaranteeing a working, populated live preview.
+  * **Graceful Third-Party Adapter Fallbacks**: If Redis, Kafka, or SMTP are referenced, mandate an Adapter Fallback Pattern (in-memory cache fallback when `REDIS_URL` is missing, console email provider when `SMTP_API_KEY` is missing) so preview builds never crash.
+- **Database Engine Alignment**: Inspect `stage2_architecture.tech_stack` FIRST. Generate SQL DDL matching the database selected in Stage 2/HLD while adhering to the Dual-Mode Portable Schema mandate. If Redis is not in the stack, use database-backed optimistic locking (`version` column) and a DB `idempotency_keys` table.
+- **Project Type Adaptation**:
+  * **GREENFIELD**: Provide complete `CREATE TABLE` DDL for all domain entities using portable ANSI SQL, and a full repository file tree to create.
+  * **BROWNFIELD**: Provide incremental migration DDL (`ALTER TABLE` for existing tables + `CREATE TABLE` only for net-new tables) and in Section 6 provide an **Affected File Map (`MODIFY` | `ADD` | `DELETE`)** referencing the EXACT file paths from `existing_repository_structure`. Never invent fake folder paths that conflict with the existing repository.
+  * **MODERNIZATION / MIGRATION**: Provide the target schema `CREATE TABLE` DDL PLUS a **Legacy-to-Target Schema & Data Mapping Table** (`Legacy Table/Column` -> `Target Table/Column` -> `Transformation Rule`).
+- The OpenAPI 3.1 specification MUST detail actual domain endpoints from `stage3_data_api.api_endpoints` with request headers, body schemas, field validation rules, and full 200/201/400/401/403/404/409/422/500 JSON response payloads.
+- Every Mermaid diagram MUST be syntactically valid and use FULL, UN-TRUNCATED words for all node titles and edge text labels.
 
 3. AUTHORITATIVE CONTEXT, HLD CONSISTENCY & IMPLEMENTATION FIDELITY:
-- Treat the provided HLD and Stage 1-4 analysis as authoritative; the LLD must directly elaborate the HLD without contradicting it.
-- Maintain strict naming alignment: every service, module, and database model in LLD must correspond to components defined in the HLD.
-- Do not introduce conflicting persistence engines, protocols, or architectures that contradict the HLD decisions.
-- Where possible, link implementation classes, APIs, and tables to requirement identifiers [REQ-xxx].
-- Detail real domain logic, validation constraints, and contracts derived from the BRD.
+- Treat the provided HLD and Stage 1-4 analysis as the single source of truth; the LLD must directly elaborate the HLD without contradicting its tech stack, database, or service names.
+- Maintain strict naming alignment: every service, module, API path, and database table in LLD must match Stage 2, Stage 3, Stage 4, and the HLD.
 
 ## REQUIRED DOCUMENT STRUCTURE
 
@@ -218,10 +229,14 @@ Complete table covering every entity and attribute for this project:
 | Table Name | Column Name | Data Type | PK/FK | Nullable | Default Value | Constraints & Indexes | Business Purpose |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 
-### 2.3 Production-Ready SQL Migration DDL
-Complete, runnable PostgreSQL migration script with `CREATE TABLE`, `UUID` generation (`gen_random_uuid()`), `FOREIGN KEY` constraints, composite B-Tree/GIN indexes, `CHECK` constraints, and an automated `updated_at` trigger function:
+### 2.3 Production-Ready SQL Migration DDL & Portable ORM Models
+Complete, runnable portable SQL migration script and ORM models using standard ANSI SQL types:
+- Portable `VARCHAR(36)` primary keys with application/ORM-level UUID generation (`uuid.uuid4()` / `@default(uuid())`).
+- Standard `FOREIGN KEY` constraints, composite indexes, `CHECK` constraints.
+- Portable `TIMESTAMP` columns with ORM-level timestamp tracking (`onupdate=func.now()` / `@updatedAt`) instead of DB-engine-locked trigger functions.
+- Dual-Mode compatibility: runnable directly on SQLite for zero-config preview or PostgreSQL 16 for production without dialect collisions.
 ```sql
--- Project SQL Migration DDL
+-- Project SQL Migration DDL (Portable ANSI SQL)
 ```
 
 ## 3. Comprehensive OpenAPI 3.1 REST API Specification
@@ -535,8 +550,15 @@ def _is_informational_site(stage1: Dict[str, Any], prod_name: str) -> bool:
     informational_keywords = [
         "informational website", "information website", "marketing website", "landing page",
         "brochure", "portfolio", "company website", "corporate website", "static website",
-        "showcase website", "blog site", "docs site", "content site", "informational"
+        "showcase website", "blog site", "docs site", "content site"
     ]
+    app_keywords = [
+        "saas", "dashboard", "portal", "rbac", "workflow", "erp", "crm",
+        "transaction", "inventory", "billing", "multi-tenant", "microservice"
+    ]
+    has_info = any(k in text_corpus for k in informational_keywords)
+    has_app = any(k in text_corpus for k in app_keywords)
+    return has_info and not has_app
 def _extract_domain_services_from_stages(
     stage1: Dict[str, Any],
     stage2: Dict[str, Any],
@@ -1381,9 +1403,13 @@ class ArchitectureDesignService:
         context = {
             "project_name": p_name,
             "project_code": p_code,
-            "brd_content": brd_content[:10000] if brd_content else "",
+            "project_type": analysis_data.get("project_type") or (stage1 or {}).get("development_classification", {}).get("type", "Greenfield"),
+            "existing_repository_structure": analysis_data.get("existing_repository_structure", "")[:8000],
+            "brd_content": brd_content[:12000] if brd_content else "",
             "stage1_requirements": stage1,
             "stage2_architecture": stage2,
+            "stage3_api_summary": (stage3 or {}).get("api_endpoints", []),
+            "stage4_repo_structure": (stage4 or {}).get("repository_structure", ""),
             "user_preferences": user_preferences or ""
         }
 
@@ -1438,9 +1464,9 @@ class ArchitectureDesignService:
             f"Requirements Coverage: {coverage['coverage_percentage']}% ({coverage['covered_requirements']}/{coverage['total_requirements']})."
         )
 
-        # Bounded Remediation: If real LLM output had material structural issues, attempt at most ONE remediation call
-        if generation_source == "llm" and hld_validation.get("status") == "WARNING" and hld_validation.get("issues"):
-            logger.info(f"HLD validation flagged issues: {hld_validation['issues']}. Attempting single bounded remediation...")
+        # Bounded Remediation: If real LLM output had material structural issues (score < 75%), attempt at most ONE remediation call
+        if generation_source == "llm" and hld_validation.get("score", 100) < 75 and hld_validation.get("issues"):
+            logger.info(f"HLD validation flagged material defects (score {hld_validation.get('score')}% < 75%): {hld_validation['issues']}. Attempting single bounded remediation...")
             try:
                 remediation_messages = list(messages) + [
                     {"role": "assistant", "content": markdown_result},
@@ -1519,8 +1545,12 @@ class ArchitectureDesignService:
         context = {
             "project_name": p_name,
             "project_code": p_code,
-            "brd_content": brd_content[:8000] if brd_content else "",
-            "hld_excerpt": (hld_content[:3000] if hld_content else ""),
+            "project_type": analysis_data.get("project_type") or (stage1 or {}).get("development_classification", {}).get("type", "Greenfield"),
+            "existing_repository_structure": analysis_data.get("existing_repository_structure", "")[:10000],
+            "brd_content": brd_content[:10000] if brd_content else "",
+            "hld_specification": (hld_content[:18000] if hld_content else ""),
+            "stage1_requirements": stage1,
+            "stage2_architecture": stage2,
             "stage3_data_api": stage3,
             "stage4_implementation": stage4,
             "user_preferences": user_preferences or ""
@@ -1551,7 +1581,7 @@ class ArchitectureDesignService:
                 project_name=p_name,
                 timeout=timeout,
                 temperature=0.2,
-                max_tokens=9000
+                max_tokens=12000
             )
             if markdown_result and len(markdown_result.strip()) >= 500:
                 logger.info(f"LLM generation successful for LLD (project '{p_name}', {len(markdown_result)} chars).")

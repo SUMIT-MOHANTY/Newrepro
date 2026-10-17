@@ -131,7 +131,7 @@ BRD_ANALYSIS_PROMPT = f"""# ROLE
 You are an expert software architect and technical planning agent. Your goal is to transform a user's product requirement into a comprehensive, production-grade Agent Action Plan — a structured technical blueprint that a coding agent can execute autonomously with zero ambiguity.
 
 ### CORE PHILOSOPHY
-1.  **Helpful & Decisive**: If the BRD does not specify a technology (e.g., "We need a database"), **YOU MUST recommend the best standard solution** (e.g., "PostgreSQL" or "MongoDB"). Do not be vague. Provide a concrete, buildable architecture.
+1.  **Helpful & Decisive**: If the BRD does not specify a technology (e.g., "We need a database"), **YOU MUST recommend the best standard solution** (e.g., ORM-managed relational database with Dual-Mode support: embedded SQLite for zero-config preview, PostgreSQL 16 for production). Do not be vague. Provide a concrete, buildable architecture.
 2.  **Grounded in Reality**: Do NOT invent features. If the BRD asks for "Email notifications", add an Email Service node. If it does NOT ask for "SMS", do not add an SMS node.
 3.  **Appropriate Complexity**: Match the architecture to the scope.
     - Small CRUD app? Use a Monolith (Frontend + Backend + DB).
@@ -746,56 +746,42 @@ Use this detection to drive ALL task generation below. NEVER generate frontend t
 project, and NEVER generate backend tasks for a frontend-only project.
 
 ═══════════════════════════════════════════════════════
-PART 2 — TASK-00: THE IMMOVABLE GATEWAY (ALWAYS the first task, sequence 1)
+PART 2 — TASK-00: PROJECT INITIALIZATION & WORKSPACE DISCOVERY (Mandatory Task 1)
 ═══════════════════════════════════════════════════════
 
-NON-NEGOTIABLE TASK-00 RULES:
-1. Task with sequence 1 is ALWAYS the FIRST object in the JSON array. No exceptions.
-2. Task 1 (TASK-00) has phase="foundation" and dependencies=[] (no dependencies).
-3. ALL other tasks MUST include 1 in their dependencies array.
-4. Task 1 wallet MUST be 10 (maximum — it is the most critical task in the project).
-5. Task 1 scope is STRICTLY determined by the detected stack:
-   - FULL-STACK: bootstrap creates BOTH frontend scaffold AND backend scaffold
-   - FRONTEND-ONLY: bootstrap creates ONLY frontend structure (NO backend folders, NO server files)
-   - BACKEND-ONLY: bootstrap creates ONLY backend structure (NO frontend folders, NO React/UI files)
-6. Task 1 description MUST state explicitly:
-   - GATEWAY TASK — all other tasks depend on this. Must complete before any other task starts.
-   - The EXACT directory tree to create (derived from the BRD analysis repository structure section 0.5.1)
-   - The EXACT config files to create (package.json/pyproject.toml, .env.example, .gitignore, README.md, and any framework config)
-   - The EXACT entry point files to create
-   - For frontend projects: AppLayout, design token file, mock data store, shared UI kit
-   - For backend projects: main entry file, CORS config, health endpoint, database connection stub
-   - What NOT to build in this task (no feature screens, no business logic, no DB schemas)
-7. Task 1 checklist MUST contain at minimum 8 FILE-LEVEL steps (see PART 4 for format rules).
+Task 1 MUST ALWAYS be TASK-00. Its scope depends strictly on project type:
+- **IF GREENFIELD**: Scaffolding the repository, setting up build tools (Vite, Next.js, Poetry, npm), configuring Docker, linters, pre-commit hooks, and CI/CD stubs.
+  * **Dual-Mode Persistence & Zero-Config Live Preview**: Configure `DATABASE_URL` default to embedded SQLite (`sqlite:///./app.db`) so the application builds, migrates, and runs in any preview sandbox without external DB credentials, while supporting instant switch to PostgreSQL 16 by overriding `DATABASE_URL`.
+  * **Mandatory Idempotent Startup Hook**: In backend entry point (`main.py` / `server.ts`), implement an auto-bootstrap hook that:
+    1. Creates all ORM tables automatically if they do not exist (`Base.metadata.create_all(bind=engine)` or ORM equivalent).
+    2. Seeds 8–10 realistic domain records matching the BRD and a default demo admin account (`admin@demo.local` / `Demo@1234`) if the DB is empty, guaranteeing an instant, populated live preview.
+  * **Graceful Third-Party Adapter Fallbacks**: Implement fallbacks for external services: in-memory cache if `REDIS_URL` is unset; console email provider (`ConsoleEmailProvider`) if `SMTP_API_KEY` is unset; mock payment/auth stubs if external keys are missing. Endpoints MUST NEVER return 500 on boot due to missing third-party keys.
+- **IF BROWNFIELD or MODERNIZATION**: DO NOT scaffold a new project! DO NOT overwrite existing configuration files! Instead, TASK-00 scope MUST be:
+  1. Baseline Verification: Run existing tests, lint, and build commands to establish a green baseline.
+  2. Workspace Discovery: Inspect the existing repository structure and map existing files.
+  3. Environment Configuration: Verify environment variables and dependencies required for new features without breaking existing setups.
+  4. Affected File Map: Document all existing files that will be modified or extended by subsequent tasks.
 
 ═══════════════════════════════════════════════════════
-PART 3 — PHASE-BASED DEVELOPMENT (Generate ONLY phases relevant to the detected stack)
+PART 3 — PHASE-BASED DEVELOPMENT ORDER
 ═══════════════════════════════════════════════════════
 
-Phase "foundation" → ALWAYS required. Contains TASK-00 (sequence 1) only.
+Organize tasks into strictly sequential phases. A task in a later phase MUST NOT start before its prerequisite phases are complete:
+- **Phase 0**: Project Setup (TASK-00) / Existing Baseline Verification
+- **Phase 1**: Database & Models (Portable ORM models, auto-bootstrap migrations, realistic seed data). For Greenfield, mandate Dual-Mode ORM configuration (`DATABASE_URL` default: `sqlite:///./app.db`; PostgreSQL 16 ready). Use portable ANSI SQL types (`VARCHAR(36)` for application-generated UUIDs, `TIMESTAMP`, `NUMERIC`, `TEXT`/`JSON`). NEVER hardcode database-specific syntax (e.g. `gen_random_uuid()` or raw triggers) that crashes SQLite preview mode.
+- **Phase 2**: Core Business Logic & Repositories (Services, domain models, CRUD operations)
+- **Phase 3**: API & Integration Layer (Routes, controllers, middleware, auth)
+- **Phase 4**: Frontend Foundation (State management, API client, design system tokens)
+- **Phase 5**: Frontend Features (Pages, components, forms, user flows matching Stage 2 flow diagram)
+- **Phase 6**: Verification, Testing & Polish (E2E tests, edge cases, documentation)
 
-IF FRONTEND EXISTS in the detected stack:
-  Phase "frontend-core" → Frontend routing setup, layout shell, design tokens, shared UI library,
-    mock data store, authentication screens. These tasks DEPEND on foundation.
-  Phase "frontend-features" → Feature-specific screens/pages derived from BRD requirements.
-    NO real API calls — all data from mock store. DEPEND on frontend-core tasks.
+═══════════════════════════════════════════════════════
+ARCHITECTURE SPECIFICATION GROUNDING (CRITICAL)
+═══════════════════════════════════════════════════════
 
-IF BACKEND EXISTS in the detected stack:
-  Phase "backend-core" → Database setup, core models/schemas, JWT auth implementation,
-    base middleware, CORS config, error handling. DEPEND on foundation.
-  Phase "backend-features" → Feature-specific API endpoints derived from BRD requirements.
-    DEPEND on backend-core tasks.
-
-IF BOTH FRONTEND AND BACKEND EXIST:
-  Phase "integration" → Connect frontend to real backend APIs, replace mock data with React Query
-    hooks, run E2E database connectivity tests. DEPEND on all feature tasks.
-
-Phase "integration" also covers testing, deployment preparation, Docker setup, and CI/CD
-  for ALL project types (even single-side projects).
-
-DEPENDENCY CHAIN (strictly enforced by the `dependencies` array):
-  foundation (1) → frontend-core → frontend-features → integration
-  foundation (1) → backend-core → backend-features → integration
+- If an LLD (Low-Level Design) is provided in the context, you MUST use the exact entity names, field names, column types, and API endpoint paths defined in the LLD.
+- Do NOT invent alternative schema or route conventions.
+- In Brownfield projects, every task must specify whether it is CREATING a new file or MODIFYING an existing file.
 
 ═══════════════════════════════════════════════════════
 PART 4 — CHECKLIST RULES (file-level precision MANDATORY)
@@ -1361,7 +1347,7 @@ For tasks identified as project bootstrap, TASK-00, or project scaffold, the che
   8. Create the design token file at exact path (e.g., `src/styles/tokens.css`) with CSS custom properties for primary/accent/semantic colors, typography scale, spacing scale
   9. Create the global mock data store at exact path (e.g., `src/mocks/mockData.ts`) with 8+ realistic records per entity using domain-appropriate names
   10. Create ALL shared UI components at their exact paths under `src/components/ui/`: Button, Badge, Card, Modal, Drawer, DataTable, SearchInput, Toast, LoadingSkeleton, EmptyState, PageHeader
-  11. Create backend entry point at exact path (e.g., `backend/main.py`) with FastAPI/Express instantiation, CORS config, and /health endpoint only — NO business logic
+  11. Create backend entry point at exact path (e.g., `backend/main.py`) with FastAPI/Express app instantiation, CORS middleware, /health endpoint, and idempotent startup hook for dual-mode ORM auto-migration (SQLite preview default / PostgreSQL ready) and realistic demo data seeding (8-10 domain records + default demo admin account)
   12. Verify structure and commit: `git init && git add . && git commit -m 'chore: initial project scaffold'`
 
 Use the REPOSITORY STRUCTURE and TECH STACK provided in the user message to determine exact file paths and commands.
@@ -1409,6 +1395,8 @@ async def generate_checklists_for_tasks(
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
+    hld_markdown: Optional[str] = None,
+    lld_markdown: Optional[str] = None,
 ) -> dict:
     """
     Generate file-precise checklists for a batch of tasks using the LLM.
@@ -1416,6 +1404,8 @@ async def generate_checklists_for_tasks(
     Args:
         tasks_with_ids: List of dicts, each with 'id', 'taskName', 'description', 'task_type'
         analysis_report: The full BRD analysis for project context (NOT truncated)
+        hld_markdown: Optional authoritative HLD specification
+        lld_markdown: Optional authoritative LLD specification with schemas and contracts
 
     Returns:
         Dict mapping task_id (str) -> list of checklist items
@@ -1444,7 +1434,7 @@ async def generate_checklists_for_tasks(
         r'###\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n###|\Z)',
         r'0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
         r'##\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n##|\Z)',
-        r'###\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n###|\Z)',
+        r'###\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n##|\Z)',
     ]
     for _pat in _repo_patterns:
         _m = re.search(_pat, analysis_report, re.IGNORECASE | re.DOTALL)
@@ -1478,6 +1468,11 @@ async def generate_checklists_for_tasks(
         )
     if tech_stack:
         context_parts.append(f"TECH STACK:\n{tech_stack}")
+
+    if lld_markdown:
+        context_parts.append(f"AUTHORITATIVE LOW-LEVEL DESIGN (LLD CONTRACTS & SCHEMAS):\n{lld_markdown[:12000]}")
+    if hld_markdown:
+        context_parts.append(f"AUTHORITATIVE HIGH-LEVEL DESIGN (HLD OVERVIEW):\n{hld_markdown[:6000]}")
 
     # Fallback: if neither section was found, pass a larger slice of the analysis
     if not repo_structure and not tech_stack:
@@ -1544,7 +1539,9 @@ async def generate_task_batch(
     api_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
-    project_type: str = "greenfield", # New param
+    project_type: str = "greenfield",
+    hld_markdown: Optional[str] = None,
+    lld_markdown: Optional[str] = None,
 ) -> list:
     """
     Generate the NEXT batch of up to 5 tasks using the LLM.
@@ -1584,7 +1581,7 @@ async def generate_task_batch(
         r'###\s*0\.5\.1\s*[^\n]*\n(.*?)(?=\n###|\Z)',
         r'0\.5\.1\s*[^\n]*\n(.*?)(?=\n##|\n###|\n\d+\.|\Z)',
         r'##\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n##|\Z)',
-        r'###\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n###|\Z)',
+        r'###\s*0\.5\s+[Rr]epository[^\n]*\n(.*?)(?=\n##|\Z)',
     ]
     for _bp in _batch_repo_patterns:
         _bm = re.search(_bp, analysis_report, re.IGNORECASE | re.DOTALL)
@@ -1616,6 +1613,11 @@ async def generate_task_batch(
         f"REMAINING_WALLET_BUDGET: {remaining_wallet}\n\n"
         f"CUSTOM_RULES:\n{custom_rules or 'None'}\n"
     )
+
+    if hld_markdown:
+        text_content += f"\n\n### AUTHORITATIVE HIGH-LEVEL DESIGN (HLD)\n{hld_markdown[:10000]}\n"
+    if lld_markdown:
+        text_content += f"\n\n### AUTHORITATIVE LOW-LEVEL DESIGN (LLD - CONTRACTS & SCHEMAS)\n{lld_markdown[:15000]}\n"
 
     messages = [
         {"role": "system", "content": BATCH_TASK_PROMPT},
@@ -1677,6 +1679,9 @@ async def generate_all_tasks(
     model: Optional[str] = None,
     project_type: str = "greenfield",
     process_mode: Optional[str] = None,
+    existing_repo_structure: str = "",
+    hld_markdown: Optional[str] = None,
+    lld_markdown: Optional[str] = None,
 ) -> list:
     """
     Generate all tasks for the project in a single LLM call.
@@ -1710,6 +1715,19 @@ async def generate_all_tasks(
         f"Generate the FULL list of tasks. "
         f"The total wallet for all combined tasks must NOT exceed {project_wallet}. "
     )
+
+    # Inject Architecture Truth (HLD & LLD) if available
+    architecture_truth_block = ""
+    if existing_repo_structure:
+        architecture_truth_block += f"\n\n### EXISTING REPOSITORY STRUCTURE\n{existing_repo_structure[:10000]}\n"
+    if hld_markdown:
+        architecture_truth_block += f"\n\n### AUTHORITATIVE HIGH-LEVEL DESIGN (HLD)\n{hld_markdown[:10000]}\n"
+    if lld_markdown:
+        architecture_truth_block += f"\n\n### AUTHORITATIVE LOW-LEVEL DESIGN (LLD - CONTRACTS & SCHEMAS)\n{lld_markdown[:15000]}\n"
+    if custom_rules:
+        architecture_truth_block += f"\n\n### CUSTOM RULES\n{custom_rules}\n"
+
+    text_content += architecture_truth_block
 
     messages = [
         {"role": "system", "content": FULL_PROJECT_TASK_PROMPT},

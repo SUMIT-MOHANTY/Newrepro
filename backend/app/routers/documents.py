@@ -1958,12 +1958,14 @@ class GenerateDesignPayload(BaseModel):
 @router.get("/documents/{document_id}/design")
 async def get_document_architecture_design(
     document_id: int,
+    auto_generate: bool = Query(True, description="Whether to auto-synthesize missing designs synchronously"),
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Retrieve the industry-grade High-Level Design (HLD) and Low-Level Design (LLD)
-    for a given document. If not present in stored analysis, auto-synthesizes them.
+    for a given document. If not present in stored analysis and auto_generate=True, auto-synthesizes them.
+    Also reconciles with any in-memory or background specs generation job.
     """
     db_doc = db.query(models.Document).filter(models.Document.id == document_id).first()
     if not db_doc:
@@ -1986,16 +1988,64 @@ async def get_document_architecture_design(
     brd_content = db_doc.full_content or db_doc.content_preview or analysis_data.get("analysis") or ""
     changed = False
 
+    # Check for linked background job and reconcile in-memory specs
+    job_id = analysis_data.get("_jobId") or analysis_data.get("_analysis_job_id")
+    job = None
+    is_job_active = False
+    if job_id:
+        from app.services.ai.ai_service_chunked import _get_job
+        job = _get_job(job_id)
+        if job:
+            is_job_active = getattr(job, "is_specs_active", False)
+            if not analysis_data.get("hld") and job.stages.get("hld"):
+                analysis_data["hld"] = job.stages["hld"]
+                changed = True
+            if not analysis_data.get("lld") and job.stages.get("lld"):
+                analysis_data["lld"] = job.stages["lld"]
+                changed = True
+            if getattr(job, "spec_status", None):
+                analysis_data["spec_status"] = job.spec_status
+                changed = True
+
+    # Determine fine-grained spec status
+    spec_status = dict(analysis_data.get("spec_status") or {})
+    if analysis_data.get("hld"):
+        spec_status["hld"] = "ready"
+    elif is_job_active and job and getattr(job, "spec_status", None) and job.spec_status.get("hld"):
+        spec_status["hld"] = job.spec_status["hld"]
+    elif is_job_active:
+        spec_status["hld"] = "generating"
+    else:
+        # If no active job is running, spec cannot be generating!
+        spec_status["hld"] = "pending"
+
+    if analysis_data.get("lld"):
+        spec_status["lld"] = "ready"
+    elif is_job_active and job and getattr(job, "spec_status", None) and job.spec_status.get("lld"):
+        spec_status["lld"] = job.spec_status["lld"]
+    elif is_job_active:
+        spec_status["lld"] = "generating" if spec_status.get("hld") == "ready" else "pending"
+    else:
+        # If no active job is running, spec cannot be generating!
+        spec_status["lld"] = "pending"
+
+    if analysis_data.get("spec_status") != spec_status:
+        analysis_data["spec_status"] = spec_status
+        changed = True
+
     # Check or generate HLD via AI architecture design service
     hld = analysis_data.get("hld")
+    is_hld_generating = is_job_active and spec_status.get("hld") == "generating"
     if not hld or not isinstance(hld, dict) or not hld.get("markdown"):
-        hld_res = await architecture_design_service.generate_high_level_design(
-            brd_content=brd_content,
-            analysis_data=analysis_data,
-            project_name=p_name
-        )
-        analysis_data["hld"] = hld_res
-        changed = True
+        if auto_generate and not is_hld_generating:
+            hld_res = await architecture_design_service.generate_high_level_design(
+                brd_content=brd_content,
+                analysis_data=analysis_data,
+                project_name=p_name
+            )
+            analysis_data["hld"] = hld_res
+            spec_status["hld"] = "ready"
+            changed = True
     elif isinstance(hld, dict) and hld.get("markdown"):
         clean_md = sanitize_design_markdown_date(hld["markdown"])
         if clean_md != hld["markdown"]:
@@ -2004,20 +2054,25 @@ async def get_document_architecture_design(
 
     # Check or generate LLD via AI architecture design service
     lld = analysis_data.get("lld")
+    is_lld_generating = is_job_active and spec_status.get("lld") == "generating"
     if not lld or not isinstance(lld, dict) or not lld.get("markdown"):
-        lld_res = await architecture_design_service.generate_low_level_design(
-            brd_content=brd_content,
-            hld_content=(analysis_data.get("hld") or {}).get("markdown"),
-            analysis_data=analysis_data,
-            project_name=p_name
-        )
-        analysis_data["lld"] = lld_res
-        changed = True
+        if auto_generate and analysis_data.get("hld") and not is_lld_generating:
+            lld_res = await architecture_design_service.generate_low_level_design(
+                brd_content=brd_content,
+                hld_content=(analysis_data.get("hld") or {}).get("markdown"),
+                analysis_data=analysis_data,
+                project_name=p_name
+            )
+            analysis_data["lld"] = lld_res
+            spec_status["lld"] = "ready"
+            changed = True
     elif isinstance(lld, dict) and lld.get("markdown"):
         clean_md = sanitize_design_markdown_date(lld["markdown"])
         if clean_md != lld["markdown"]:
             lld["markdown"] = clean_md
             changed = True
+
+    analysis_data["spec_status"] = spec_status
 
     if changed:
         try:
@@ -2033,8 +2088,54 @@ async def get_document_architecture_design(
         "document_id": document_id,
         "filename": db_doc.filename,
         "hld": analysis_data.get("hld"),
-        "lld": analysis_data.get("lld")
+        "lld": analysis_data.get("lld"),
+        "spec_status": spec_status,
+        "job_id": job_id,
+        "job_active": is_job_active
     }
+
+
+class UpdateSpecsPayload(BaseModel):
+    hld: Optional[Dict[str, Any]] = None
+    lld: Optional[Dict[str, Any]] = None
+    spec_status: Optional[Dict[str, str]] = None
+
+
+@router.patch("/documents/{document_id}/specs")
+async def update_document_specs(
+    document_id: int,
+    payload: UpdateSpecsPayload,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Lightweight endpoint to sync completed HLD/LLD specs directly to document analysis_result.
+    """
+    db_doc = db.query(models.Document).filter(models.Document.id == document_id).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    analysis_data = {}
+    if db_doc.analysis_result:
+        try:
+            analysis_data = json.loads(db_doc.analysis_result)
+        except Exception:
+            analysis_data = {}
+
+    if payload.hld:
+        analysis_data["hld"] = payload.hld
+    if payload.lld:
+        analysis_data["lld"] = payload.lld
+    if payload.spec_status:
+        st = analysis_data.get("spec_status") or {}
+        st.update(payload.spec_status)
+        analysis_data["spec_status"] = st
+
+    db_doc.analysis_result = json.dumps(analysis_data)
+    db.add(db_doc)
+    db.commit()
+    db.refresh(db_doc)
+    return {"status": "success", "document_id": document_id, "spec_status": analysis_data.get("spec_status")}
 
 
 @router.post("/documents/{document_id}/design/generate")
@@ -2099,6 +2200,13 @@ async def generate_document_architecture_design(
         analysis_data["lld"] = suite.get("lld")
         analysis_data["architecture_summary"] = suite.get("summary")
 
+    spec_status = dict(analysis_data.get("spec_status") or {})
+    if analysis_data.get("hld"):
+        spec_status["hld"] = "ready"
+    if analysis_data.get("lld"):
+        spec_status["lld"] = "ready"
+    analysis_data["spec_status"] = spec_status
+
     db_doc.analysis_result = json.dumps(analysis_data)
     db.add(db_doc)
     db.commit()
@@ -2110,6 +2218,7 @@ async def generate_document_architecture_design(
         "filename": db_doc.filename,
         "hld": analysis_data.get("hld"),
         "lld": analysis_data.get("lld"),
+        "spec_status": spec_status,
         "architecture_summary": analysis_data.get("architecture_summary")
     }
 

@@ -4,7 +4,7 @@ import { API_ENDPOINTS, API_BASE_URL } from '../config';
 import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info, Layers, Database, Code, Copy, Check, Sparkles } from 'lucide-react';
+import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info, Layers, Database, Code, Copy, Check, Sparkles, ZoomIn, ZoomOut, RotateCcw, Maximize2, AlertCircle } from 'lucide-react';
 import bourntecLogo from '../assets/bourntec_logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
@@ -13,37 +13,62 @@ import mermaid from 'mermaid';
 import { generateArchitectureDesignPDF } from './architecturePdfGenerator';
 
 // Initialize mermaid with configuration
-// Initialize mermaid with optimal responsive configuration
+// Initialize mermaid with optimal high-clarity configuration
 mermaid.initialize({
     startOnLoad: false,
     theme: 'neutral',
     securityLevel: 'loose',
-    fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     suppressErrorRendering: true,
     flowchart: {
         htmlLabels: true,
         useMaxWidth: false,
         curve: 'basis',
-        padding: 20,
+        padding: 24,
         nodeSpacing: 50,
-        rankSpacing: 50
+        rankSpacing: 55,
+        defaultRenderer: 'dagre-wrapper'
     },
     er: {
-        useMaxWidth: false
+        useMaxWidth: false,
+        fontSize: 16
     },
     sequence: {
         useMaxWidth: false,
-        showSequenceNumbers: true
+        showSequenceNumbers: true,
+        actorFontSize: 16,
+        messageFontSize: 15,
+        noteFontSize: 14
     },
     themeVariables: {
-        fontSize: '13px',
-        fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        primaryColor: '#e0e7ff',
-        primaryTextColor: '#1e1b4b',
-        primaryBorderColor: '#6366f1',
-        lineColor: '#475569',
-        secondaryColor: '#f1f5f9',
-        tertiaryColor: '#ffffff'
+        fontSize: '16px',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        primaryColor: '#eef2ff',
+        primaryTextColor: '#0f172a',
+        primaryBorderColor: '#4f46e5',
+        lineColor: '#1e293b',
+        secondaryColor: '#f8fafc',
+        tertiaryColor: '#ffffff',
+        mainBkg: '#ffffff',
+        nodeBorder: '#4f46e5',
+        clusterBkg: '#f8fafc',
+        clusterBorder: '#94a3b8',
+        defaultLinkColor: '#1e293b',
+        titleColor: '#0f172a',
+        edgeLabelBackground: '#ffffff',
+        actorBorder: '#4f46e5',
+        actorBkg: '#eef2ff',
+        actorTextColor: '#0f172a',
+        actorLineColor: '#475569',
+        signalColor: '#1e293b',
+        signalTextColor: '#0f172a',
+        labelBoxBkgColor: '#ffffff',
+        labelBoxBorderColor: '#94a3b8',
+        labelTextColor: '#0f172a',
+        loopTextColor: '#0f172a',
+        noteBorderColor: '#cbd5e1',
+        noteBkgColor: '#fef3c7',
+        noteTextColor: '#78350f'
     }
 });
 
@@ -228,6 +253,7 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
     const [downloading, setDownloading] = useState(false);
     const [isExpanded, setIsExpanded] = useState(false);
     const [isRendering, setIsRendering] = useState(false);
+    const [zoomLevel, setZoomLevel] = useState(1);
 
     useEffect(() => {
         let cancelled = false;
@@ -238,14 +264,14 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                 const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`;
                 const { svg: renderedSvg } = await safeRenderMermaid(id, sanitized);
                 if (!cancelled) {
-                    // Remove fixed height on root <svg> tag if viewBox is present,
-                    // allowing the browser to scale the height proportionally to the diagram content
-                    // and eliminating massive vertical whitespace/letterboxing above and below.
+                    // Remove fixed height and restrictive max-width on root <svg> tag if viewBox is present,
+                    // allowing the diagram to scale crisply to readable size without text squashing.
                     let cleanSvg = renderedSvg;
                     if (cleanSvg && /viewBox=/i.test(cleanSvg)) {
                         cleanSvg = cleanSvg
                             .replace(/(<svg\b[^>]*?)\sheight="[^"]*"/i, '$1')
-                            .replace(/(<svg\b[^>]*?\sstyle="[^"]*?)height\s*:\s*[^;"]+;?/i, '$1');
+                            .replace(/(<svg\b[^>]*?\sstyle="[^"]*?)height\s*:\s*[^;"]+;?/i, '$1')
+                            .replace(/(<svg\b[^>]*?\sstyle="[^"]*?)max-width\s*:\s*[^;"]+;?/i, '$1');
                     }
                     setSvg(cleanSvg);
                     setError(null);
@@ -263,6 +289,28 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
         renderDiagram();
         return () => { cancelled = true; };
     }, [code]);
+
+    const handleExpand = () => {
+        setZoomLevel(1);
+        setIsExpanded(true);
+    };
+
+    const handleCloseExpanded = () => {
+        setIsExpanded(false);
+        setZoomLevel(1);
+    };
+
+    const handleZoomIn = () => {
+        setZoomLevel(z => Math.min(Number((z + 0.25).toFixed(2)), 3.0));
+    };
+
+    const handleZoomOut = () => {
+        setZoomLevel(z => Math.max(Number((z - 0.25).toFixed(2)), 0.5));
+    };
+
+    const handleResetZoom = () => {
+        setZoomLevel(1);
+    };
 
     const handleDownloadPNG = async () => {
         if (!svg || !containerRef.current) return;
@@ -350,14 +398,6 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
         }
     };
 
-    const handleExpand = () => {
-        setIsExpanded(true);
-    };
-
-    const handleCloseExpanded = () => {
-        setIsExpanded(false);
-    };
-
     if (error) {
         return (
             <div className="my-4 rounded-xl border border-gray-200 bg-white overflow-hidden shadow-sm">
@@ -381,8 +421,8 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
         return (
             <div className="flex items-center justify-center py-8 my-4 bg-gray-50 rounded-lg border border-gray-200">
                 <div className="flex items-center gap-3">
-                    <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                    <span className="text-sm text-gray-500">Rendering diagram...</span>
+                    <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                    <span className="text-sm font-medium text-gray-600">Rendering high-clarity diagram...</span>
                 </div>
             </div>
         );
@@ -390,36 +430,70 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
 
     return (
         <>
-            {/* Fullscreen Expanded View Modal */}
+            {/* Fullscreen Expanded View Modal with Dynamic Zoom */}
             {isExpanded && (
                 <div
                     className="fixed inset-0 z-[500] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
                     onClick={handleCloseExpanded}
                 >
                     <div
-                        className="relative w-full max-w-5xl max-h-[90vh] bg-white rounded-2xl shadow-2xl overflow-hidden animate-scale-in"
+                        className="relative w-full max-w-6xl max-h-[92vh] bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-scale-in"
                         onClick={(e) => e.stopPropagation()}
                     >
                         {/* Modal Header */}
-                        <div className="flex items-center justify-between px-6 py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white">
+                        <div className="flex items-center justify-between px-6 py-3.5 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white border-b border-indigo-900/40">
                             <div className="flex items-center gap-3">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
-                                </svg>
-                                <span className="font-semibold">Diagram View</span>
+                                <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center">
+                                    <Maximize2 className="w-4 h-4 text-indigo-300" />
+                                </div>
+                                <div>
+                                    <span className="font-semibold text-sm tracking-wide">High-Definition Architecture Diagram</span>
+                                    <p className="text-[11px] text-indigo-200/70">Interactive vector canvas with dynamic zoom & inspection</p>
+                                </div>
                             </div>
                             <div className="flex items-center gap-2">
+                                {/* Zoom Controls */}
+                                <div className="flex items-center bg-white/10 rounded-lg p-0.5 border border-white/15 mr-2">
+                                    <button
+                                        onClick={handleZoomOut}
+                                        disabled={zoomLevel <= 0.5}
+                                        className="p-1.5 hover:bg-white/15 disabled:opacity-30 disabled:hover:bg-transparent rounded transition-colors text-white"
+                                        title="Zoom Out (Ctrl -)"
+                                    >
+                                        <ZoomOut className="w-3.5 h-3.5" />
+                                    </button>
+                                    <span className="px-2 text-xs font-mono font-medium text-white min-w-[44px] text-center">
+                                        {Math.round(zoomLevel * 100)}%
+                                    </span>
+                                    <button
+                                        onClick={handleZoomIn}
+                                        disabled={zoomLevel >= 3.0}
+                                        className="p-1.5 hover:bg-white/15 disabled:opacity-30 disabled:hover:bg-transparent rounded transition-colors text-white"
+                                        title="Zoom In (Ctrl +)"
+                                    >
+                                        <ZoomIn className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                        onClick={handleResetZoom}
+                                        className="p-1.5 hover:bg-white/15 rounded transition-colors text-white border-l border-white/15 ml-0.5"
+                                        title="Reset Zoom"
+                                    >
+                                        <RotateCcw className="w-3.5 h-3.5" />
+                                    </button>
+                                </div>
+
                                 <button
                                     onClick={handleDownloadPNG}
                                     disabled={downloading}
-                                    className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium bg-white/20 hover:bg-white/30 disabled:bg-white/10 rounded-lg transition-all"
+                                    className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800/50 rounded-lg shadow-sm transition-all"
                                 >
-                                    <Download className="w-4 h-4" />
-                                    {downloading ? 'Saving...' : 'Download PNG'}
+                                    <Download className="w-3.5 h-3.5" />
+                                    {downloading ? 'Exporting...' : 'Export 4K PNG'}
                                 </button>
                                 <button
                                     onClick={handleCloseExpanded}
-                                    className="p-2 hover:bg-white/20 rounded-lg transition-all"
+                                    className="p-1.5 hover:bg-white/20 rounded-lg transition-all text-white/80 hover:text-white"
+                                    title="Close"
                                 >
                                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -429,9 +503,10 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
                         </div>
 
                         {/* Expanded Diagram Content */}
-                        <div className="p-6 bg-gray-50 overflow-auto max-h-[calc(90vh-60px)]">
+                        <div className="p-8 bg-slate-50/90 overflow-auto flex-1 flex justify-center items-start min-h-[450px]">
                             <div
-                                className="mermaid-diagram-container flex justify-center [&>svg]:max-w-full [&>svg]:!h-auto [&>svg]:w-auto"
+                                className="mermaid-diagram-container transition-transform duration-150 origin-top flex justify-center [&>svg]:!h-auto [&>svg]:w-auto [&>svg]:max-w-none shadow-sm bg-white p-6 rounded-xl border border-slate-200"
+                                style={{ transform: `scale(${zoomLevel})` }}
                                 dangerouslySetInnerHTML={{ __html: svg }}
                             />
                         </div>
@@ -440,48 +515,52 @@ const MermaidDiagram = ({ code, showDownload = true }) => {
             )}
 
             {/* Normal View */}
-            <div className="my-4 p-4 bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+            <div className="my-5 p-5 bg-white rounded-xl border border-gray-200/90 shadow-sm overflow-x-auto">
                 {/* Action Buttons */}
-                <div className="flex justify-end gap-2 mb-2">
-                    {/* Expand Button */}
-                    <button
-                        onClick={handleExpand}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white hover:bg-gray-50 border border-gray-300 disabled:bg-gray-100 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all hover:shadow-md"
-                        title="Expand to fullscreen"
-                    >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-                        </svg>
-                        Expand
-                    </button>
-
-                    {/* Download Button */}
-                    {showDownload && (
+                <div className="flex justify-between items-center mb-3">
+                    <span className="text-[11px] font-semibold tracking-wider uppercase text-slate-500 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></span>
+                        Architecture Topology Diagram
+                    </span>
+                    <div className="flex items-center gap-2">
+                        {/* Expand & Zoom Button */}
                         <button
-                            onClick={handleDownloadPNG}
-                            disabled={downloading}
-                            className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed rounded-lg shadow-sm transition-all"
-                            title="Download as PNG"
+                            onClick={handleExpand}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-300 rounded-lg shadow-sm transition-all hover:shadow"
+                            title="Expand to Fullscreen & Zoom"
                         >
-                            {downloading ? (
-                                <>
-                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    Downloading...
-                                </>
-                            ) : (
-                                <>
-                                    <Download className="w-3.5 h-3.5" />
-                                    Download PNG
-                                </>
-                            )}
+                            <Maximize2 className="w-3.5 h-3.5 text-slate-600" />
+                            <span>Expand & Zoom</span>
                         </button>
-                    )}
+
+                        {/* Download Button */}
+                        {showDownload && (
+                            <button
+                                onClick={handleDownloadPNG}
+                                disabled={downloading}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 rounded-lg shadow-sm transition-all"
+                                title="Download 4K PNG"
+                            >
+                                {downloading ? (
+                                    <>
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        <span>Exporting...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Download className="w-3.5 h-3.5" />
+                                        <span>Download PNG</span>
+                                    </>
+                                )}
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 {/* SVG Diagram with smooth fade-in animation */}
                 <div
                     ref={containerRef}
-                    className="mermaid-diagram-container flex justify-center [&>svg]:max-w-full [&>svg]:!h-auto [&>svg]:w-auto transition-opacity duration-300 ease-out"
+                    className="mermaid-diagram-container flex justify-center [&>svg]:max-w-full [&>svg]:min-w-[480px] sm:[&>svg]:min-w-[620px] [&>svg]:!h-auto [&>svg]:w-auto transition-opacity duration-300 ease-out py-2"
                     style={{ opacity: svg ? 1 : 0 }}
                     dangerouslySetInnerHTML={{ __html: svg }}
                 />
@@ -867,39 +946,188 @@ export default function AgentAnalysis({
     const [activeDesignTab, setActiveDesignTab] = useState('executive'); // 'executive' | 'hld' | 'lld'
     const [hldDesign, setHldDesign] = useState(null);
     const [lldDesign, setLldDesign] = useState(null);
+    const [specStatus, setSpecStatus] = useState({ analysis_report: 'ready', hld: 'pending', lld: 'pending' });
     const [designLoading, setDesignLoading] = useState(false);
     const [designGenerating, setDesignGenerating] = useState(false);
     const [copiedSnippet, setCopiedSnippet] = useState(null);
     const [exportingPdfType, setExportingPdfType] = useState(null);
 
+    // Concurrency guards for spec polling and design fetching
+    const activeSpecsJobRef = useRef(null);
+    const specsAbortControllerRef = useRef(null);
+    const fetchedDocDesignIdRef = useRef(null);
+
     useEffect(() => {
-        if (result?.analysis?.hld) {
+        if (!result) {
+            setHldDesign(null);
+            setLldDesign(null);
+            setSpecStatus({ analysis_report: 'ready', hld: 'pending', lld: 'pending' });
+            return;
+        }
+        if (result.analysis?.hld) {
             const hld = result.analysis.hld;
             setHldDesign(hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld);
         }
-        if (result?.analysis?.lld) {
+        if (result.analysis?.lld) {
             const lld = result.analysis.lld;
             setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
         }
-    }, [result]);
+        if (result.analysis?.spec_status) {
+            setSpecStatus(result.analysis.spec_status);
+        }
+    }, [result?.id]);
+
+    const listenForBackgroundSpecs = useCallback(async (jobId) => {
+        if (!jobId || !token) return;
+        // Singleton guard: if already polling this specific job, skip redundant call
+        if (activeSpecsJobRef.current === jobId) {
+            return;
+        }
+        if (specsAbortControllerRef.current) {
+            specsAbortControllerRef.current.abort();
+        }
+        const abortController = new AbortController();
+        specsAbortControllerRef.current = abortController;
+        activeSpecsJobRef.current = jobId;
+
+        try {
+            const { pollArchitectureSpecs } = await import('../utils/analysisPolling');
+            const finalSpecs = await pollArchitectureSpecs(
+                jobId,
+                token,
+                (specsData) => {
+                    if (abortController.signal.aborted) return;
+                    if (specsData.spec_status) {
+                        setSpecStatus(specsData.spec_status);
+                    }
+                    if (specsData.hld) {
+                        const cleanHld = specsData.hld?.markdown ? { ...specsData.hld, markdown: sanitizeDesignMarkdownDate(specsData.hld.markdown) } : specsData.hld;
+                        setHldDesign(cleanHld);
+                        setResult(prev => prev ? {
+                            ...prev,
+                            analysis: {
+                                ...(prev.analysis || {}),
+                                hld: cleanHld,
+                                spec_status: specsData.spec_status
+                            }
+                        } : prev);
+                        if (resultCacheRef.current[selectedProjectKey]?.result?.analysis) {
+                            resultCacheRef.current[selectedProjectKey].result.analysis.hld = cleanHld;
+                            resultCacheRef.current[selectedProjectKey].result.analysis.spec_status = specsData.spec_status;
+                        }
+                    }
+                    if (specsData.lld) {
+                        const cleanLld = specsData.lld?.markdown ? { ...specsData.lld, markdown: sanitizeDesignMarkdownDate(specsData.lld.markdown) } : specsData.lld;
+                        setLldDesign(cleanLld);
+                        setResult(prev => prev ? {
+                            ...prev,
+                            analysis: {
+                                ...(prev.analysis || {}),
+                                lld: cleanLld,
+                                spec_status: specsData.spec_status
+                            }
+                        } : prev);
+                        if (resultCacheRef.current[selectedProjectKey]?.result?.analysis) {
+                            resultCacheRef.current[selectedProjectKey].result.analysis.lld = cleanLld;
+                            resultCacheRef.current[selectedProjectKey].result.analysis.spec_status = specsData.spec_status;
+                        }
+                    }
+                },
+                3000,
+                120,
+                abortController.signal
+            );
+
+            // When polling concludes, ensure lingering generating states are self-healed
+            if (!abortController.signal.aborted) {
+                setSpecStatus(prev => {
+                    const updated = { ...prev };
+                    if (updated.hld === 'generating' && !finalSpecs?.hld) {
+                        updated.hld = 'pending';
+                    }
+                    if (updated.lld === 'generating' && !finalSpecs?.lld) {
+                        updated.lld = 'pending';
+                    }
+                    return updated;
+                });
+            }
+        } catch (e) {
+            if (!abortController.signal.aborted) {
+                console.warn('Failed to listen for background specs:', e);
+                setSpecStatus(prev => ({
+                    ...prev,
+                    hld: prev.hld === 'generating' ? 'pending' : prev.hld,
+                    lld: prev.lld === 'generating' ? 'pending' : prev.lld
+                }));
+            }
+        } finally {
+            if (activeSpecsJobRef.current === jobId) {
+                activeSpecsJobRef.current = null;
+            }
+        }
+    }, [token, selectedProjectKey]);
 
     const fetchArchitectureDesign = useCallback(async (docId) => {
         const targetId = docId || result?.id;
         if (!targetId) return;
         setDesignLoading(true);
         try {
-            const res = await fetch(`${API_BASE_URL}/documents/${targetId}/design`, {
+            const res = await fetch(`${API_BASE_URL}/documents/${targetId}/design?auto_generate=false`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {
                 const data = await res.json();
+                let hasHld = false;
+                let hasLld = false;
                 if (data.hld) {
                     const hld = data.hld;
-                    setHldDesign(hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld);
+                    const cleanHld = hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld;
+                    setHldDesign(cleanHld);
+                    hasHld = true;
+                    setResult(prev => prev ? {
+                        ...prev,
+                        analysis: {
+                            ...(prev.analysis || {}),
+                            hld: cleanHld
+                        }
+                    } : prev);
                 }
                 if (data.lld) {
                     const lld = data.lld;
-                    setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
+                    const cleanLld = lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld;
+                    setLldDesign(cleanLld);
+                    hasLld = true;
+                    setResult(prev => prev ? {
+                        ...prev,
+                        analysis: {
+                            ...(prev.analysis || {}),
+                            lld: cleanLld
+                        }
+                    } : prev);
+                }
+                if (data.spec_status) {
+                    setSpecStatus(data.spec_status);
+                }
+                // Only reconnect background polling if the backend explicitly reports job_active is true!
+                const activeJob = data.job_id || localStorage.getItem('active_specs_job_id');
+                const isStillGenerating = Boolean(data.job_active) && (data.spec_status?.hld === 'generating' || data.spec_status?.lld === 'generating');
+                if (activeJob && isStillGenerating) {
+                    try {
+                        localStorage.setItem('active_specs_job_id', activeJob);
+                        if (selectedProjectKey) localStorage.setItem('active_specs_project_key', selectedProjectKey);
+                    } catch (_) {}
+                    listenForBackgroundSpecs(activeJob);
+                } else if (!data.job_active) {
+                    // Backend has no active job: clear active_specs_job_id from localStorage and reset generating to pending
+                    try {
+                        localStorage.removeItem('active_specs_job_id');
+                        localStorage.removeItem('active_specs_project_key');
+                    } catch (_) {}
+                    setSpecStatus(prev => ({
+                        ...prev,
+                        hld: hasHld ? 'ready' : (prev.hld === 'generating' ? 'pending' : prev.hld),
+                        lld: hasLld ? 'ready' : (prev.lld === 'generating' ? 'pending' : prev.lld)
+                    }));
                 }
             }
         } catch (err) {
@@ -907,11 +1135,40 @@ export default function AgentAnalysis({
         } finally {
             setDesignLoading(false);
         }
-    }, [result?.id, token]);
+    }, [result?.id, token, selectedProjectKey, listenForBackgroundSpecs]);
+
+    useEffect(() => {
+        const activeJobId = localStorage.getItem('active_specs_job_id') || result?._jobId || result?.analysis?._jobId;
+        if (activeJobId && (!hldDesign || !lldDesign)) {
+            listenForBackgroundSpecs(activeJobId);
+        }
+    }, [result?._jobId, result?.analysis?._jobId, listenForBackgroundSpecs]);
+
+    useEffect(() => {
+        if (result?.id && fetchedDocDesignIdRef.current !== result.id) {
+            fetchedDocDesignIdRef.current = result.id;
+            fetchArchitectureDesign(result.id);
+        }
+    }, [result?.id, fetchArchitectureDesign]);
+
+    useEffect(() => {
+        return () => {
+            if (specsAbortControllerRef.current) {
+                specsAbortControllerRef.current.abort();
+                specsAbortControllerRef.current = null;
+            }
+            activeSpecsJobRef.current = null;
+        };
+    }, []);
 
     const handleRegenerateArchitectureDesign = async (type = 'all') => {
         if (!result?.id) return;
         setDesignGenerating(true);
+        setSpecStatus(prev => ({
+            ...prev,
+            [type === 'all' ? 'hld' : type]: 'generating',
+            ...(type === 'all' ? { lld: 'pending' } : {})
+        }));
         try {
             const res = await fetch(`${API_BASE_URL}/documents/${result.id}/design/generate`, {
                 method: 'POST',
@@ -925,15 +1182,32 @@ export default function AgentAnalysis({
                 const data = await res.json();
                 if (data.hld) {
                     const hld = data.hld;
-                    setHldDesign(hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld);
+                    const cleanHld = hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld;
+                    setHldDesign(cleanHld);
+                    setResult(prev => prev ? {
+                        ...prev,
+                        analysis: { ...(prev.analysis || {}), hld: cleanHld }
+                    } : prev);
                 }
                 if (data.lld) {
                     const lld = data.lld;
-                    setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
+                    const cleanLld = lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld;
+                    setLldDesign(cleanLld);
+                    setResult(prev => prev ? {
+                        ...prev,
+                        analysis: { ...(prev.analysis || {}), lld: cleanLld }
+                    } : prev);
+                }
+                if (data.spec_status) {
+                    setSpecStatus(data.spec_status);
                 }
             }
         } catch (err) {
             console.error('Failed to regenerate architecture design:', err);
+            setSpecStatus(prev => ({
+                ...prev,
+                [type === 'all' ? 'hld' : type]: 'pending'
+            }));
         } finally {
             setDesignGenerating(false);
         }
@@ -1317,10 +1591,13 @@ export default function AgentAnalysis({
             const nextRevisionNumber = newResult?.revisionNumber
                 || (hasExistingDocument ? Math.max(currentRevisionCount, 1) : currentRevisionCount + 1);
             const repoContextMeta = newResult?.analysis?.repoContextMeta || buildRepoContextMeta(analysisRepoContext);
+            const effectiveJobId = newResult?._jobId || newResult?.analysis?._jobId || localStorage.getItem('active_specs_job_id') || localStorage.getItem('active_analysis_job_id') || null;
             const storedAnalysis = {
                 ...(newResult.analysis || {}),
+                _jobId: effectiveJobId,
                 hld: newResult?.analysis?.hld || hldDesign || null,
                 lld: newResult?.analysis?.lld || lldDesign || null,
+                spec_status: newResult?.analysis?.spec_status || specStatus || null,
                 governanceContext: governanceContext || null,
                 repoContextMeta: repoContextMeta || null,
                 stages: (completedStages && Object.keys(completedStages).length > 0)
@@ -1476,6 +1753,14 @@ export default function AgentAnalysis({
             setProgress(100);
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            const activeJobId = finalResult?._jobId || data?._jobId;
+            if (activeJobId && (!finalResult.analysis?.hld || !finalResult.analysis?.lld)) {
+                try {
+                    localStorage.setItem('active_specs_job_id', activeJobId);
+                    if (selectedProjectKey) localStorage.setItem('active_specs_project_key', selectedProjectKey);
+                } catch (_) {}
+                listenForBackgroundSpecs(activeJobId);
+            }
             const completedDocId = finalResult?.id || (initialContext || result)?.id;
             if (completedDocId) {
                 sessionStorage.removeItem(`analysis_started_${completedDocId}`);
@@ -1613,6 +1898,13 @@ export default function AgentAnalysis({
             setProgress(100);
             setProgressMessage('Analysis complete!');
             await saveToHistory(finalResult, selectedProjectKey, effectiveRepoContext);
+            if (jobId && (!finalResult.analysis?.hld || !finalResult.analysis?.lld)) {
+                try {
+                    localStorage.setItem('active_specs_job_id', jobId);
+                    if (selectedProjectKey) localStorage.setItem('active_specs_project_key', selectedProjectKey);
+                } catch (_) {}
+                listenForBackgroundSpecs(jobId);
+            }
             const completedDocId = finalResult?.id || initialResult?.id;
             if (completedDocId) {
                 sessionStorage.removeItem(`analysis_started_${completedDocId}`);
@@ -1634,7 +1926,6 @@ export default function AgentAnalysis({
             // Clean up localStorage keys on error
             localStorage.removeItem('active_analysis_job_id');
             localStorage.removeItem('active_analysis_project_key');
-            throw err;
         } finally {
             setProcessing(false);
             setAnalysisInProgress(false);
@@ -2073,11 +2364,20 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
         }
 
         const loadAnalysis = async () => {
+            const latestDoc = selectedProject?.latestDocument;
+            const docAlreadyCompleted = hasCompletedDocumentAnalysis(latestDoc);
+
+            if (docAlreadyCompleted) {
+                // If the document is already fully analyzed in database, purge any stale job IDs
+                localStorage.removeItem('active_analysis_job_id');
+                localStorage.removeItem('active_analysis_project_key');
+            }
+
             const storedJobId = localStorage.getItem('active_analysis_job_id');
             const storedProjectKey = localStorage.getItem('active_analysis_project_key');
-            if (storedJobId && storedProjectKey === selectedProjectKey) {
+            if (!docAlreadyCompleted && storedJobId && storedProjectKey === selectedProjectKey) {
                 console.log('Found running analysis job in localStorage, resuming polling:', storedJobId);
-                const latestDocument = selectedProject.latestDocument;
+                const latestDocument = latestDoc;
                 const storedAnalysis = parseStoredDocumentAnalysis(latestDocument);
                 const initialResult = {
                     id: latestDocument?.id,
@@ -2089,7 +2389,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                         sections: storedAnalysis?.sections || [],
                     },
                     analysis: { analysis: '', reasoning: '' },
-                    revisionNumber: selectedProject.documents?.length || 1,
+                    revisionNumber: selectedProject?.documents?.length || 1,
                 };
                 
                 setError('');
@@ -2158,10 +2458,14 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                         const lld = storedAnalysis.lld;
                         setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
                     }
+                    if (storedAnalysis?.spec_status) {
+                        setSpecStatus(storedAnalysis.spec_status);
+                    }
 
                     const loadedResult = {
                         id: latestDocument.id,
                         filename: latestDocument.filename,
+                        _jobId: storedAnalysis?._jobId || null,
                         extraction: {
                             markdown: latestDocument.full_content || '',
                             html: '',
@@ -2303,10 +2607,22 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                     setUserAnswers(savedAnswers);
                     setUserFeedback(savedFeedback);
                     setCompletedStages(savedStages);  // Restore completed stages
+                    if (foundAnalysis?.hld) {
+                        const hld = foundAnalysis.hld;
+                        setHldDesign(hld?.markdown ? { ...hld, markdown: sanitizeDesignMarkdownDate(hld.markdown) } : hld);
+                    }
+                    if (foundAnalysis?.lld) {
+                        const lld = foundAnalysis.lld;
+                        setLldDesign(lld?.markdown ? { ...lld, markdown: sanitizeDesignMarkdownDate(lld.markdown) } : lld);
+                    }
+                    if (foundAnalysis?.spec_status) {
+                        setSpecStatus(foundAnalysis.spec_status);
+                    }
 
                     const loadedResult = {
                         id: foundDoc.id,
                         filename: foundDoc.filename,
+                        _jobId: foundAnalysis?._jobId || null,
                         extraction: {
                             markdown: foundDoc.full_content || '',
                             html: '',
@@ -3046,8 +3362,8 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                 const svgDoc = parser.parseFromString(svg, 'image/svg+xml');
                 const svgEl = svgDoc.querySelector('svg');
 
-                let targetW = 2400; // target width for high-res
-                let aspectRatio = 0.5; // default fallback
+                let targetW = 2400; // Crisp 300+ DPI target width for razor-sharp typography
+                let aspectRatio = 0.55; // default fallback
 
                 if (svgEl) {
                     // Read viewBox to get intrinsic aspect ratio
@@ -3058,9 +3374,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                             const vbW = parseFloat(parts[2]);
                             const vbH = parseFloat(parts[3]);
                             if (vbW > 0 && vbH > 0) {
-                                aspectRatio = vbH / vbW;
-                                // If the diagram is very wide, keep targetW; if very tall, cap aspect ratio
-                                if (aspectRatio > 3) aspectRatio = 3;
+                                aspectRatio = Math.min(vbH / vbW, 2.8);
                             }
                         }
                     } else {
@@ -3068,13 +3382,28 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                         const attrW = parseFloat(svgEl.getAttribute('width') || '0');
                         const attrH = parseFloat(svgEl.getAttribute('height') || '0');
                         if (attrW > 0 && attrH > 0) {
-                            aspectRatio = attrH / attrW;
+                            aspectRatio = Math.min(attrH / attrW, 2.8);
                         }
                     }
-                    // Force explicit pixel dimensions so the browser renders at full resolution
+                    // Force explicit pixel dimensions so the browser renders at full high resolution
                     const targetH = Math.round(targetW * aspectRatio);
                     svgEl.setAttribute('width', String(targetW));
                     svgEl.setAttribute('height', String(targetH));
+
+                    // Inject crisp typography styles into SVG to ensure clear, high-contrast, non-blurry text
+                    const styleEl = svgDoc.createElementNS('http://www.w3.org/2000/svg', 'style');
+                    styleEl.textContent = `
+                        text, tspan, .nodeLabel, .actor, .messageText, .labelText, .label, .edgeLabel {
+                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+                            text-rendering: geometricPrecision !important;
+                            -webkit-font-smoothing: antialiased !important;
+                            font-weight: 500 !important;
+                        }
+                        .node .label, .actor, .cluster-label, text.actor {
+                            font-weight: 700 !important;
+                        }
+                    `;
+                    svgEl.prepend(styleEl);
                 }
 
                 const targetH = Math.round(targetW * aspectRatio);
@@ -3088,10 +3417,9 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
 
                     img.onload = () => {
                         try {
-                            // Render at 2× of the already-large SVG for maximum sharpness
-                            const scale = 2;
-                            const canvasW = (img.naturalWidth || targetW) * scale;
-                            const canvasH = (img.naturalHeight || targetH) * scale;
+                            // Direct 1:1 canvas mapping at 2400px target resolution
+                            const canvasW = targetW;
+                            const canvasH = targetH;
 
                             const canvas = document.createElement('canvas');
                             canvas.width = canvasW;
@@ -3100,16 +3428,16 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                             const ctx = canvas.getContext('2d');
                             if (!ctx) { resolve(null); return; }
 
-                            // White background
+                            // Solid white background for clean contrast & compatibility
                             ctx.fillStyle = '#ffffff';
                             ctx.fillRect(0, 0, canvasW, canvasH);
 
                             ctx.imageSmoothingEnabled = true;
                             ctx.imageSmoothingQuality = 'high';
-                            ctx.scale(scale, scale);
-                            ctx.drawImage(img, 0, 0, img.naturalWidth || targetW, img.naturalHeight || targetH);
+                            ctx.drawImage(img, 0, 0, canvasW, canvasH);
 
-                            const pngDataUrl = canvas.toDataURL('image/png', 1.0);
+                            // Lossless PNG: zero compression artifacts, razor-sharp text, ~25KB compressed size
+                            const pngDataUrl = canvas.toDataURL('image/png');
                             resolve({ dataUrl: pngDataUrl, aspectRatio });
                         } catch (drawError) {
                             console.warn('Canvas draw error:', drawError);
@@ -3153,7 +3481,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
         if (!result?.analysis) return;
 
         const { jsPDF } = await import('jspdf');
-        const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
         const pageWidth = doc.internal.pageSize.getWidth();
         const pageHeight = doc.internal.pageSize.getHeight();
         const marginLeft = 20;
@@ -3425,13 +3753,13 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                         // ── Embed actual rendered PNG image ──
                         const imgData = mermaidImages[mermaidImageIdx++] || null;
                         if (imgData && imgData.dataUrl) {
-                            const imgW = contentWidth;
-                            // Calculate height based on aspect ratio, but allow more vertical space
-                            const maxHeight = pageHeight - 60; // Leave room for margins
-                            let imgH = imgW * imgData.aspectRatio;
-                            // If image is taller than page, scale it down
+                            let imgW = contentWidth;
+                            const maxHeight = pageHeight - 65; // Leave room for running header & footer
+                            let imgH = imgW * (imgData.aspectRatio || 0.55);
+                            // If image is taller than page, scale both width & height to preserve true aspect ratio
                             if (imgH > maxHeight) {
                                 imgH = maxHeight;
+                                imgW = imgH / (imgData.aspectRatio || 0.55);
                             }
                             checkPage(imgH + 10);
                             // light background card
@@ -3439,7 +3767,9 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                             doc.roundedRect(marginLeft, y, contentWidth, imgH + 6, 2, 2, 'F');
                             doc.setFillColor(...brandAccent);
                             doc.rect(marginLeft, y, 2, imgH + 6, 'F');
-                            doc.addImage(imgData.dataUrl, 'PNG', marginLeft + 4, y + 3, imgW - 8, imgH);
+                            const offsetX = marginLeft + (contentWidth - imgW) / 2;
+                            const userFlowFormat = (imgData.dataUrl && imgData.dataUrl.startsWith('data:image/png')) ? 'PNG' : 'JPEG';
+                            doc.addImage(imgData.dataUrl, userFlowFormat, offsetX + 3, y + 3, imgW - 6, imgH, undefined, 'FAST');
                             y += imgH + 10;
                         } else {
                             // Fallback placeholder if render failed
@@ -3459,16 +3789,15 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                             y += 26;
                         }
                     } else if (codeBlockType === 'erDiagram' || codeBlockType.includes('ER') || codeBlockType.includes('schema')) {
-                        // ── Embed actual rendered ER Diagram PNG image ──
+                        // ── Embed actual rendered ER Diagram image (JPEG/PNG) ──
                         const imgData = erDiagramImages[erDiagramImageIdx++] || null;
                         if (imgData && imgData.dataUrl) {
-                            const imgW = contentWidth;
-                            // Calculate height based on aspect ratio, allow more vertical space for ER diagrams
-                            const maxHeight = pageHeight - 60; // Leave room for margins
-                            let imgH = imgW * imgData.aspectRatio;
-                            // If image is taller than page, scale it down
+                            let imgW = contentWidth;
+                            const maxHeight = pageHeight - 65; // Leave room for margins
+                            let imgH = imgW * (imgData.aspectRatio || 0.55);
                             if (imgH > maxHeight) {
                                 imgH = maxHeight;
+                                imgW = imgH / (imgData.aspectRatio || 0.55);
                             }
                             checkPage(imgH + 10);
                             // light background card
@@ -3476,7 +3805,9 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                             doc.roundedRect(marginLeft, y, contentWidth, imgH + 6, 2, 2, 'F');
                             doc.setFillColor(...brandAccent);
                             doc.rect(marginLeft, y, 2, imgH + 6, 'F');
-                            doc.addImage(imgData.dataUrl, 'PNG', marginLeft + 4, y + 3, imgW - 8, imgH);
+                            const offsetX = marginLeft + (contentWidth - imgW) / 2;
+                            const erFormat = (imgData.dataUrl && imgData.dataUrl.startsWith('data:image/png')) ? 'PNG' : 'JPEG';
+                            doc.addImage(imgData.dataUrl, erFormat, offsetX + 3, y + 3, imgW - 6, imgH, undefined, 'FAST');
                             y += imgH + 10;
                         } else {
                             // Fallback placeholder if render failed
@@ -4767,8 +5098,25 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                             : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
                                                     }`}
                                                 >
-                                                    <Layers className="w-3.5 h-3.5" />
+                                                    {hldDesign ? (
+                                                         <Layers className="w-3.5 h-3.5 text-blue-600" />
+                                                    ) : specStatus?.hld === 'generating' ? (
+                                                         <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
+                                                    ) : specStatus?.hld === 'failed' ? (
+                                                         <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
+                                                    ) : (
+                                                         <Clock className="w-3.5 h-3.5 text-gray-400" />
+                                                    )}
                                                     <span>High-Level Design (HLD)</span>
+                                                    {hldDesign ? (
+                                                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-bold rounded bg-emerald-100 text-emerald-700">Ready</span>
+                                                    ) : specStatus?.hld === 'generating' ? (
+                                                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-bold rounded bg-blue-100 text-blue-700 animate-pulse">Generating</span>
+                                                    ) : specStatus?.hld === 'failed' ? (
+                                                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-bold rounded bg-rose-100 text-rose-700">Failed</span>
+                                                    ) : (
+                                                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-bold rounded bg-gray-200 text-gray-700">Pending</span>
+                                                    )}
                                                 </button>
 
                                                 <button
@@ -4788,8 +5136,25 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                             : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
                                                     }`}
                                                 >
-                                                    <Database className="w-3.5 h-3.5" />
+                                                    {lldDesign ? (
+                                                        <Database className="w-3.5 h-3.5 text-indigo-600" />
+                                                    ) : specStatus?.lld === 'generating' ? (
+                                                        <Loader2 className="w-3.5 h-3.5 text-indigo-500 animate-spin" />
+                                                    ) : specStatus?.lld === 'failed' ? (
+                                                        <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
+                                                    ) : (
+                                                        <Clock className="w-3.5 h-3.5 text-gray-400" />
+                                                    )}
                                                     <span>Low-Level Design (LLD)</span>
+                                                    {lldDesign ? (
+                                                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-bold rounded bg-emerald-100 text-emerald-700">Ready</span>
+                                                    ) : specStatus?.lld === 'generating' ? (
+                                                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-bold rounded bg-indigo-100 text-indigo-700 animate-pulse">Generating</span>
+                                                    ) : specStatus?.lld === 'failed' ? (
+                                                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-bold rounded bg-rose-100 text-rose-700">Failed</span>
+                                                    ) : (
+                                                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-bold rounded bg-gray-200 text-gray-700">Queued</span>
+                                                    )}
                                                 </button>
                                             </div>
 
@@ -5056,20 +5421,38 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 )}
 
                                                 {/* HLD Content */}
-                                                {designLoading || designGenerating ? (
+                                                {hldDesign?.markdown ? (
+                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
+                                                        <ReactMarkdown
+                                                            remarkPlugins={[remarkGfm]}
+                                                            components={markdownComponents}
+                                                        >
+                                                            {sanitizeDesignMarkdownDate(hldDesign.markdown)}
+                                                        </ReactMarkdown>
+                                                    </div>
+                                                ) : (designGenerating || specStatus?.hld === 'generating' || (designLoading && !hldDesign)) ? (
                                                     <div className="py-20 flex flex-col items-center justify-center space-y-3">
                                                         <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
                                                         <p className="text-sm font-semibold text-gray-700">Synthesizing High-Level Design...</p>
                                                         <p className="text-xs text-gray-400">Compiling container topologies, sequence workflows, and security matrices</p>
                                                     </div>
                                                 ) : (
-                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
-                                                        <ReactMarkdown
-                                                            remarkPlugins={[remarkGfm]}
-                                                            components={markdownComponents}
+                                                    <div className="py-16 flex flex-col items-center justify-center space-y-4 text-center">
+                                                        <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center ring-8 ring-blue-50/50">
+                                                            <Layers className="w-6 h-6 text-blue-600" />
+                                                        </div>
+                                                        <h4 className="text-base font-bold text-gray-900">High-Level Design (HLD) Ready for Synthesis</h4>
+                                                        <p className="text-xs text-gray-500 max-w-md">
+                                                            Synthesize C4 system context, container topology, sequence workflows, and security matrix from your BRD requirements.
+                                                        </p>
+                                                        <button
+                                                            onClick={() => handleRegenerateArchitectureDesign('hld')}
+                                                            disabled={designGenerating}
+                                                            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition-all shadow-sm disabled:opacity-50 cursor-pointer"
                                                         >
-                                                            {sanitizeDesignMarkdownDate(hldDesign?.markdown) || '(No HLD generated yet. Re-analyze the BRD to generate.)'}
-                                                        </ReactMarkdown>
+                                                            <Sparkles className="w-3.5 h-3.5" />
+                                                            <span>Generate High-Level Design (HLD)</span>
+                                                        </button>
                                                     </div>
                                                 )}
                                             </div>
@@ -5128,20 +5511,38 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
                                                 )}
 
                                                 {/* LLD Content */}
-                                                {designLoading || designGenerating ? (
+                                                {lldDesign?.markdown ? (
+                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
+                                                        <ReactMarkdown
+                                                            remarkPlugins={[remarkGfm]}
+                                                            components={markdownComponents}
+                                                        >
+                                                            {sanitizeDesignMarkdownDate(lldDesign.markdown)}
+                                                        </ReactMarkdown>
+                                                    </div>
+                                                ) : (designGenerating || specStatus?.lld === 'generating' || (designLoading && !lldDesign)) ? (
                                                     <div className="py-20 flex flex-col items-center justify-center space-y-3">
                                                         <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
                                                         <p className="text-sm font-semibold text-gray-700">Synthesizing Low-Level Design...</p>
                                                         <p className="text-xs text-gray-400">Compiling data models, OpenAPI endpoint schemas, and migration DDL scripts</p>
                                                     </div>
                                                 ) : (
-                                                    <div className="prose prose-lg prose-slate max-w-none text-app-text-label leading-relaxed">
-                                                        <ReactMarkdown
-                                                            remarkPlugins={[remarkGfm]}
-                                                            components={markdownComponents}
+                                                    <div className="py-16 flex flex-col items-center justify-center space-y-4 text-center">
+                                                        <div className="w-12 h-12 rounded-xl bg-indigo-50 flex items-center justify-center ring-8 ring-indigo-50/50">
+                                                            <Database className="w-6 h-6 text-indigo-600" />
+                                                        </div>
+                                                        <h4 className="text-base font-bold text-gray-900">Low-Level Design (LLD) Ready for Synthesis</h4>
+                                                        <p className="text-xs text-gray-500 max-w-md">
+                                                            Synthesize layered module contracts, ER diagram, database dictionary, and SQL migration DDL for this solution.
+                                                        </p>
+                                                        <button
+                                                            onClick={() => handleRegenerateArchitectureDesign('lld')}
+                                                            disabled={designGenerating}
+                                                            className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-xs font-semibold rounded-lg hover:bg-indigo-700 transition-all shadow-sm disabled:opacity-50 cursor-pointer"
                                                         >
-                                                            {sanitizeDesignMarkdownDate(lldDesign?.markdown) || '(No LLD generated yet. Re-analyze the BRD to generate.)'}
-                                                        </ReactMarkdown>
+                                                            <Sparkles className="w-3.5 h-3.5" />
+                                                            <span>Generate Low-Level Design (LLD)</span>
+                                                        </button>
                                                     </div>
                                                 )}
                                             </div>

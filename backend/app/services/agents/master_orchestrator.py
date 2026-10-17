@@ -61,22 +61,33 @@ def analyze_workspace(workspace_dir: str) -> Dict[str, Any]:
     if not os.path.exists(workspace_dir):
         return result
 
-    # Count real files (excluding hidden dirs, node_modules, __pycache__)
+    # Count real files (excluding hidden dirs, node_modules, __pycache__, and doc directories)
     SKIP_DIRS = {
         "node_modules", "__pycache__", ".git", ".agent", ".agent_signals",
         ".agent_history", "venv", ".venv", "dist", "build", ".next",
+        ".gemini", ".antigravity", ".vscode", ".idea", "docs", "documentation", "specs", "blueprints",
+    }
+
+    # Extensions that represent real executable application code
+    CODE_EXTENSIONS = {
+        ".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".go", ".rs",
+        ".cpp", ".c", ".cs", ".php", ".rb", ".vue", ".svelte", ".html",
     }
 
     file_tree = []
     config_files_found = {}
 
     for root, dirs, files in os.walk(workspace_dir):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         rel_root = os.path.relpath(root, workspace_dir)
         if rel_root == ".":
             rel_root = ""
 
         for f in files:
+            # Skip documentation, git/system ignore files, and media assets
+            if f.lower().endswith((".md", ".txt", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".gif", ".pdf")) or f.startswith("."):
+                continue
+
             rel_path = os.path.join(rel_root, f) if rel_root else f
             rel_path = rel_path.replace("\\", "/")
             file_tree.append(rel_path)
@@ -94,12 +105,13 @@ def analyze_workspace(workspace_dir: str) -> Dict[str, Any]:
                              "build.gradle.kts", "composer.json", "gemfile"):
                 config_files_found[lower_f] = os.path.join(root, f)
 
+    source_code_files = [f for f in file_tree if any(f.endswith(ext) for ext in CODE_EXTENSIONS)]
     result["total_files"] = len(file_tree)
     result["file_tree"] = file_tree[:500]  # Cap for token budget
     result["config_files"] = list(config_files_found.keys())
 
-    # Determine project type
-    if result["total_files"] <= 2:
+    # Determine project type: Greenfield if no significant source code exists
+    if len(source_code_files) <= 2:
         result["project_type"] = "greenfield"
     else:
         result["project_type"] = "brownfield"
@@ -507,6 +519,29 @@ def export_architecture_blueprints_to_workspace(
         with open(manifest_file, "w", encoding="utf-8") as f:
             json.dump(manifest_data, f, indent=2)
         result["manifest_path"] = manifest_file
+
+        # ── 5. Pre-seed .agent/contracts/api_contract.json from Stage 3 / LLD ──
+        stage3 = stages.get("stage3_data_api") or analysis_data.get("stage3_data_api") or {}
+        lld_endpoints = stage3.get("api_endpoints", [])
+        if lld_endpoints and isinstance(lld_endpoints, list):
+            seeded_routes = [
+                {
+                    "method": str(ep.get("method", "GET")).upper(),
+                    "path": str(ep.get("path", "/api/v1")),
+                    "purpose": str(ep.get("purpose", "")),
+                    "file": "LLD_AUTHORITATIVE_CONTRACT",
+                }
+                for ep in lld_endpoints
+                if isinstance(ep, dict) and ep.get("path")
+            ]
+            if seeded_routes:
+                save_contract(workspace_dir, "api_contract", {
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "lld_blueprint",
+                    "routes": seeded_routes,
+                    "models": [],
+                })
+                logger.info(f"[MasterOrchestrator] Pre-seeded {len(seeded_routes)} authoritative LLD routes into api_contract.json")
 
         logger.info(f"[MasterOrchestrator] Exported architecture blueprints to {docs_dir}: {available_docs}")
     except Exception as exc:

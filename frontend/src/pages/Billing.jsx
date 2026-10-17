@@ -105,7 +105,8 @@ export default function Billing({ selectedProjectKey, projects = [], user }) {
             const doc = new jsPDF({
                 orientation: 'p',
                 unit: 'mm',
-                format: 'a4'
+                format: 'a4',
+                compress: true
             });
             
             // Filtered lists matching current search

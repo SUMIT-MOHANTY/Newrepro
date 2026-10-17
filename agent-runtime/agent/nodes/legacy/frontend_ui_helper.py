@@ -490,25 +490,22 @@ def sequential_code_node(state: LangGraphState, ctx: NodeContext) -> dict[str, A
                 if norm_f not in raw_files:
                     raw_files.append(norm_f)
 
-    # Layer 1: Exactly 1 mock data file
+    # Layer 1: Data files
     all_data = [f for f in raw_files if "mockData" in f or ("data/" in f and "api" not in f.lower())]
     primary_data = next(
         (f for f in all_data if "mockData" in f),
         all_data[0] if all_data else "src/data/mockData.js"
     )
-    data_files = [primary_data]
+    data_files = [primary_data] if not all_data else all_data
 
-    # Layer 2: Optional thin service file — only include if explicitly planned AND short enough
+    # Layer 2: Service & API files
     all_services = [
         f for f in raw_files
-        if ("apiClient" in f or "services/" in f or "api." in f) and f not in data_files
+        if ("apiClient" in f or "services/" in f or "api." in f or "utils/" in f) and f not in data_files
     ]
-    service_files: list[str] = []
-    if all_services and len(raw_files) <= 5:
-        primary_service = next((f for f in all_services if "apiClient" in f), all_services[0])
-        service_files = [primary_service]
+    service_files = all_services
 
-    # Layer 3: Core UI Components (max 2 — dashboard + table/grid)
+    # Layer 3: UI Components and views (all planned components)
     all_comps = [
         f for f in raw_files
         if ("components/" in f or "pages/" in f or "views/" in f)
@@ -516,62 +513,30 @@ def sequential_code_node(state: LangGraphState, ctx: NodeContext) -> dict[str, A
         and f not in service_files
         and not f.endswith(("App.jsx", "App.tsx", "main.jsx", "main.tsx"))
     ]
-
-    selected_comps: list[str] = []
-    dash_comp = next(
-        (f for f in all_comps if any(k in f.lower() for k in ("dashboard", "overview", "summary", "main", "home"))),
-        None
-    )
-    if dash_comp:
-        selected_comps.append(dash_comp)
-
-    grid_comp = next(
-        (f for f in all_comps if any(k in f.lower() for k in ("table", "grid", "report", "metric", "card", "list"))
-         and f not in selected_comps),
-        None
-    )
-    if grid_comp:
-        selected_comps.append(grid_comp)
-
-    for c in all_comps:
-        if len(selected_comps) >= 2:
-            break
-        if c not in selected_comps:
-            selected_comps.append(c)
-
-    if not selected_comps:
-        selected_comps = ["src/components/DashboardView.jsx", "src/components/DataTable.jsx"]
+    if not all_comps:
+        all_comps = ["src/components/DashboardView.jsx", "src/components/DataTable.jsx"]
 
     # Layer 4: App entrypoint
-    entry_files = ["src/App.jsx"]
+    entry_files = [f for f in raw_files if f.endswith(("App.jsx", "App.tsx"))]
+    if not entry_files:
+        entry_files = ["src/App.jsx"]
 
     ordered_queue: list[str] = []
-    for flist in (data_files, service_files, selected_comps, entry_files):
+    for flist in (data_files, service_files, all_comps, entry_files):
         for f in flist:
-            if f not in ordered_queue and not f.endswith("main.jsx"):
+            if f not in ordered_queue and not f.endswith(("main.jsx", "main.tsx")):
                 ordered_queue.append(f)
+
+    # Any remaining unqueued files from raw_files
+    for f in raw_files:
+        if f not in ordered_queue and not f.endswith(("main.jsx", "main.tsx")):
+            ordered_queue.append(f)
 
     readme_entry = "README.md"
     if readme_entry not in ordered_queue:
         ordered_queue.append(readme_entry)
 
-    # Hard Cap: max 5 app files (README excluded)
-    if len(ordered_queue) > 6:
-        app_files = [f for f in ordered_queue if f != readme_entry]
-        pruned_out = app_files[4:-1]
-        kept = app_files[:4] + [app_files[-1]]
-        ordered_queue = kept + [readme_entry]
-        ordered_queue = list(dict.fromkeys(ordered_queue))
-        print(f"[Graph:SequentialCodeNode] ⚡ Cap: pruned {len(pruned_out)} files: {pruned_out}")
-    elif len(raw_files) > len(ordered_queue):
-        pruned_count = len(raw_files) - len(ordered_queue)
-        print(
-            f"[Graph:SequentialCodeNode] ⚡ Fast Prototype Filter: "
-            f"Selected {len(ordered_queue)} core files from {len(raw_files)} planned "
-            f"(deferred {pruned_count} secondary files to future requests)."
-        )
-
-    print(f"[Graph:SequentialCodeNode] Lean Prototype Queue ({len(ordered_queue)} files): {ordered_queue}")
+    print(f"[Graph:SequentialCodeNode] Full Production Queue ({len(ordered_queue)} files): {ordered_queue}")
 
     accumulated_files: dict[str, str] = {}
     files_changed: list[str] = []

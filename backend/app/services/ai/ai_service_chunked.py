@@ -160,37 +160,36 @@ Return ONLY valid JSON (no markdown fences):
 # ═══════════════════════════════════════════════════════════════════════════
 
 STAGE_2_ARCHITECTURE_PROMPT = """# ROLE
-You are an expert Software Architect designing technical architecture.
+You are an expert Enterprise Software Architect designing technical architecture.
 
 ## CONTEXT
-You will receive extracted requirements from Stage 1.
+You will receive extracted requirements from Stage 1 (and existing repository context if Brownfield/Migration).
 
 ## TASK
 Design the technical architecture:
 
 ### 1. Technology Stack Selection
-Recommend complete stack with rationale. **CRITICAL:** Default to using SQLite for the database. Do NOT inject unnecessary requirements like Redis, MongoDB, or complex caching/queue systems unless explicitly requested by the BRD.
-- Frontend framework and UI library
-- Backend framework and language
-- Database (with version) - default to SQLite
-- Caching/Queue system - avoid unless requested
-- Authentication method
-- API documentation tool
-- Containerization approach
+Recommend a complete, production-grade stack with rationale:
+- **IF BROWNFIELD**: You MUST detect and preserve the existing technology stack, language, framework, and database from the provided repository context unless the BRD explicitly requests adding a new service.
+- **DATABASE & PREVIEW DEPLOYMENT RULE (CRITICAL FOR GREENFIELD & MODERNIZATION)**:
+  * For GREENFIELD and MODERNIZATION projects, architect a **Dual-Mode Relational Persistence Layer** using the stack's standard ORM (e.g., SQLAlchemy for Python/FastAPI, Prisma/Drizzle for Node/TypeScript):
+    1. **Preview / Default Mode (Zero-Config)**: Default `DATABASE_URL` to embedded **SQLite** (`sqlite:///./app.db`) so the application can be built, migrated, seeded, and previewed immediately in any container without external database credentials.
+    2. **Enterprise Production Mode**: Support seamless switchover to **PostgreSQL 16** solely by overriding the `DATABASE_URL` environment variable.
+  * **Portable Schema Mandate**: In all LLD SQL DDL and ORM schemas, use portable ANSI SQL types (`VARCHAR(36)` for UUIDs generated in application code, `TIMESTAMP`, `NUMERIC`, `TEXT`/`JSON`). Do NOT use database-engine-locked extensions (like `gen_random_uuid()` or PL/pgSQL triggers) that would fail in SQLite preview mode.
+  * **Auto-Bootstrap on Startup**: The backend MUST automatically initialize tables and seed realistic demo data on startup if the database is empty, guaranteeing a working, populated live preview.
+  * **Third-Party Service Fallbacks**: Do NOT inject Redis, Kafka, or microservices unless justified by scale or async requirements in the BRD. If caching, messaging, or email are used, implement the Adapter Fallback Pattern (in-memory cache fallback if `REDIS_URL` is unset, console/DB logger if `SMTP_API_KEY` is unset).
+- Cover: Frontend framework & UI library, Backend framework & language, Database (with Dual-Mode ORM strategy), Caching/Queue (only if required, with fallback), Authentication method, API documentation tool, Containerization approach.
 
 Format as table:
 | Layer | Technology | Version | Rationale |
 
 ### 2. Architecture Pattern
-- Choose pattern: Monolith / Modular Monolith / Microservices
-- Justify based on requirements
+- Choose pattern: Monolith / Modular Monolith / Microservices / Strangler Fig (for Modernization)
+- Justify based on requirements and project type (Greenfield vs. Brownfield vs. Modernization)
 - Describe component interaction model
 
 ### 3. User Flow Diagram (Functional View for Business Users)
 Create a COMPLETE Mermaid `flowchart TB` showing the USER JOURNEY and BUSINESS PROCESSES.
-
-**CRITICAL**: This is a FUNCTIONAL diagram for business stakeholders, NOT a technical architecture diagram.
-
 The diagram MUST show:
 - **User Roles**: Different types of users (Admin, Customer, Manager, Guest, etc.)
 - **User Actions**: What users can do (Login, Submit Form, View Dashboard, etc.)
@@ -198,41 +197,6 @@ The diagram MUST show:
 - **Decision Points**: Business rules and conditions (diamond shapes)
 - **System Responses**: What happens after user actions (Success, Error, Notification)
 - **External Touchpoints**: Third-party systems users interact with (Payment Gateway, Email Service)
-
-**Structure Guidelines**:
-```
-Start → User Entry Point → User Action → Decision? → Process → Outcome → End
-```
-
-**Example Pattern**:
-```mermaid
-flowchart TB
-    Start["User Visits Platform"]
-    Start --> Login["User Login"]
-    Login --> Dashboard["View Dashboard"]
-    Dashboard --> Action1["Create New Order"]
-    Dashboard --> Action2["View Reports"]
-    Action1 --> Validate{"Order Valid?"}
-    Validate -->|Yes| Process["Process Payment"]
-    Validate -->|No| Error["Show Error Message"]
-    Process --> Success["Order Confirmed"]
-    Success --> Notify["Send Email Notification"]
-```
-
-**DO NOT include**:
-- Technical components (databases, APIs, servers, microservices)
-- Infrastructure details (load balancers, caching layers)
-- Code-level architecture
-- Technical integration details
-
-**DO include**:
-- User personas and their journeys
-- Business process steps
-- User decisions and actions
-- System feedback to users
-- Business outcomes
-
-Focus on WHAT users do and HOW the system helps them achieve business goals.
 
 ## STRICT Mermaid Safety Rules
 1. Every subgraph must have one matching end
@@ -242,26 +206,25 @@ Focus on WHAT users do and HOW the system helps them achieve business goals.
 5. Quote all labels
 6. Use ASCII characters only
 7. Every edge node must exist
-8. Use architecture JSON as source-of-truth
-9. Node IDs MUST NOT contain spaces or special characters (use underscores or camelCase, e.g. API_GW or APIGW instead of API GW)
+8. Node IDs MUST NOT contain spaces or special characters (use underscores or camelCase)
 
-### 4. Architecture JSON (User Flow Structure)
-Provide structured user flow data:
+### 4. Technical System Architecture JSON (Component Graph for Agents)
+Provide the ACTUAL technical system components (Frontend, API Gateway, Backend Services, Databases, External APIs) so downstream coding and architecture agents have a true system topology:
 {
   "nodes": [
-    {"id": "node_id", "label": "User Action or Process Step", "layer": "user|process|system|outcome", "type": "action|decision|process|notification|integration"}
+    {"id": "node_id", "label": "Specific Technical Component (e.g., FastAPI Backend, PostgreSQL DB)", "layer": "frontend|backend|service|data|integration|infra", "type": "service|database|queue|cache|external|ui"}
   ],
   "edges": [
-    {"from": "source_id", "to": "target_id", "description": "user flow or business rule"}
+    {"from": "source_id", "to": "target_id", "description": "protocol or data flow"}
   ]
 }
 
 ## CRITICAL TEXT FORMATTING RULES
 **USE ONLY STANDARD ASCII CHARACTERS:**
-- Use regular hyphen `-` NOT Unicode hyphens (‑, –, —)
+- Use regular hyphen `-` NOT Unicode hyphens
 - Use regular space NOT Unicode spaces
-- Use regular apostrophe `'` NOT Unicode quotes (', ')
-- Use `>=` NOT `≥`, use `<=` NOT `≤`
+- Use regular apostrophe `'` NOT Unicode quotes
+- Use `>=` and `<=`
 - NO emoji characters or Unicode symbols
 
 ## OUTPUT FORMAT
@@ -559,6 +522,161 @@ Return the complete Markdown report followed by a JSON block:
 ```"""
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ASYNCHRONOUS ARCHITECTURE SPECIFICATION WORKER (HLD & LLD)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _persist_specs_to_db(
+    job_id: Optional[str],
+    document_id: Optional[int],
+    hld_data: Optional[Dict[str, Any]] = None,
+    lld_data: Optional[Dict[str, Any]] = None,
+    spec_status: Optional[Dict[str, str]] = None
+) -> Optional[int]:
+    """
+    Persist HLD, LLD, and spec_status directly to the database document as soon as available.
+    Finds document either by explicit document_id or by querying analysis_result JSON containing job_id.
+    """
+    try:
+        from app.core.database import SessionLocal
+        import models
+        with SessionLocal() as db:
+            doc = None
+            if document_id:
+                doc = db.query(models.Document).filter(models.Document.id == document_id).first()
+            if not doc and job_id:
+                doc = db.query(models.Document).filter(models.Document.analysis_result.contains(job_id)).order_by(models.Document.id.desc()).first()
+
+            if doc and doc.analysis_result:
+                try:
+                    parsed = json.loads(doc.analysis_result)
+                except Exception:
+                    parsed = {}
+                if not isinstance(parsed, dict):
+                    parsed = {}
+
+                if hld_data:
+                    parsed["hld"] = hld_data
+                if lld_data:
+                    parsed["lld"] = lld_data
+                if spec_status:
+                    existing_status = parsed.get("spec_status") or {}
+                    existing_status.update(spec_status)
+                    parsed["spec_status"] = existing_status
+                if job_id and not parsed.get("_jobId"):
+                    parsed["_jobId"] = job_id
+
+                doc.analysis_result = json.dumps(parsed)
+                db.add(doc)
+                db.commit()
+                db.refresh(doc)
+                logger.info(f"[{job_id}] Persisted specs to DB document {doc.id} (status: {spec_status}, has_hld={bool(hld_data)}, has_lld={bool(lld_data)})")
+                return doc.id
+    except Exception as db_err:
+        logger.warning(f"Failed to persist specs to database (job_id={job_id}, doc_id={document_id}): {db_err}")
+    return None
+
+
+async def generate_architecture_specs_background(
+    job_id: Optional[str],
+    brd_content: str,
+    analysis_meta: Dict[str, Any],
+    project_label: str,
+    document_id: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Background worker that synthesizes High-Level Design (HLD) and Low-Level Design (LLD)
+    asynchronously so the user can immediately interact with the Stage 1-5 BRD Analysis Report.
+    Updates the AnalysisJob stages/spec_status as each document completes, and progressively
+    persists each document to the database the instant it finishes.
+    """
+    job = _get_job(job_id) if job_id else None
+    hld_data = None
+    lld_data = None
+
+    try:
+        from app.services.ai.architecture_design_service import architecture_design_service
+        if job:
+            job.update_spec_status("hld", "generating")
+            job.update_progress(92, f"Generating High-Level Design (HLD) for {project_label}...")
+
+        # Record initial background generating status in DB
+        _persist_specs_to_db(
+            job_id,
+            document_id,
+            spec_status={"analysis_report": "ready", "hld": "generating", "lld": "pending"}
+        )
+
+        hld_res = await architecture_design_service.generate_high_level_design(
+            brd_content=brd_content,
+            analysis_data=analysis_meta,
+            project_name=project_label
+        )
+        hld_data = {
+            "title": f"High-Level Design (HLD) — {project_label}",
+            "markdown": hld_res.get("markdown", ""),
+            "version": "1.0.0",
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        if job:
+            job.update_spec_status("hld", "ready", hld_data)
+            logger.info(f"Job {job_id}: High-Level Design (HLD) ready!")
+
+        # STEP 1 INSTANT PERSISTENCE: Save HLD to DB right now!
+        saved_id = _persist_specs_to_db(
+            job_id,
+            document_id,
+            hld_data=hld_data,
+            spec_status={"analysis_report": "ready", "hld": "ready", "lld": "generating"}
+        )
+        if saved_id:
+            document_id = saved_id
+
+        if job:
+            job.update_spec_status("lld", "generating")
+            job.update_progress(96, f"Generating Low-Level Design (LLD) for {project_label}...")
+
+        lld_res = await architecture_design_service.generate_low_level_design(
+            brd_content=brd_content,
+            hld_content=hld_res.get("markdown", ""),
+            analysis_data=analysis_meta,
+            project_name=project_label
+        )
+        lld_data = {
+            "title": f"Low-Level Design (LLD) — {project_label}",
+            "markdown": lld_res.get("markdown", ""),
+            "version": "1.0.0",
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        if job:
+            job.update_spec_status("lld", "ready", lld_data)
+            job.update_progress(100, "All analysis artifacts and specs complete!")
+            logger.info(f"Job {job_id}: Low-Level Design (LLD) ready!")
+
+        # STEP 2 INSTANT PERSISTENCE: Save LLD to DB right now!
+        _persist_specs_to_db(
+            job_id,
+            document_id,
+            hld_data=hld_data,
+            lld_data=lld_data,
+            spec_status={"analysis_report": "ready", "hld": "ready", "lld": "ready"}
+        )
+
+    except Exception as synth_err:
+        logger.warning(f"Background auto-synthesis of HLD/LLD failed for job {job_id}: {synth_err}")
+        fail_status = {}
+        if job:
+            if not hld_data:
+                job.update_spec_status("hld", "failed")
+                fail_status["hld"] = "failed"
+            if not lld_data:
+                job.update_spec_status("lld", "failed")
+                fail_status["lld"] = "failed"
+        _persist_specs_to_db(job_id, document_id, hld_data=hld_data, lld_data=lld_data, spec_status=fail_status)
+
+    return {"hld": hld_data, "lld": lld_data}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # MAIN CHUNKED ANALYSIS FUNCTION
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -663,13 +781,17 @@ async def analyze_document_chunked(
             job.update_stage("stage1_requirements", stage1_data)
         
         # ─────────────────────────────────────────────────────────────────
-        # STAGE 2: Architecture Design
+        # STAGE 2: Architecture Design (Include repo context for Brownfield)
         # ─────────────────────────────────────────────────────────────────
         update_job_progress(35, "Stage 2: Designing architecture...")
         logger.info("=== STAGE 2: Architecture Design ===")
+        stage2_input = dict(stage1_data)
+        if repo_context_text:
+            stage2_input["existing_repository_structure"] = repo_context_text.replace("--- REPOSITORY CONTEXT ---", "").strip()[:6000]
+
         stage2_messages = [
             {"role": "system", "content": STAGE_2_ARCHITECTURE_PROMPT},
-            {"role": "user", "content": f"Design architecture for these requirements:\n\n{json.dumps(stage1_data, indent=2)}"}
+            {"role": "user", "content": f"Design architecture for these requirements:\n\n{json.dumps(stage2_input, indent=2)}"}
         ]
         
         stage2_result = await llm_gateway.call_llm_and_extract(
@@ -686,26 +808,30 @@ async def analyze_document_chunked(
         stage2_data = _extract_json_from_response(stage2_result)
         logger.info(f"Stage 2 complete: Architecture pattern = {stage2_data.get('architecture_pattern', 'N/A')}")
         
-        # Save stage 2 result to job
         job = _get_job(job_id)
         if job:
             job.update_stage("stage2_architecture", stage2_data)
         
         # ─────────────────────────────────────────────────────────────────
-        # STAGE 3: Data Models & API Design
+        # STAGE 3: Data Models & API Design (NO [:10] TRUNCATION!)
         # ─────────────────────────────────────────────────────────────────
         update_job_progress(55, "Stage 3: Designing data models and APIs...")
         logger.info("=== STAGE 3: Data Models & API Design ===")
         stage3_context = {
+            "development_classification": stage1_data.get("development_classification"),
             "requirements_summary": {
-                "functional": stage1_data.get("functional_requirements", [])[:10],  # Top 10
+                "functional": stage1_data.get("functional_requirements", []),
+                "implicit": stage1_data.get("implicit_requirements", []),
                 "non_functional": stage1_data.get("non_functional_requirements", [])
             },
             "architecture": {
                 "pattern": stage2_data.get("architecture_pattern"),
-                "tech_stack": stage2_data.get("tech_stack", [])[:5]  # Key technologies
+                "tech_stack": stage2_data.get("tech_stack", []),
+                "components": stage2_data.get("architecture", {}).get("nodes", [])
             }
         }
+        if repo_context_text:
+            stage3_context["existing_repository_structure"] = repo_context_text.replace("--- REPOSITORY CONTEXT ---", "").strip()[:6000]
         
         stage3_messages = [
             {"role": "system", "content": STAGE_3_DATA_API_PROMPT},
@@ -726,23 +852,25 @@ async def analyze_document_chunked(
         stage3_data = _extract_json_from_response(stage3_result)
         logger.info(f"Stage 3 complete: Designed {len(stage3_data.get('api_endpoints', []))} API endpoints")
         
-        # Save stage 3 result to job
         job = _get_job(job_id)
         if job:
             job.update_stage("stage3_data_api", stage3_data)
         
         # ─────────────────────────────────────────────────────────────────
-        # STAGE 4: Implementation Plan
+        # STAGE 4: Implementation Plan (Pass FULL requirements, APIs, & ER)
         # ─────────────────────────────────────────────────────────────────
         update_job_progress(70, "Stage 4: Creating implementation plan...")
         logger.info("=== STAGE 4: Implementation Planning ===")
         stage4_context = {
             "development_classification": stage1_data.get("development_classification"),
             "product_name": stage1_data.get("product_name"),
-            "requirements_count": len(stage1_data.get("functional_requirements", [])),
+            "functional_requirements": stage1_data.get("functional_requirements", []),
+            "implicit_requirements": stage1_data.get("implicit_requirements", []),
+            "technical_constraints": stage1_data.get("technical_constraints", {}),
             "architecture_pattern": stage2_data.get("architecture_pattern"),
-            "tech_stack_summary": [t.get("technology") for t in stage2_data.get("tech_stack", [])[:8]],
-            "api_count": len(stage3_data.get("api_endpoints", []))
+            "tech_stack": stage2_data.get("tech_stack", []),
+            "mermaid_er_diagram": stage3_data.get("mermaid_er_diagram", ""),
+            "api_endpoints": stage3_data.get("api_endpoints", [])
         }
         if repo_context_text:
             stage4_context["existing_repository_structure"] = repo_context_text.replace("--- REPOSITORY CONTEXT ---", "").strip()
@@ -767,11 +895,11 @@ async def analyze_document_chunked(
         stage4_data = _normalize_stage4_schema(stage4_data)
         logger.info(f"Stage 4 complete: Created {len(stage4_data.get('file_creation_plan', []))} file specifications")
         
-        # Save stage 4 result to job
         job = _get_job(job_id)
         if job:
             job.update_stage("stage4_implementation", stage4_data)
 
+        # ─────────────────────────────────────────────────────────────────
         # STAGE 5: Final Synthesis
         # ─────────────────────────────────────────────────────────────────
         update_job_progress(85, "Stage 5: Synthesizing final report...")
@@ -802,77 +930,78 @@ async def analyze_document_chunked(
         logger.info("Stage 5 complete: Final report generated")
         update_job_progress(88, "Stage 5 complete: Processing metrics and architecture...")
         
-        # Extract final JSON from the report
         final_json = _extract_json_from_response(stage5_result)
         
-        # Ensure architecture data is included
         if not final_json.get("architecture"):
             final_json["architecture"] = stage2_data.get("architecture", {"nodes": [], "edges": []})
         
-        # Ensure project_type is reliably carried over from Stage 1 intelligent classification
+        # Accurately preserve Greenfield, Brownfield, AND Modernization/Migration
         stage1_class = stage1_data.get("development_classification", {}).get("type", "").lower()
-        if stage1_class and ("brown" in stage1_class or "modern" in stage1_class):
-            if not final_json.get("metrics"):
-                final_json["metrics"] = {}
+        if not final_json.get("metrics"):
+            final_json["metrics"] = {}
+        if "brown" in stage1_class:
             final_json["metrics"]["project_type"] = "brownfield"
-            logger.info("Enforced 'brownfield' project_type from Stage 1 intelligent classification")
-        elif stage1_class and "green" in stage1_class:
-            if not final_json.get("metrics"):
-                final_json["metrics"] = {}
+            logger.info("Enforced 'brownfield' project_type from Stage 1 classification")
+        elif "modern" in stage1_class or "migrat" in stage1_class:
+            final_json["metrics"]["project_type"] = "modernization"
+            logger.info("Enforced 'modernization' project_type from Stage 1 classification")
+        elif "green" in stage1_class:
             final_json["metrics"]["project_type"] = "greenfield"
-            logger.info("Enforced 'greenfield' project_type from Stage 1 intelligent classification")
+            logger.info("Enforced 'greenfield' project_type from Stage 1 classification")
 
         # Auto-synthesize baseline enterprise HLD and LLD specifications
+        analysis_meta = {
+            "title": final_json.get("title"),
+            "project_type": final_json.get("metrics", {}).get("project_type", "greenfield"),
+            "existing_repository_structure": repo_context_text.replace("--- REPOSITORY CONTEXT ---", "").strip() if repo_context_text else "",
+            "stages": {
+                "stage1_requirements": stage1_data,
+                "stage2_architecture": stage2_data,
+                "stage3_data_api": stage3_data,
+                "stage4_implementation": stage4_data
+            }
+        }
+        project_label = final_json.get("title") or stage1_data.get("product_name") or "Enterprise Solution"
+
         hld_data = None
         lld_data = None
-        try:
-            from app.services.ai.architecture_design_service import architecture_design_service
-            analysis_meta = {
-                "title": final_json.get("title"),
-                "stages": {
-                    "stage1_requirements": stage1_data,
-                    "stage2_architecture": stage2_data,
-                    "stage3_data_api": stage3_data,
-                    "stage4_implementation": stage4_data
-                }
-            }
-            project_label = final_json.get("title") or "Enterprise Solution"
-            
-            update_job_progress(90, f"Generating High-Level Design (HLD) for {project_label}...")
-            logger.info(f"Generating AI HLD and LLD for project '{project_label}'...")
-            hld_res = await architecture_design_service.generate_high_level_design(
-                brd_content=document_content,
-                analysis_data=analysis_meta,
-                project_name=project_label
-            )
-            update_job_progress(95, f"Generating Low-Level Design (LLD) for {project_label}...")
-            lld_res = await architecture_design_service.generate_low_level_design(
-                brd_content=document_content,
-                hld_content=hld_res.get("markdown"),
-                analysis_data=analysis_meta,
-                project_name=project_label
-            )
 
-            hld_data = {
-                "title": f"High-Level Design (HLD) — {project_label}",
-                "markdown": hld_res.get("markdown", ""),
-                "version": "1.0.0",
-                "generated_at": datetime.utcnow().isoformat()
-            }
-            lld_data = {
-                "title": f"Low-Level Design (LLD) — {project_label}",
-                "markdown": lld_res.get("markdown", ""),
-                "version": "1.0.0",
-                "generated_at": datetime.utcnow().isoformat()
-            }
-        except Exception as synth_err:
-            logger.warning(f"Auto-synthesis of HLD/LLD failed: {synth_err}")
+        if job_id:
+            # ─────────────────────────────────────────────────────────────────
+            # PROGRESSIVE ASYNC DELIVERY:
+            # Dispatch HLD & LLD generation to non-blocking background task.
+            # Immediately return the complete Stage 1-5 BRD Analysis Report
+            # so the user can review and interact with it right away (~2 min vs ~8 min).
+            # ─────────────────────────────────────────────────────────────────
+            update_job_progress(90, f"Analysis Report ready! Generating HLD and LLD in background...")
+            asyncio.create_task(
+                generate_architecture_specs_background(
+                    job_id=job_id,
+                    brd_content=document_content,
+                    analysis_meta=analysis_meta,
+                    project_label=project_label
+                )
+            )
+        else:
+            # Synchronous fallback for headless/script callers without a background job manager
+            try:
+                specs = await generate_architecture_specs_background(
+                    job_id=None,
+                    brd_content=document_content,
+                    analysis_meta=analysis_meta,
+                    project_label=project_label
+                )
+                hld_data = specs.get("hld")
+                lld_data = specs.get("lld")
+            except Exception as synth_err:
+                logger.warning(f"Synchronous synthesis of HLD/LLD failed: {synth_err}")
 
         update_job_progress(100, "Analysis complete!")
 
         return {
             "status": "success",
             "analysis": stage5_result,
+            "_jobId": job_id,
             "model": model or "chunked-multi-stage",
             "questions": final_json.get("questions", []),
             "metrics": final_json.get("metrics"),
@@ -883,6 +1012,11 @@ async def analyze_document_chunked(
             "revision_delta": final_json.get("revision_delta"),
             "hld": hld_data,
             "lld": lld_data,
+            "spec_status": {
+                "analysis_report": "ready",
+                "hld": "ready" if hld_data else "generating",
+                "lld": "ready" if lld_data else "pending"
+            },
             "stages": {
                 "stage1_requirements": stage1_data,
                 "stage2_architecture": stage2_data,

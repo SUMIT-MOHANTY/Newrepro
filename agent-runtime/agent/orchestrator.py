@@ -63,7 +63,7 @@ class Orchestrator:
         s = self._state
         try:
             from agent.graph import create_agent_graph
-            from agent.graph_nodes import NodeContext
+            from agent.nodes.core.context import NodeContext
 
             ctx = NodeContext(
                 mcp=self._mcp,
@@ -201,7 +201,7 @@ class Orchestrator:
 
         try:
             from agent.graph import create_agent_graph
-            from agent.graph_nodes import NodeContext
+            from agent.nodes.core.context import NodeContext
 
             ctx = NodeContext(
                 mcp=self._mcp,

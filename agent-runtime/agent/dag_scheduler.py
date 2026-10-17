@@ -118,10 +118,24 @@ class DAGScheduler:
                 except Exception:
                     pass
 
-            with open(self.task_config_path, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, indent=4)
+            target_dir = os.path.dirname(self.task_config_path) or "."
+            os.makedirs(target_dir, exist_ok=True)
+            import tempfile
+            fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".task_cfg_", suffix=".tmp")
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as tmp_file:
+                    json.dump(payload, tmp_file, indent=4)
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
+                os.replace(tmp_path, self.task_config_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
         except Exception as e:
-            logger.error(f"Failed to save tasks to {self.task_config_path}: {e}")
+            logger.error(f"Failed to save tasks atomically to {self.task_config_path}: {e}")
 
     def _find_task_by_id(self, dep_id: str) -> Task | None:
         """Find task by exact ID or short ID suffix (e.g. 'TASK-00' matching '<uuid>_TASK-00')."""

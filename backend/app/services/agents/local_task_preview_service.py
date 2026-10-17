@@ -679,6 +679,8 @@ async def _attach_checklists(
     *,
     structured_tasks: List[Dict[str, Any]],
     analysis_report: str,
+    hld_markdown: Optional[str] = None,
+    lld_markdown: Optional[str] = None,
 ) -> None:
     tasks_needing_checklists = []
     for task in structured_tasks:
@@ -764,6 +766,8 @@ async def _attach_checklists(
         checklist_map = await ai_service.generate_checklists_for_tasks(
             tasks_with_ids=checklist_inputs,
             analysis_report=analysis_report,
+            hld_markdown=hld_markdown,
+            lld_markdown=lld_markdown,
         )
     except Exception as exc:
         logger.warning(f"Checklist generation failed for preview payload: {exc}")
@@ -826,6 +830,8 @@ async def _generate_ai_tasks(
     custom_rules: Optional[str],
     project_type: str = "greenfield",
     process_mode: Optional[str] = None,
+    hld_markdown: Optional[str] = None,
+    lld_markdown: Optional[str] = None,
 ) -> tuple[List[Dict[str, Any]], int]:
 
     agents = [{"user_id": 1, "username": reporter}]
@@ -836,7 +842,11 @@ async def _generate_ai_tasks(
         agents=agents,
         project_deadline=project_deadline,
         project_wallet=total_wallet,
+        custom_rules=custom_rules,
+        project_type=project_type,
         process_mode=process_mode,
+        hld_markdown=hld_markdown,
+        lld_markdown=lld_markdown,
     )
 
 
@@ -899,6 +909,21 @@ async def build_local_task_plan_preview(
         max_chars=0,
     )
     
+    # Extract HLD & LLD markdown if present in analysis_payload
+    hld_markdown = ""
+    lld_markdown = ""
+    if analysis_payload:
+        hld_obj = analysis_payload.get("hld") or {}
+        lld_obj = analysis_payload.get("lld") or {}
+        if isinstance(hld_obj, dict):
+            hld_markdown = hld_obj.get("markdown", "")
+        elif isinstance(hld_obj, str):
+            hld_markdown = hld_obj
+        if isinstance(lld_obj, dict):
+            lld_markdown = lld_obj.get("markdown", "")
+        elif isinstance(lld_obj, str):
+            lld_markdown = lld_obj
+
     # Derive project_type from analysis if not explicitly overriden
     derived_project_type = project_type if project_type != "greenfield" else _derive_project_type(analysis_payload)
 
@@ -918,6 +943,8 @@ async def build_local_task_plan_preview(
         custom_rules=custom_rules,
         project_type=derived_project_type,
         process_mode=process_mode,
+        hld_markdown=hld_markdown,
+        lld_markdown=lld_markdown,
     )
 
     # ------------------------------------------------------------
@@ -1001,7 +1028,12 @@ async def build_local_task_plan_preview(
         group_to_sprint_idx=group_to_sprint_idx,
         reporter_name=reporter,
     )
-    await _attach_checklists(structured_tasks=structured_tasks, analysis_report=analysis_context)
+    await _attach_checklists(
+        structured_tasks=structured_tasks,
+        analysis_report=analysis_context,
+        hld_markdown=hld_markdown,
+        lld_markdown=lld_markdown,
+    )
     preview_tasks = _build_preview_json_tasks(structured_tasks)
 
     # ------------------------------------------------------------

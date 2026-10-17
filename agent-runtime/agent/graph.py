@@ -16,22 +16,31 @@ from agent.nodes.construction.batch_coder import (
 )
 from agent.nodes.construction.surgical_editor import edit_code_node
 from agent.nodes.legacy.frontend_ui_helper import sequential_code_node
-from agent.graph_nodes import (
+from agent.nodes.verification.verification_nodes import (
     build_node,
     fix_node,
     preview_node,
+    qa_verification_node,
     reconcile_deps_node,
 )
 from agent.state import LangGraphState
 
 
-def route_entry(state: LangGraphState) -> Literal["initialize", "follow_up"]:
-    """Route pure follow-up edits directly to follow_up; route all Greenfield,
-    Brownfield repo tasks, and Migration projects through initialize first.
-    """
+def route_entry(state: LangGraphState) -> Literal["initialize", "follow_up", "qa_verification"]:
+    """Dynamic intent router supporting Build, Edit, Migration, and Standalone QA/Testing."""
     task_str = str(state.get("task_type", "")).lower()
+    intent = str(state.get("execution_intent", "")).lower()
+
+    # 1. Pure QA / Testing / Audit mode (No code generation — straight to live preview & functional testing)
+    if intent == "qa_test_only" or any(k in task_str for k in ("qa_only", "test_only", "e2e_audit", "verify_only")):
+        print("[GraphRouter] 🧪 Standalone QA / E2E Audit mode -> routing directly to qa_verification.")
+        return "qa_verification"
+
+    # 2. Surgical Edit / Bug Fix on existing code
     if any(k in task_str for k in ("follow_up", "edit", "bug", "question")):
         return "follow_up"
+
+    # 3. Greenfield, Brownfield Feature Onboarding, or Migration
     return "initialize"
 
 
@@ -94,6 +103,20 @@ def route_build_result(state: LangGraphState) -> Literal["preview", "fix", "fail
     return "fix"
 
 
+def route_preview_result(state: LangGraphState) -> Literal["git_push", "fix"]:
+    """Route runtime browser or backend crashes directly into fix_node for hot-repair."""
+    if state.get("preview_verified", True):
+        return "git_push"
+
+    fix_attempts = state.get("fix_attempts", 0)
+    if fix_attempts >= 2:
+        print("[GraphRouter] ⚠️ Max runtime fix attempts reached; completing with warnings.")
+        return "git_push"
+
+    print("[GraphRouter] 🔧 Live preview crash detected -> routing to fix_node for hot-repair.")
+    return "fix"
+
+
 def create_agent_graph(ctx: NodeContext) -> StateGraph:
     """Compile the LangGraph StateGraph with Greenfield, Brownfield, and Migration support."""
     builder = StateGraph(LangGraphState)
@@ -109,6 +132,7 @@ def create_agent_graph(ctx: NodeContext) -> StateGraph:
     builder.add_node("build", lambda s: build_node(s, ctx))
     builder.add_node("fix", lambda s: fix_node(s, ctx))
     builder.add_node("preview", lambda s: preview_node(s, ctx))
+    builder.add_node("qa_verification", lambda s: qa_verification_node(s, ctx))
     builder.add_node("git_push", lambda s: git_push_node(s, ctx))
     builder.add_node("delivery", lambda s: delivery_node(s, ctx))
     builder.add_node("fail", lambda s: fail_node(s, ctx))
@@ -116,7 +140,11 @@ def create_agent_graph(ctx: NodeContext) -> StateGraph:
     builder.add_conditional_edges(
         START,
         route_entry,
-        {"initialize": "initialize", "follow_up": "follow_up"},
+        {
+            "initialize": "initialize",
+            "follow_up": "follow_up",
+            "qa_verification": "qa_verification",
+        },
     )
 
     builder.add_conditional_edges(
@@ -159,7 +187,12 @@ def create_agent_graph(ctx: NodeContext) -> StateGraph:
     )
 
     builder.add_edge("fix", "build")
-    builder.add_edge("preview", "git_push")
+    builder.add_conditional_edges(
+        "preview",
+        route_preview_result,
+        {"git_push": "git_push", "fix": "fix"},
+    )
+    builder.add_edge("qa_verification", "delivery")
     builder.add_edge("git_push", "delivery")
     builder.add_edge("delivery", END)
 

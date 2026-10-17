@@ -167,15 +167,129 @@ export async function startAndPollAnalysis(
         // Poll until complete
         const finalResult = await pollUntilComplete(jobId, token, onProgress, pollInterval, maxAttempts);
         
-        // Clean up on success
+        // Clean up main stage 1-5 analysis job from localStorage, but preserve active_specs_job_id for background HLD/LLD tracking
         localStorage.removeItem('active_analysis_job_id');
         localStorage.removeItem('active_analysis_project_key');
+        if (jobId) {
+            localStorage.setItem('active_specs_job_id', jobId);
+            if (projectKey) {
+                localStorage.setItem('active_specs_project_key', projectKey);
+            }
+        }
         
+        if (finalResult && typeof finalResult === 'object') {
+            finalResult._jobId = jobId;
+        }
+
         return finalResult;
     } catch (err) {
         // Clean up on failure
         localStorage.removeItem('active_analysis_job_id');
         localStorage.removeItem('active_analysis_project_key');
+        localStorage.removeItem('active_specs_job_id');
+        localStorage.removeItem('active_specs_project_key');
         throw err;
     }
 }
+
+/**
+ * Poll lightweight spec status in background until HLD and LLD complete
+ */
+export async function pollArchitectureSpecs(
+    jobId,
+    token,
+    onSpecUpdate,
+    pollInterval = 3000,
+    maxAttempts = 120,
+    signal = null
+) {
+    if (!jobId || !token) return null;
+    let attempts = 0;
+    let consecutiveErrors = 0;
+
+    const wait = (ms) => new Promise((resolve) => {
+        if (signal?.aborted) {
+            resolve();
+            return;
+        }
+        const timer = setTimeout(resolve, ms);
+        if (signal) {
+            signal.addEventListener('abort', () => {
+                clearTimeout(timer);
+                resolve();
+            }, { once: true });
+        }
+    });
+
+    while (attempts < maxAttempts) {
+        if (signal?.aborted) {
+            return null;
+        }
+        attempts++;
+        try {
+            const response = await fetch(`${API_ENDPOINTS.AI_ANALYZE}/status/${jobId}/specs`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                signal: signal || undefined
+            });
+
+            if (signal?.aborted) return null;
+
+            if (response.ok) {
+                consecutiveErrors = 0;
+                const data = await response.json();
+                if (signal?.aborted) return null;
+
+                if (onSpecUpdate && typeof onSpecUpdate === 'function') {
+                    onSpecUpdate(data);
+                }
+
+                if (data.job_active === false) {
+                    try {
+                        localStorage.removeItem('active_specs_job_id');
+                        localStorage.removeItem('active_specs_project_key');
+                    } catch (_) {}
+                    return data;
+                }
+
+                const hldReady = data.spec_status?.hld === 'ready' || data.spec_status?.hld === 'failed' || !!data.hld;
+                const lldReady = data.spec_status?.lld === 'ready' || data.spec_status?.lld === 'failed' || !!data.lld;
+
+                if (hldReady && lldReady) {
+                    try {
+                        localStorage.removeItem('active_specs_job_id');
+                        localStorage.removeItem('active_specs_project_key');
+                    } catch (_) {}
+                    return data;
+                }
+            } else if (response.status === 404) {
+                console.warn(`[pollArchitectureSpecs] Job ${jobId} not found (404), stopping spec poll`);
+                try {
+                    localStorage.removeItem('active_specs_job_id');
+                    localStorage.removeItem('active_specs_project_key');
+                } catch (_) {}
+                return null;
+            } else {
+                consecutiveErrors++;
+                console.warn(`[pollArchitectureSpecs] Server returned HTTP ${response.status} (attempt ${attempts})`);
+            }
+
+            const currentDelay = consecutiveErrors > 0
+                ? Math.min(pollInterval * Math.pow(1.5, consecutiveErrors), 15000)
+                : pollInterval;
+            await wait(currentDelay);
+        } catch (e) {
+            if (signal?.aborted || e.name === 'AbortError') {
+                return null;
+            }
+            consecutiveErrors++;
+            const backoff = Math.min(pollInterval * Math.pow(1.5, consecutiveErrors), 15000);
+            console.warn(`[pollArchitectureSpecs] Attempt ${attempts} failed (${e.message}), backing off for ${backoff}ms...`);
+            await wait(backoff);
+        }
+    }
+    return null;
+}
+
+

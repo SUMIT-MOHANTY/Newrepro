@@ -313,16 +313,40 @@ async def analyze_document_with_ai(
 async def get_analysis_job_status(
     job_id: str,
     current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Get the status of an analysis job.
     
     Poll this endpoint to check if the analysis is complete.
+    Falls back to completed document in database if in-memory job was cleaned up.
     """
     job_manager = analysis_job_manager.get_job_manager()
     job = job_manager.get_user_job(job_id, current_user.id)
     
     if not job:
+        # Fallback to checking the database document directly
+        doc = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id,
+            models.Document.analysis_result.contains(job_id)
+        ).order_by(models.Document.id.desc()).first()
+        if doc and doc.analysis_result:
+            try:
+                parsed = json.loads(doc.analysis_result)
+                return {
+                    "job_id": job_id,
+                    "status": "completed",
+                    "progress": 100,
+                    "progress_message": "Analysis complete",
+                    "result": parsed,
+                    "stages": parsed.get("stages", {}),
+                    "spec_status": parsed.get("spec_status", {}),
+                    "created_at": doc.updated_at.isoformat() if doc.updated_at else None,
+                    "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+                }
+            except Exception:
+                pass
+
         # Log for debugging
         logger.warning(f"Job {job_id} not found for user {current_user.id}. Available jobs: {list(job_manager._jobs.keys())}")
         raise HTTPException(
@@ -331,6 +355,78 @@ async def get_analysis_job_status(
         )
     
     return job.to_dict()
+
+
+@router.get("/ai/analyze/status/{job_id}/specs")
+async def get_analysis_job_specs(
+    job_id: str,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Lightweight endpoint to poll for HLD and LLD background generation progress.
+    Avoids re-transmitting the full analysis report payload on every poll.
+    Falls back to document database lookup if the in-memory job completed and was cleared.
+    """
+    job_manager = analysis_job_manager.get_job_manager()
+    job = job_manager.get_user_job(job_id, current_user.id)
+    
+    if not job:
+        # Fallback to checking the database document directly
+        doc = db.query(models.Document).filter(
+            models.Document.owner_id == current_user.id,
+            models.Document.analysis_result.contains(job_id)
+        ).order_by(models.Document.id.desc()).first()
+        if doc and doc.analysis_result:
+            try:
+                parsed = json.loads(doc.analysis_result)
+                hld = parsed.get("hld")
+                lld = parsed.get("lld")
+                spec_status = parsed.get("spec_status") or {}
+                # Since job is None (not running), specs cannot be "generating"
+                spec_status["hld"] = "ready" if hld else "pending"
+                spec_status["lld"] = "ready" if lld else "pending"
+                return {
+                    "job_id": job_id,
+                    "job_active": False,
+                    "spec_status": spec_status,
+                    "hld": hld,
+                    "lld": lld,
+                    "progress": 100 if (hld and lld) else 100,
+                    "progress_message": "Specs available from database" if (hld and lld) else "Completed (specs partial)"
+                }
+            except Exception:
+                pass
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+
+    is_specs_active = getattr(job, "is_specs_active", False)
+    spec_status = dict(getattr(job, "spec_status", {}) or {})
+    hld = job.stages.get("hld")
+    lld = job.stages.get("lld")
+
+    if hld:
+        spec_status["hld"] = "ready"
+    elif is_specs_active:
+        spec_status["hld"] = spec_status.get("hld", "generating")
+    else:
+        spec_status["hld"] = "failed" if job.status == "failed" else "pending"
+
+    if lld:
+        spec_status["lld"] = "ready"
+    elif is_specs_active:
+        spec_status["lld"] = spec_status.get("lld", "pending" if spec_status.get("hld") == "generating" else "generating")
+    else:
+        spec_status["lld"] = "failed" if job.status == "failed" else "pending"
+
+    return {
+        "job_id": job.job_id,
+        "job_active": is_specs_active,
+        "spec_status": spec_status,
+        "hld": hld,
+        "lld": lld,
+        "progress": job.progress,
+        "progress_message": job.progress_message
+    }
 
 
 # --- Extracted Block (Lines 7764-7875) ---

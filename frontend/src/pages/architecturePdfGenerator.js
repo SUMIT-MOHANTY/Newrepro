@@ -188,7 +188,54 @@ export const fallbackRenderMermaidToPng = async (mermaidCode) => {
             mermaid.initialize({
                 startOnLoad: false,
                 theme: 'neutral',
-                securityLevel: 'loose'
+                securityLevel: 'loose',
+                fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+                flowchart: {
+                    htmlLabels: true,
+                    useMaxWidth: false,
+                    curve: 'basis',
+                    padding: 24,
+                    nodeSpacing: 50,
+                    rankSpacing: 55
+                },
+                er: {
+                    useMaxWidth: false,
+                    fontSize: 16
+                },
+                sequence: {
+                    useMaxWidth: false,
+                    showSequenceNumbers: true,
+                    actorFontSize: 16,
+                    messageFontSize: 15,
+                    noteFontSize: 14
+                },
+                themeVariables: {
+                    fontSize: '16px',
+                    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+                    primaryColor: '#eef2ff',
+                    primaryTextColor: '#0f172a',
+                    primaryBorderColor: '#4f46e5',
+                    lineColor: '#1e293b',
+                    secondaryColor: '#f8fafc',
+                    tertiaryColor: '#ffffff',
+                    mainBkg: '#ffffff',
+                    nodeBorder: '#4f46e5',
+                    clusterBkg: '#f8fafc',
+                    clusterBorder: '#94a3b8',
+                    defaultLinkColor: '#1e293b',
+                    titleColor: '#0f172a',
+                    edgeLabelBackground: '#ffffff',
+                    actorBorder: '#4f46e5',
+                    actorBkg: '#eef2ff',
+                    actorTextColor: '#0f172a',
+                    actorLineColor: '#475569',
+                    signalColor: '#1e293b',
+                    signalTextColor: '#0f172a',
+                    labelBoxBkgColor: '#ffffff',
+                    labelBoxBorderColor: '#94a3b8',
+                    labelTextColor: '#0f172a',
+                    loopTextColor: '#0f172a'
+                }
             });
         } catch (e) {
             console.warn('Mermaid dynamic import unavailable in current environment:', e);
@@ -228,7 +275,7 @@ export const fallbackRenderMermaidToPng = async (mermaidCode) => {
         const svgEl = svgDoc.querySelector('svg');
         if (!svgEl) return null;
 
-        let targetW = 2400;
+        let targetW = 2400; // High-resolution print-grade width for sharp text
         let aspectRatio = 0.55;
 
         const vb = svgEl.getAttribute('viewBox');
@@ -238,13 +285,28 @@ export const fallbackRenderMermaidToPng = async (mermaidCode) => {
                 const vbW = parseFloat(parts[2]);
                 const vbH = parseFloat(parts[3]);
                 if (vbW > 0 && vbH > 0) {
-                    aspectRatio = Math.min(vbH / vbW, 2.5);
+                    aspectRatio = Math.min(vbH / vbW, 2.8);
                 }
             }
         }
         const targetH = Math.round(targetW * aspectRatio);
         svgEl.setAttribute('width', String(targetW));
         svgEl.setAttribute('height', String(targetH));
+
+        // Inject high-contrast, crisp typography styles into SVG
+        const styleEl = svgDoc.createElementNS('http://www.w3.org/2000/svg', 'style');
+        styleEl.textContent = `
+            text, tspan, .nodeLabel, .actor, .messageText, .labelText, .label, .edgeLabel {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+                text-rendering: geometricPrecision !important;
+                -webkit-font-smoothing: antialiased !important;
+                font-weight: 500 !important;
+            }
+            .node .label, .actor, .cluster-label, text.actor {
+                font-weight: 700 !important;
+            }
+        `;
+        svgEl.prepend(styleEl);
 
         const modifiedSvg = new XMLSerializer().serializeToString(svgDoc);
         const svgBlob = new Blob([modifiedSvg], { type: 'image/svg+xml;charset=utf-8' });
@@ -267,7 +329,7 @@ export const fallbackRenderMermaidToPng = async (mermaidCode) => {
                         ctx.imageSmoothingQuality = 'high';
                         ctx.drawImage(img, 0, 0, targetW, targetH);
 
-                        const dataUrl = canvas.toDataURL('image/png', 1.0);
+                        const dataUrl = canvas.toDataURL('image/png');
                         resolve({ dataUrl, aspectRatio });
                     } catch (err) {
                         console.warn('Canvas rasterization error:', err);
@@ -302,7 +364,8 @@ export const generateArchitectureDesignPDF = async ({
         const doc = new jsPDF({
             orientation: 'portrait',
             unit: 'mm',
-            format: 'a4'
+            format: 'a4',
+            compress: true
         });
 
         const pageWidth = doc.internal.pageSize.getWidth();
@@ -676,7 +739,8 @@ export const generateArchitectureDesignPDF = async ({
                 const imgY = cardY + cardHeaderH + innerPadding;
 
                 try {
-                    doc.addImage(cachedImage.dataUrl, 'PNG', imgX, imgY, imgW, imgH);
+                    const imgFormat = (cachedImage.dataUrl && cachedImage.dataUrl.startsWith('data:image/png')) ? 'PNG' : 'JPEG';
+                    doc.addImage(cachedImage.dataUrl, imgFormat, imgX, imgY, imgW, imgH, undefined, 'FAST');
                 } catch (e) {
                     console.warn('Failed to draw diagram image in jsPDF:', e);
                 }

@@ -33,7 +33,27 @@ class AnalysisJob:
         self.completed_at: Optional[datetime] = None
         # Store intermediate stage results
         self.stages: Dict[str, Any] = {}
+        # Fine-grained architecture specification milestones
+        self.spec_status: Dict[str, str] = {
+            "analysis_report": "processing",
+            "hld": "pending",
+            "lld": "pending"
+        }
         
+    @property
+    def is_specs_active(self) -> bool:
+        """Check if background HLD or LLD generation is currently in progress"""
+        if self.status == JobStatus.FAILED:
+            return False
+        if self.spec_status.get("hld") == "generating" or self.spec_status.get("lld") == "generating":
+            return True
+        hld_ready = bool(self.stages.get("hld")) or self.spec_status.get("hld") == "ready"
+        lld_ready = bool(self.stages.get("lld")) or self.spec_status.get("lld") == "ready"
+        if not (hld_ready and lld_ready):
+            if self.spec_status.get("hld") != "failed" and self.spec_status.get("lld") != "failed":
+                return True
+        return False
+
     def update_progress(self, progress: int, message: str):
         """Update job progress"""
         self.progress = progress
@@ -45,18 +65,33 @@ class AnalysisJob:
         self.stages[stage_name] = stage_data
         self.updated_at = datetime.utcnow()
         logger.info(f"Updated stage {stage_name} for job {self.job_id}")
+
+    def update_spec_status(self, spec_name: str, status: str, data: Optional[Dict[str, Any]] = None):
+        """Update fine-grained spec generation status (hld, lld, analysis_report) and optional payload"""
+        self.spec_status[spec_name] = status
+        if data is not None:
+            self.stages[spec_name] = data
+            if isinstance(self.result, dict):
+                self.result[spec_name] = data
+                if "analysis" in self.result and isinstance(self.result["analysis"], dict):
+                    self.result["analysis"][spec_name] = data
+                if "stages" in self.result and isinstance(self.result["stages"], dict):
+                    self.result["stages"][spec_name] = data
+        self.updated_at = datetime.utcnow()
+        logger.info(f"Job {self.job_id}: Spec {spec_name} status updated to '{status}' (has_data={data is not None})")
         
     def set_processing(self):
         """Mark job as processing"""
         self.status = JobStatus.PROCESSING
         self.updated_at = datetime.utcnow()
         
-    def set_completed(self, result: Dict[str, Any]):
-        """Mark job as completed with result"""
+    def set_completed(self, result: Dict[str, Any], message: str = "Analysis complete!"):
+        """Mark job as completed with result (allows end-user to review first-document immediately)"""
         self.status = JobStatus.COMPLETED
         self.result = result
         self.progress = 100
-        self.progress_message = "Analysis complete!"
+        self.progress_message = message
+        self.spec_status["analysis_report"] = "ready"
         self.completed_at = datetime.utcnow()
         self.updated_at = datetime.utcnow()
         
@@ -77,6 +112,7 @@ class AnalysisJob:
             "result": self.result,
             "error": self.error,
             "stages": self.stages,  # Include stages in response
+            "spec_status": self.spec_status,  # Fine-grained spec progress
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
