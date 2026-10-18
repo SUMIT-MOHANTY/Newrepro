@@ -970,32 +970,39 @@ class Orchestrator:
             print(f"[Orchestrator] WARNING: usage report failed: {exc}")
 
     def _on_tool_event(self, event_type: str, data: dict) -> None:
-        """Callback fired during tool-use loop for progress tracking."""
+        """Callback fired during tool-use loop for real-time SSE progress tracking."""
         if self._is_cancelled():
             print("[Orchestrator] 🛑 Soft cancellation signal detected — halting active task cleanly.")
             raise KeyboardInterrupt("Task soft-cancelled by user")
 
         s = self._state
+        parent_agent_id = os.environ.get("AGENT_ID") or getattr(s, "agent_id", "") or "agent"
+
         if event_type == "thinking":
-            thought_summary = data.get("thought_summary", "Analyzing task and planning implementation...")
-            reasoning = data.get("reasoning", "")
-            self._post_event("tool_progress", {
+            thought_summary = data.get("thought_summary") or data.get("reasoning") or "Analyzing task and planning implementation..."
+            reasoning = data.get("reasoning") or thought_summary
+            self._post_event("thinking", {
                 "session_id": s.session_id,
                 "task_id": s.task_id,
+                "agent_id": parent_agent_id,
                 "message": f"Thinking: {thought_summary}",
+                "thought_summary": thought_summary,
                 "reasoning": reasoning,
                 "type": "thinking",
                 "iteration": data.get("iteration", 0),
             })
         elif event_type == "tool_called":
-            tool_name = data.get("tool", "unknown")
-            desc = data.get("description") or f"Running tool {tool_name}"
+            tool_name = data.get("tool", "tool_called")
+            desc = data.get("description") or f"Running {tool_name}"
             is_file = data.get("is_file", False)
-            self._post_event("tool_progress", {
+            self._post_event("tool_called", {
                 "session_id": s.session_id,
                 "task_id": s.task_id,
+                "agent_id": parent_agent_id,
                 "message": desc,
+                "description": desc,
                 "tool": tool_name,
+                "input": data.get("input"),
                 "is_file": is_file,
                 "iteration": data.get("iteration", 0),
             })
@@ -1003,6 +1010,7 @@ class Orchestrator:
             self._post_event("files_changed", {
                 "session_id": s.session_id,
                 "task_id": s.task_id,
+                "agent_id": parent_agent_id,
                 "created": data.get("created", []),
                 "modified": data.get("modified", []),
                 "deleted": data.get("deleted", []),
@@ -1012,6 +1020,7 @@ class Orchestrator:
             self._post_event("checkpoint_created", {
                 "session_id": s.session_id,
                 "task_id": s.task_id,
+                "agent_id": parent_agent_id,
                 "commit_hash": data.get("commit_hash", ""),
                 "changed_files": data.get("changed_files", []),
             })
@@ -1802,36 +1811,29 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _post_event(self, event_type: str, payload: dict) -> None:
-        """POST an event to the FastAPI callback endpoint.
-
-        Architecture §17: every major lifecycle event needs correlation fields.
-        The callback secret is verified server-side (HMAC check) so arbitrary
-        callers cannot inject fake events into the platform.
-        """
+        """POST an event to the FastAPI callback endpoint AND write to shared volume JSONL ledger."""
         import hashlib
         import hmac
         import json
+        import re
         import urllib.request
         import urllib.error
+        import uuid
 
         s = self._state
-
-        # Resolve callback URL: if inside Docker, replace localhost with host.docker.internal
-        callback_url = s.callback_url
-        if callback_url and ('localhost' in callback_url or '127.0.0.1' in callback_url):
-            import socket
-            try:
-                socket.getaddrinfo('host.docker.internal', None)
-                callback_url = callback_url.replace('localhost', 'host.docker.internal').replace('127.0.0.1', 'host.docker.internal')
-            except socket.gaierror:
-                pass  # Not in Docker, keep localhost
+        parent_agent_id = os.environ.get("AGENT_ID") or ""
 
         if not isinstance(payload, dict):
             payload = {"message": str(payload)}
         else:
             payload = dict(payload)
 
-        # Ensure session_id, task_id, and project_id are always injected so callbacks route correctly
+        # Always preserve the platform's AGENT_ID (e.g. shared_01 / dedicated_01 / agent_01)
+        if parent_agent_id:
+            payload["sub_agent"] = payload.get("agent") or payload.get("agent_name")
+            payload["agent_id"] = parent_agent_id
+            payload.setdefault("agent", parent_agent_id)
+
         if "session_id" not in payload and getattr(s, "session_id", None):
             payload["session_id"] = s.session_id
         if "task_id" not in payload and getattr(s, "task_id", None):
@@ -1841,25 +1843,55 @@ class Orchestrator:
             if proj_id:
                 payload["project_id"] = proj_id
 
-        # Always write to local shared volume event ledger for instant, zero-network host sync
+        event_uid = f"ev_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+        payload["event_uid"] = event_uid
+
+        ev_data = {
+            "event_uid": event_uid,
+            "type": event_type,
+            "event_type": event_type,
+            "agent_id": payload.get("agent_id") or parent_agent_id,
+            "agent_name": payload.get("agent_name") or payload.get("sub_agent") or parent_agent_id,
+            "lane": payload.get("lane"),
+            "session_id": payload.get("session_id", ""),
+            "task_id": payload.get("task_id", ""),
+            "project_id": payload.get("project_id", ""),
+            "message": payload.get("message") or payload.get("description") or event_type,
+            "payload": payload,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+
+        # 1. Always write to per-agent AND project shared volume ledger (zero-latency, works even if HTTP callback fails)
         try:
             ws_path = getattr(s, "workspace_path", "/workspace")
-            ev_file = os.path.join(ws_path, ".agent", "events.jsonl")
-            os.makedirs(os.path.dirname(ev_file), exist_ok=True)
-            with open(ev_file, "a", encoding="utf-8") as ef:
-                ev_data = {
-                    "event_type": event_type,
-                    "payload": payload,
-                    "session_id": getattr(s, "session_id", ""),
-                    "task_id": getattr(s, "task_id", ""),
-                    "project_id": getattr(s, "project_id", "") or os.environ.get("PROJECT_ID", ""),
-                    "timestamp": time.time(),
-                }
-                ef.write(json.dumps(ev_data) + "\n")
+            agent_dir = os.path.join(ws_path, ".agent")
+            os.makedirs(agent_dir, exist_ok=True)
+            line_str = json.dumps(ev_data) + "\n"
+
+            if parent_agent_id:
+                clean_aid = re.sub(r"[^a-zA-Z0-9_]", "_", parent_agent_id.split("#")[0])
+                with open(os.path.join(agent_dir, f"events_{clean_aid}.jsonl"), "a", encoding="utf-8") as af:
+                    af.write(line_str)
+
+            with open(os.path.join(agent_dir, "events.jsonl"), "a", encoding="utf-8") as ef:
+                ef.write(line_str)
         except Exception:
             pass
 
-        body = json.dumps({"event_type": event_type, "payload": payload}).encode()
+        # 2. Circuit breaker for HTTP callback: if host callback failed 2+ times, skip HTTP wait
+        if getattr(self, "_http_callback_failures", 0) >= 2:
+            return
+
+        callback_url = s.callback_url
+        if callback_url and ("localhost" in callback_url or "127.0.0.1" in callback_url):
+            import socket
+            try:
+                socket.getaddrinfo("host.docker.internal", None)
+                callback_url = callback_url.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
+            except socket.gaierror:
+                pass
+
+        body = json.dumps({"event_type": event_type, "payload": payload, "event_uid": event_uid}).encode()
         sig = hmac.new(s.callback_secret.encode(), body, hashlib.sha256).hexdigest()
 
         try:
@@ -1869,17 +1901,14 @@ class Orchestrator:
                 headers={
                     "Content-Type": "application/json",
                     "X-Callback-Secret": sig,
-                    "X-Session-Id": getattr(s, "session_id", "") or "",
-                    "X-Task-Id": getattr(s, "task_id", "") or "",
-                    "X-Project-Id": getattr(s, "project_id", "") or os.environ.get("PROJECT_ID", "") or "",
-                    "X-Agent-Id": str(payload.get("agent_id") or payload.get("agent") or ""),
+                    "X-Session-Id": str(payload.get("session_id") or ""),
+                    "X-Task-Id": str(payload.get("task_id") or ""),
+                    "X-Project-Id": str(payload.get("project_id") or ""),
+                    "X-Agent-Id": str(payload.get("agent_id") or parent_agent_id),
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                print(f"[Orchestrator] Event '{event_type}' posted: {resp.status}")
-        except urllib.error.URLError as exc:
-            # Non-fatal: agent continues without stalling
-            print(f"[Orchestrator] Note: Callback post notice '{event_type}': {exc}")
-        except Exception as exc:
-            print(f"[Orchestrator] Note: Callback post notice: {exc}")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                self._http_callback_failures = 0
+        except Exception:
+            self._http_callback_failures = getattr(self, "_http_callback_failures", 0) + 1

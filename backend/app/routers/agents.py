@@ -2148,55 +2148,89 @@ async def _bg_run_agent(
             execution_success = False
             task_summary_data = None
             if container_name:
-                # Real-time streaming log callback: streams container stdout directly to dashboard
+                from app.infrastructure.events.event_broadcaster import get_event_broadcaster
+                broadcaster = get_event_broadcaster()
+                per_agent_events_file = os.path.join(workspace_dir, ".agent", f"events_{clean_aid}.jsonl")
+
+                def on_structured_event(ev_obj: dict) -> None:
+                    """Called in real-time (<150ms) as the container writes to .agent/events_{clean_aid}.jsonl."""
+                    ev_obj["agent_id"] = agent_id
+                    ev_obj["project_id"] = project_token
+                    broadcaster.publish_sync(project_token, ev_obj)
+
+                    if agent_rec_mem:
+                        et = ev_obj.get("event_type") or ev_obj.get("type") or ""
+                        pl = ev_obj.get("payload") or {}
+                        if et == "thinking":
+                            thought = (pl.get("thought_summary") or pl.get("reasoning") or "")[:120]
+                            agent_rec_mem["progress"] = max(agent_rec_mem.get("progress", 25), 40)
+                            agent_rec_mem["progress_message"] = f"Thinking: {thought}" if thought else "Analyzing architecture..."
+                        elif et == "tool_called":
+                            tool_name = pl.get("tool") or "tool"
+                            agent_rec_mem["progress"] = max(agent_rec_mem.get("progress", 40), 60)
+                            agent_rec_mem["progress_message"] = f"Executing tool: {tool_name}"
+                        elif et == "task_completed":
+                            agent_rec_mem["progress"] = max(agent_rec_mem.get("progress", 60), 85)
+                            agent_rec_mem["progress_message"] = f"Verified task: {pl.get('task_title') or pl.get('task_id')}"
+                        elif et in ("supervisor_completed", "session_completed"):
+                            agent_rec_mem["progress"] = 100
+                            agent_rec_mem["status"] = "completed"
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Execution & Verification Complete"
+
                 def on_agent_log_line(line: str) -> None:
                     line_clean = line.strip()
                     if not line_clean:
                         return
-                    log_type = "error" if "error" in line_clean.lower() else "output"
-                    agent_service.append_agent_log(
-                        agent_id, line_clean[:500], log_type, project_token
-                    )
+                    # Ignore MCP registration startup lines so "[MCP] Preview QA..." at t=0 never triggers 90% Preview phase!
+                    if line_clean.startswith("[MCP]") or line_clean.startswith("[ToolRegistry]"):
+                        agent_service.append_agent_log(agent_id, line_clean[:500], "info", project_token)
+                        return
 
-                    # Update progress in real time as agents progress through phases
+                    log_type = "error" if "error" in line_clean.lower() else "output"
+                    agent_service.append_agent_log(agent_id, line_clean[:500], log_type, project_token)
+
+                    # Also publish raw terminal output to dedicated agent channel for live terminal lines
+                    broadcaster.publish_sync(project_token, {
+                        "type": "log",
+                        "event_type": "log",
+                        "agent_id": agent_id,
+                        "project_id": project_token,
+                        "message": line_clean[:500],
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    })
+
                     if agent_rec_mem:
                         lower = line_clean.lower()
-                        if "plan" in lower and "phase" in lower:
-                            agent_rec_mem["progress"] = 35
-                            agent_rec_mem["progress_message"] = "Swarm Phase: Planning & Architecture..."
-                        elif "dispatching" in lower or "starting task" in lower or ("code" in lower and ("generation" in lower or "writing" in lower)):
-                            agent_rec_mem["progress"] = 55
+                        if "[supervisor] 🚀 dispatching task" in lower:
+                            agent_rec_mem["progress"] = max(agent_rec_mem.get("progress", 25), 50)
                             agent_rec_mem["progress_message"] = "Swarm Phase: Sub-Agent Task Execution..."
-                        elif "build" in lower:
-                            agent_rec_mem["progress"] = 75
-                            agent_rec_mem["progress_message"] = "Swarm Phase: Build Verification..."
-                        elif any(k in lower for k in ("all tasks processed", "swarm complete", "execution summary", "task complete. preview is live", "exiting daemon process")):
+                        elif "[supervisor] 🧪 testing & verifying" in lower:
+                            agent_rec_mem["progress"] = max(agent_rec_mem.get("progress", 50), 75)
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Build & Syntax Verification..."
+                        elif "[supervisor] 🚀 pushing feature branch" in lower or "committed feature checkpoint" in lower:
+                            agent_rec_mem["progress"] = max(agent_rec_mem.get("progress", 75), 92)
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Code Committed & Pushed to Git..."
+                        elif "[agentruntime] 🚀 booting live preview dev server on port 80" in lower:
+                            agent_rec_mem["progress"] = max(agent_rec_mem.get("progress", 85), 95)
+                            agent_rec_mem["progress_message"] = "Swarm Phase: Preview Deployment..."
+                        elif any(k in lower for k in (
+                            "[supervisor] 🏁 all tasks processed",
+                            "[agentruntime] 📊 swarm complete",
+                            "task complete. preview is live",
+                            "exiting daemon process",
+                        )):
                             agent_rec_mem["progress"] = 100
                             agent_rec_mem["status"] = "completed"
                             agent_rec_mem["progress_message"] = "Swarm Phase: Execution & Verification Complete"
-                        elif "pushed to remote" in lower or "git push" in lower or "committed" in lower:
-                            agent_rec_mem["progress"] = 95
-                            agent_rec_mem["progress_message"] = "Swarm Phase: Code Committed & Pushed to Git..."
-                        elif any(k in lower for k in ("booting live preview", "launching live preview", "preview dev server on port 80", "live preview ready on port 80", "preview is live")):
-                            agent_rec_mem["progress"] = 90
-                            agent_rec_mem["progress_message"] = "Swarm Phase: Preview Deployment..."
 
-                    # Live SSE bridge for stdout tool and thinking notices
-                    if "tool call" in line_clean.lower() or "tool_called" in line_clean.lower():
-                        try:
-                            from app.infrastructure.events.event_broadcaster import get_event_broadcaster
-                            get_event_broadcaster().publish_sync(project_token, {
-                                "type": "tool_called",
-                                "event_type": "tool_called",
-                                "agent_id": agent_id,
-                                "message": line_clean,
-                                "payload": {"tool": line_clean, "description": line_clean},
-                            })
-                        except Exception:
-                            pass
-
-                # Run with python -u (unbuffered binary stdout/stderr) for instant live streaming
-                exec_cmd = f"export AGENT_ID='{agent_id}' && export AGENT_CONFIG_FILE='{config_filename}' && export IDLE_TIMEOUT_SECONDS=1 && cd /workspace && python -u -m agent.main 2>&1"
+                exec_cmd = (
+                    f"export AGENT_ID='{agent_id}' && "
+                    f"export PROJECT_ID='{project_token}' && "
+                    f"export AGENT_CONFIG_FILE='{config_filename}' && "
+                    f"export SKIP_IN_CONTAINER_PREVIEW='true' && "
+                    f"export IDLE_TIMEOUT_SECONDS=1 && "
+                    f"cd /workspace && python -u -m agent.main 2>&1"
+                )
                 exec_timeout = max(900, len(tasks_to_execute) * 450)
                 exit_code, output = await asyncio.to_thread(
                     playground_manager.exec_in_playground,
@@ -2204,27 +2238,9 @@ async def _bg_run_agent(
                     exec_cmd,
                     timeout=exec_timeout,
                     line_callback=on_agent_log_line,
+                    event_callback=on_structured_event,
+                    events_jsonl_path=per_agent_events_file,
                 )
-
-                # Drain events from local shared volume ledger into broadcaster
-                try:
-                    events_file = os.path.join(workspace_dir, ".agent", "events.jsonl")
-                    if os.path.exists(events_file):
-                        from app.infrastructure.events.event_broadcaster import get_event_broadcaster
-                        broadcaster = get_event_broadcaster()
-                        with open(events_file, "r", encoding="utf-8", errors="ignore") as ef:
-                            for eline in ef:
-                                eline_s = eline.strip()
-                                if eline_s:
-                                    try:
-                                        e_obj = json.loads(eline_s)
-                                        if "agent_id" not in e_obj:
-                                            e_obj["agent_id"] = agent_id
-                                        broadcaster.publish_sync(project_token, e_obj)
-                                    except Exception:
-                                        pass
-                except Exception as d_err:
-                    logger.debug(f"Event drain debug: {d_err}")
 
                 # Check per-agent task summary or general task_summary.json
                 summary_filename = f"task_summary_{clean_aid}.json"

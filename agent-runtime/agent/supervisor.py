@@ -429,15 +429,18 @@ class SupervisorAgent:
         # ═══════════════════════════════════════════════════
         # DELEGATE: Sub-agent runs its ReAct tool loop
         # ═══════════════════════════════════════════════════
+        parent_agent_id = os.environ.get("AGENT_ID") or agent.name
+
         def _agent_event_callback(event_type: str, data: dict[str, Any]):
             event_payload = dict(data) if isinstance(data, dict) else {"message": str(data)}
-            event_payload.setdefault("agent", agent.name)
-            event_payload.setdefault("agent_id", agent.name)
-            event_payload.setdefault("agent_name", agent.name)
-            event_payload.setdefault("role", getattr(agent, "role", agent.name))
-            event_payload.setdefault("lane", getattr(agent, "lane", getattr(task, "lane", "backend")))
-            event_payload.setdefault("task_id", task_id)
-            event_payload.setdefault("task_title", getattr(task, "title", ""))
+            event_payload["sub_agent"] = agent.name
+            event_payload["agent_id"] = parent_agent_id
+            event_payload["agent"] = parent_agent_id
+            event_payload["agent_name"] = agent.name
+            event_payload["role"] = getattr(agent, "role", agent.name)
+            event_payload["lane"] = getattr(agent, "lane", getattr(task, "lane", "backend"))
+            event_payload["task_id"] = task_id
+            event_payload["task_title"] = getattr(task, "title", "")
             self._post_event(event_type, event_payload)
 
         start_time = time.time()

@@ -173,10 +173,15 @@ function isEventForAgent(ev, agent) {
   const agentId = String(agent.id || '').toLowerCase();
   const agentName = String(agent.name || '').toLowerCase();
   const agentSub = String(agent.sub_type || agent.specialization || '').toLowerCase();
+  const evAgent = String(ev.agent_id || ev.agent || ev.agent_name || ev.payload?.agent_id || ev.payload?.agent || '').toLowerCase();
+
+  // 1. Direct agent ID match
+  if (evAgent && (evAgent === agentId || evAgent === agentId.split('#')[0] || agentId.startsWith(evAgent))) {
+    return true;
+  }
 
   // Master Agent / Supervisor
   if (agentId.includes('master') || agentId === 'm_agent_01' || agentName.includes('master')) {
-    const evAgent = String(ev.agent_name || ev.agent_id || ev.payload?.agent || '').toLowerCase();
     const evLane = String(ev.lane || ev.payload?.lane || '').toLowerCase();
     return (
       evAgent.includes('supervisor') ||
@@ -189,27 +194,23 @@ function isEventForAgent(ev, agent) {
 
   // Test Agent / QA
   if (agentId.includes('test') || agentId === 't_agent_01' || agentName.includes('test') || agentSub.includes('test') || agentSub.includes('qa')) {
-    const evAgent = String(ev.agent_name || ev.agent_id || ev.payload?.agent || '').toLowerCase();
     const evLane = String(ev.lane || ev.payload?.lane || '').toLowerCase();
     return evAgent.includes('qa') || evAgent.includes('test') || evLane.includes('qa') || evLane.includes('test');
   }
 
   // Frontend Developer
   if (agentName.includes('front') || agentSub.includes('front') || agentId.includes('front')) {
-    const evAgent = String(ev.agent_name || ev.agent_id || ev.payload?.agent || '').toLowerCase();
     const evLane = String(ev.lane || ev.payload?.lane || '').toLowerCase();
     return evAgent.includes('front') || evLane.includes('front');
   }
 
   // Backend Developer
   if (agentName.includes('back') || agentSub.includes('back') || agentId.includes('back')) {
-    const evAgent = String(ev.agent_name || ev.agent_id || ev.payload?.agent || '').toLowerCase();
     const evLane = String(ev.lane || ev.payload?.lane || '').toLowerCase();
     return evAgent.includes('back') || evLane.includes('back');
   }
 
   // Generic match
-  const evAgent = String(ev.agent_name || ev.agent_id || ev.payload?.agent || '').toLowerCase();
   return !evAgent || evAgent.includes(agentId) || agentId.includes(evAgent) || evAgent.includes(agentName);
 }
 
@@ -219,25 +220,31 @@ function isEventForAgent(ev, agent) {
 function normalizeEvent(item) {
   if (!item) return null;
 
-  // Structured SSE event
-  if (item.event_type || item.type) {
-    const type = item.event_type || item.type;
-    const payload = item.payload || {};
+  const type = item.event_type || item.type;
+  const payload = item.payload || {};
 
-    if (type === 'thinking' || payload.reasoning || payload.thought_summary) {
+  // 1. Structured SSE events
+  if (type && type !== 'log') {
+    if (
+      type === 'thinking' ||
+      (type === 'tool_progress' && (payload.type === 'thinking' || String(payload.message || '').startsWith('Thinking:'))) ||
+      payload.reasoning ||
+      payload.thought_summary
+    ) {
+      const rawThought = payload.reasoning || payload.thought_summary || item.message || '';
       return {
-        id: item._clientId || Math.random().toString(),
+        id: item.event_uid || item._clientId || Math.random().toString(),
         kind: 'thinking',
-        text: payload.reasoning || payload.thought_summary || item.message || '',
+        text: rawThought.replace(/^Thinking:\s*/i, '').trim(),
         time: item.timestamp,
       };
     }
 
-    if (type === 'tool_called') {
+    if (type === 'tool_called' || (type === 'tool_progress' && payload.tool)) {
       const toolName = payload.tool || 'tool_called';
       const desc = payload.description || item.message || toolName;
       return {
-        id: item._clientId || Math.random().toString(),
+        id: item.event_uid || item._clientId || Math.random().toString(),
         kind: 'tool',
         label: toolName,
         desc: desc,
@@ -246,42 +253,38 @@ function normalizeEvent(item) {
       };
     }
 
-    if (type === 'files_changed') {
+    if (type === 'file_written' || type === 'files_changed') {
+      const fp = payload.file_path || (payload.created || [])[0] || (payload.modified || [])[0] || '';
       return {
-        id: item._clientId || Math.random().toString(),
+        id: item.event_uid || item._clientId || Math.random().toString(),
         kind: 'files',
-        label: 'files_changed',
+        label: fp ? `files_changed • ${fp}` : 'files_changed',
         time: item.timestamp,
       };
     }
 
-    if (type === 'task_completed') {
+    if (type === 'task_completed' || type === 'supervisor_completed' || type === 'session_completed' || type === 'llm_call_completed') {
+      const label =
+        type === 'task_completed'
+          ? `task_completed: ${payload.task_title || payload.title || payload.task_id || ''}`.trim()
+          : type;
       return {
-        id: item._clientId || Math.random().toString(),
+        id: item.event_uid || item._clientId || Math.random().toString(),
         kind: 'check',
-        label: `task_completed: ${payload.task_title || payload.title || payload.task_id || ''}`.trim(),
-        time: item.timestamp,
-      };
-    }
-
-    if (type === 'llm_call_completed' || type === 'coding_completed') {
-      return {
-        id: item._clientId || Math.random().toString(),
-        kind: 'check',
-        label: 'llm_call_completed',
+        label,
         time: item.timestamp,
       };
     }
   }
 
-  // Parse raw text string / static log line
+  // 2. Fallback: raw stdout / static log line parsing
   const rawMsg = typeof item === 'string' ? item : (item.message || item.content || '');
   const clean = rawMsg.trim();
+  if (!clean || clean === 'connected') return null;
   const time = item.time || item.timestamp;
 
-  // 1. Thinking / Reasoning
   if (clean.startsWith('Thinking:') || clean.includes('[Thinking]') || clean.startsWith('Thought for') || clean.includes('[AI Output Content]:')) {
-    const thoughtText = clean.replace(/.*(\[AI Output Content\]:|Thinking:|\[Thinking\])\s*/, '');
+    const thoughtText = clean.replace(/.*(\[AI Output Content\]:|Thinking:|\[Thinking\])\s*/i, '');
     return {
       id: Math.random().toString(),
       kind: 'thinking',
@@ -290,43 +293,23 @@ function normalizeEvent(item) {
     };
   }
 
-  // 2. Tool invocation
-  if (clean.includes('[Tool Call]') || clean.startsWith('tool_called') || clean.includes('Tool called:') || clean.includes('[SingleFileGen Tool]') || clean.includes('[MCP] SUCCEEDED') || clean.includes('[MCP] EXECUTING')) {
-    let toolName = 'tool_called';
-    let toolDesc = clean;
-    const toolCallMatch = clean.match(/\[Tool Call\]\s*([a-zA-Z0-9_-]+)(\([^)]*\))?/);
-    if (toolCallMatch) {
-      toolName = toolCallMatch[1];
-      toolDesc = toolCallMatch[2] ? toolCallMatch[2].slice(1, -1) : toolName;
-    } else if (clean.includes('|')) {
-      const parts = clean.split('|');
-      toolName = (parts[1] || 'tool_called').trim();
-      toolDesc = (parts[2] || '').trim();
-    }
+  if (clean.includes('[Tool Call]') || clean.startsWith('tool_called') || clean.includes('📄 [Tool:') || clean.includes('Tool called:') || clean.includes('[SingleFileGen Tool]') || clean.includes('[MCP] SUCCEEDED') || clean.includes('[MCP] EXECUTING')) {
+    const toolCallMatch = clean.match(/[Tool(?: Call)?[:]]\s*([a-zA-Z0-9_-]+)/);
+    const toolName = toolCallMatch ? toolCallMatch[1] : 'tool_called';
     return {
       id: Math.random().toString(),
       kind: 'tool',
       label: toolName,
-      desc: toolDesc,
+      desc: clean,
       time,
     };
   }
 
-  // 3. Files changed
-  if (clean === 'files_changed' || clean.startsWith('files_changed') || clean.includes('files committed') || clean.includes('Generated file')) {
-    return {
-      id: Math.random().toString(),
-      kind: 'files',
-      label: 'files_changed',
-      time,
-    };
-  }
-
-  // 4. Genuine Milestone Checkmarks
   if (
     clean === 'llm_call_completed' ||
     clean.startsWith('task_completed') ||
     clean.includes('Syntax check PASSED') ||
+    clean.includes('verification PASSED') ||
     clean.includes('Agent Swarm runtime completed successfully')
   ) {
     return {
@@ -337,13 +320,13 @@ function normalizeEvent(item) {
     };
   }
 
-  // 5. Error
   if (
     item.type === 'error' ||
     item.level === 'error' ||
     clean.toLowerCase().startsWith('error:') ||
     clean.includes('timed out') ||
     clean.includes('[ERROR]') ||
+    clean.includes('❌') ||
     clean.includes('🛑 [Progress Guard]')
   ) {
     return {
@@ -354,7 +337,6 @@ function normalizeEvent(item) {
     };
   }
 
-  // 6. Normal plain terminal log line (NO green checkmark)
   return {
     id: Math.random().toString(),
     kind: 'log',
@@ -459,14 +441,16 @@ export default function AgentDedicatedLogModal({
   const userScrolledUpRef = useRef(false);
 
   const agentDisplayName = agent?.name || agent?.title || 'Agent';
+  const agentId = agent?.id || null;
   const isRunning = agent?.status === 'running' || connectionStatus === 'live';
 
-  // ── Step 1: Initial load of buffered events ────────────────────────
+  // ── Step 1: Initial load of buffered events strictly for (projectToken, agentId)
   useEffect(() => {
     let active = true;
+    setStreamEvents([]); // Clear previous agent/project state immediately
     const loadBuffered = async () => {
-      if (projectToken) {
-        const buffered = await fetchBufferedAgentLogs(projectToken, token);
+      if (projectToken && agentId) {
+        const buffered = await fetchBufferedAgentLogs(projectToken, agentId, token);
         if (active && buffered && buffered.length > 0) {
           setStreamEvents(buffered);
         }
@@ -476,22 +460,23 @@ export default function AgentDedicatedLogModal({
     return () => {
       active = false;
     };
-  }, [projectToken, token]);
+  }, [projectToken, agentId, token]);
 
-  // ── Step 2: Live SSE Event Stream ──────────────────────────────────
+  // ── Step 2: Live SSE Event Stream strictly for (projectToken, agentId)
   useEffect(() => {
-    if (!projectToken) return;
+    if (!projectToken || !agentId) return;
 
     setConnectionStatus('connecting');
     const cleanup = streamAgentEvents(projectToken, {
+      agentId,
       token,
       onEvent: (event) => {
-        if (!event || event.type === 'ping') return;
+        if (!event || event.type === 'ping' || event.type === 'connected') return;
         setConnectionStatus('live');
         setStreamEvents((prev) => {
           const isDup = prev.some((e) =>
-            (event._clientId && e._clientId === event._clientId) ||
-            (e.timestamp === event.timestamp && e.event_type === event.event_type && e.message === event.message)
+            (event.event_uid && e.event_uid === event.event_uid) ||
+            (event._clientId && e._clientId === event._clientId)
           );
           if (isDup) return prev;
           return [...prev, event];
@@ -505,15 +490,16 @@ export default function AgentDedicatedLogModal({
     return () => {
       cleanup();
     };
-  }, [projectToken, token]);
+  }, [projectToken, agentId, token]);
 
   // ── Step 3: Combine & filter dedicated steps for this agent ────────
   const dedicatedSteps = useMemo(() => {
     // 1. Filter stream events matching this agent
     const matchingStream = streamEvents.filter((ev) => isEventForAgent(ev, agent));
+    const eventsToUse = matchingStream.length > 0 ? matchingStream : streamEvents;
 
-    if (matchingStream.length > 0) {
-      return matchingStream.map(normalizeEvent).filter(Boolean);
+    if (eventsToUse.length > 0) {
+      return eventsToUse.map(normalizeEvent).filter(Boolean);
     }
 
     // 2. Fall back to agent's own static output_log if available

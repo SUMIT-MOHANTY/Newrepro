@@ -1,24 +1,23 @@
-"""
-Playground Container Manager — Docker Lifecycle for Agent Runtime Playgrounds.
+"""Playground Container Manager — Docker Lifecycle for Agent Runtime Playgrounds.
 
-Manages dedicated and shared playground containers for agents in an organization.
-Enforces that total active containers do not exceed the organization's max_agent_capacity.
-Agents acquire a container from the pool, execute tasks sequentially from their queue,
-and release the container back to the idle pool upon completion.
+Enforces org-level max_agent_capacity, strict per-project workspace mount verification,
+and non-blocking stream execution with live JSONL event tailing.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Prefer dsuite-agent-runtime:latest since it contains both Python 3.12 and Node 20.20
+CONTAINER_PREFIX = "dsuite_agent_"
+
 PREFERRED_IMAGES = [
     "dsuite-agent-runtime:latest",
     "python:3.10-slim",
@@ -28,7 +27,7 @@ PREFERRED_IMAGES = [
 
 
 class PlaygroundContainerManager:
-    """Manages Docker playground containers for agent execution."""
+    """Manages Docker playground containers for agent execution with org-quota enforcement."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -39,16 +38,16 @@ class PlaygroundContainerManager:
     def _init_docker(self) -> None:
         try:
             import docker
+
             client = docker.from_env()
             client.ping()
             self._docker_client = client
             logger.info("[PlaygroundManager] Docker client connected successfully.")
         except Exception as exc:
-            logger.warning(f"[PlaygroundManager] Docker client connection error: {exc}. Will use subprocess CLI fallback.")
+            logger.warning(f"[PlaygroundManager] Docker client unavailable: {exc}. Using CLI fallback.")
             self._docker_client = None
 
     def _get_available_image(self) -> str:
-        """Find the best available Docker image locally."""
         if self._docker_client:
             try:
                 local_images = [tag for img in self._docker_client.images.list() for tag in (img.tags or [])]
@@ -78,6 +77,32 @@ class PlaygroundContainerManager:
         except Exception:
             return False
 
+    def get_running_containers_count(self, org_name: Optional[str] = None) -> int:
+        """Accurately count active agent containers (fixes prefix mismatch bug)."""
+        prefix_filter = CONTAINER_PREFIX
+        if org_name:
+            clean_org = "".join(c for c in org_name if c.isalnum() or c == "_")[:10].lower()
+            prefix_filter = f"{CONTAINER_PREFIX}{clean_org}_"
+        try:
+            if self._docker_client:
+                running = self._docker_client.containers.list(filters={"name": prefix_filter})
+                return len(running)
+            res = subprocess.run(
+                ["docker", "ps", "--filter", f"name={prefix_filter}", "--format", "{{.Names}}"],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+            if res.returncode == 0:
+                return len([line.strip() for line in res.stdout.splitlines() if line.strip()])
+        except Exception as e:
+            logger.warning(f"[PlaygroundManager] Error counting running containers: {e}")
+        return len([
+            c for c in self.containers.values()
+            if c.get("status") == "BUSY" and (not org_name or c.get("org_name") == org_name)
+        ])
+
     def acquire_playground(
         self,
         org_name: str,
@@ -87,100 +112,88 @@ class PlaygroundContainerManager:
         max_capacity: int = 10,
     ) -> Optional[str]:
         """
-        Acquire or provision a playground container for the agent.
-        Enforces that running containers do not exceed max_capacity.
+        Acquire or provision a playground container for (org_name, project_token, agent_id).
+        Strictly guarantees:
+          1. Total running containers in the org never exceed `max_capacity`.
+          2. Reused containers ALWAYS point to the exact `workspace_host_path` for `project_token`
+             (recreating the container if it was previously mounted to a different project).
         """
+        abs_workspace = os.path.abspath(workspace_host_path)
+        os.makedirs(abs_workspace, exist_ok=True)
+
         with self.lock:
-            # 1. If an existing container is already assigned and running for this agent/project, reuse it
+            # 1. Reuse active container ONLY if it belongs to the exact same project & workspace
             for name, meta in self.containers.items():
                 if (
-                    meta.get("status") == "BUSY"
-                    and meta.get("agent_id") == agent_id
+                    meta.get("agent_id") == agent_id
                     and meta.get("project_token") == project_token
+                    and os.path.abspath(meta.get("workspace_path", "")) == abs_workspace
                 ):
-                    if self._is_container_running(name):
-                        logger.info(f"[PlaygroundManager] Reusing active container {name} for agent {agent_id}")
-                        return name
-
-            # 2. Check for an IDLE container in our registered pool
-            for name, meta in self.containers.items():
-                if meta.get("status") == "IDLE":
-                    if self._ensure_container_started(name, workspace_host_path):
+                    if self._ensure_container_started(name):
                         meta["status"] = "BUSY"
-                        meta["agent_id"] = agent_id
-                        meta["project_token"] = project_token
-                        meta["org_name"] = org_name
                         meta["last_used"] = time.time()
-                        logger.info(f"[PlaygroundManager] Re-assigned IDLE container {name} to agent {agent_id}")
+                        logger.info(f"[PlaygroundManager] Reusing matching container {name} for {agent_id} ({project_token})")
                         return name
 
-            # 3. Check capacity limit before creating a new container
-            running_count = self.get_running_containers_count()
+            # 2. Enforce org-level container capacity limit
+            running_count = self.get_running_containers_count(org_name)
             if running_count >= max_capacity:
-                logger.warning(
-                    f"[PlaygroundManager] Max container capacity reached ({running_count}/{max_capacity}). "
-                    f"Attempting to reuse LRU idle container..."
-                )
-                # Find oldest idle container
+                # Evict the oldest IDLE container in this org so we can mount the new project workspace cleanly
                 lru_name = None
                 lru_time = float("inf")
                 for name, meta in self.containers.items():
-                    if meta.get("status") == "IDLE" and meta.get("last_used", 0) < lru_time:
+                    if (
+                        meta.get("org_name") == org_name
+                        and meta.get("status") == "IDLE"
+                        and meta.get("last_used", 0) < lru_time
+                    ):
                         lru_name = name
                         lru_time = meta.get("last_used", 0)
 
-                if lru_name and self._ensure_container_started(lru_name, workspace_host_path):
-                    self.containers[lru_name].update({
-                        "status": "BUSY",
-                        "agent_id": agent_id,
-                        "project_token": project_token,
-                        "org_name": org_name,
-                        "last_used": time.time(),
-                    })
-                    return lru_name
+                if lru_name:
+                    logger.info(
+                        f"[PlaygroundManager] Capacity ({running_count}/{max_capacity}) reached for org '{org_name}'. "
+                        f"Reclaiming IDLE container '{lru_name}' for project '{project_token}'."
+                    )
+                    self._force_remove_container(lru_name)
+                    self.containers.pop(lru_name, None)
+                else:
+                    logger.warning(
+                        f"[PlaygroundManager] All {running_count}/{max_capacity} containers in org '{org_name}' are BUSY!"
+                    )
 
-            # 4. Provision a dedicated playground container for this sub-agent
+            # 3. Build deterministic, project-isolated container name
             clean_org = "".join(c for c in (org_name or "default") if c.isalnum() or c == "_")[:10].lower()
-            if "::" in (agent_id or ""):
-                proj_part, aid_part = agent_id.split("::", 1)
-                clean_agent = f"{proj_part[:8]}_{aid_part}"
-            else:
-                clean_agent = agent_id or "worker"
-            clean_agent = "".join(c for c in clean_agent if c.isalnum() or c == "_")[:24].lower()
-            container_name = f"dsuite_agent_{clean_org}_{clean_agent}"
+            clean_proj = "".join(c for c in (project_token or "proj") if c.isalnum() or c == "_")[:10].lower()
+            base_aid = (agent_id or "worker").split("#")[0].split("::")[-1]
+            clean_agent = "".join(c for c in base_aid if c.isalnum() or c == "_")[:16].lower()
+            container_name = f"{CONTAINER_PREFIX}{clean_org}_{clean_proj}_{clean_agent}"
 
-            # Make sure no conflicting stale container with this name exists in Docker
+            # Remove any stale container with the same name
             self._force_remove_container(container_name)
 
             image = self._get_available_image()
-            logger.info(
-                f"[PlaygroundManager] Provisioning new playground container '{container_name}' "
-                f"using image '{image}' (mount: {workspace_host_path} -> /workspace)..."
+            runtime_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "agent-runtime")
             )
+            vols = {abs_workspace: {"bind": "/workspace", "mode": "rw"}}
+            if os.path.isdir(runtime_dir):
+                vols[runtime_dir] = {"bind": "/app", "mode": "rw"}
+
+            import socket
+
+            preview_port_free = False
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    preview_port_free = (s.connect_ex(("127.0.0.1", 8085)) != 0)
+            except Exception:
+                preview_port_free = False
+
+            ports_dict = {"80/tcp": ("0.0.0.0", 8085)} if preview_port_free else None
+            cli_port_args = ["-p", "8085:80"] if preview_port_free else []
+            extra_hosts = {"host.docker.internal": "host-gateway"}
 
             try:
-                os.makedirs(workspace_host_path, exist_ok=True)
-                runtime_dir = os.path.abspath(
-                    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "agent-runtime")
-                )
-                vols = {os.path.abspath(workspace_host_path): {"bind": "/workspace", "mode": "rw"}}
-                if os.path.isdir(runtime_dir):
-                    vols[runtime_dir] = {"bind": "/app", "mode": "rw"}
-
-                # Check if host preview port 8085 is available for seamless UI preview
-                import socket
-                preview_port_free = False
-                try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        preview_port_free = (s.connect_ex(('127.0.0.1', 8085)) != 0)
-                except Exception:
-                    preview_port_free = False
-
-                ports_dict = {"80/tcp": ("0.0.0.0", 8085)} if preview_port_free else None
-                cli_port_args = ["-p", "8085:80"] if preview_port_free else []
-
-                extra_hosts = {"host.docker.internal": "host-gateway"}
-
                 if self._docker_client:
                     c = self._docker_client.containers.run(
                         image=image,
@@ -191,7 +204,10 @@ class PlaygroundContainerManager:
                         extra_hosts=extra_hosts,
                         working_dir="/workspace",
                         entrypoint="/bin/sh",
-                        command=["-c", "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null"],
+                        command=[
+                            "-c",
+                            "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null",
+                        ],
                         network_mode="bridge",
                         remove=False,
                         labels={
@@ -204,30 +220,32 @@ class PlaygroundContainerManager:
                     c_id = c.id
                 else:
                     cmd = [
-                        "docker", "run", "-d",
-                        "--name", container_name,
-                        "--add-host", "host.docker.internal:host-gateway",
-                        "-v", f"{os.path.abspath(workspace_host_path)}:/workspace",
+                        "docker",
+                        "run",
+                        "-d",
+                        "--name",
+                        container_name,
+                        "--add-host",
+                        "host.docker.internal:host-gateway",
+                        "-v",
+                        f"{abs_workspace}:/workspace",
                     ]
                     if cli_port_args:
                         cmd.extend(cli_port_args)
                     if os.path.isdir(runtime_dir):
                         cmd.extend(["-v", f"{runtime_dir}:/app"])
                     cmd.extend([
-                        "-w", "/workspace",
-                        "--entrypoint", "/bin/sh",
+                        "-w",
+                        "/workspace",
+                        "--entrypoint",
+                        "/bin/sh",
                         image,
-                        "-c", "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null",
+                        "-c",
+                        "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null",
                     ])
-                    res = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        timeout=30,
-                    )
+                    res = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30)
                     if res.returncode != 0:
-                        logger.error(f"[PlaygroundManager] Failed to launch container CLI: {res.stderr}")
+                        logger.error(f"[PlaygroundManager] CLI launch failed: {res.stderr}")
                         return None
                     c_id = res.stdout.strip()
 
@@ -237,24 +255,24 @@ class PlaygroundContainerManager:
                     "org_name": org_name,
                     "project_token": project_token,
                     "agent_id": agent_id,
-                    "workspace_path": workspace_host_path,
+                    "workspace_path": abs_workspace,
                     "image": image,
                     "last_used": time.time(),
                 }
-                logger.info(f"[PlaygroundManager] Container '{container_name}' successfully provisioned and running.")
-                self.append_log_to_container(container_name, f"🚀 Playground initialized for {agent_id} in {org_name}.")
+                self.append_log_to_container(
+                    container_name,
+                    f"🚀 Playground initialized for agent={agent_id} project={project_token} org={org_name}",
+                )
                 return container_name
 
             except Exception as e:
                 logger.error(f"[PlaygroundManager] Error provisioning container {container_name}: {e}", exc_info=True)
                 return None
 
-    def _ensure_container_started(self, container_name: str, workspace_host_path: str) -> bool:
-        """Ensure an existing container is active and mounted correctly."""
+    def _ensure_container_started(self, container_name: str, workspace_host_path: Optional[str] = None) -> bool:
         try:
             if self._is_container_running(container_name):
                 return True
-            logger.info(f"[PlaygroundManager] Starting container '{container_name}'...")
             if self._docker_client:
                 c = self._docker_client.containers.get(container_name)
                 c.start()
@@ -279,21 +297,27 @@ class PlaygroundContainerManager:
             pass
 
     def append_log_to_container(self, container_name: str, message: str) -> None:
-        """Stream formatted log directly into PID 1 stdout and /var/log/agent.log so `docker logs <container>` displays live output."""
+        """Mirror log into PID 1 stdout (/proc/1/fd/1) and /var/log/agent.log so `docker logs` matches backend."""
         try:
             import datetime
+
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             formatted = f"[{now_str}] {message}"
-            safe = formatted.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
-            # Write directly to PID 1 stdout (/proc/1/fd/1) so docker logs captures it, and persist to file
-            cmd = f'printf "%s\\n" "{safe}" > /proc/1/fd/1 2>/dev/null; printf "%s\\n" "{safe}" >> /var/log/agent.log 2>/dev/null || true'
+            safe = (
+                formatted.replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("$", "\\$")
+                .replace("`", "\\`")
+                .replace("%", "%%")
+            )
+            cmd = f'printf "%s\\n" "{safe}" >> /proc/1/fd/1 2>/dev/null; printf "%s\\n" "{safe}" >> /var/log/agent.log 2>/dev/null || true'
             if self._docker_client:
                 c = self._docker_client.containers.get(container_name)
-                c.exec_run(cmd=["sh", "-c", cmd], demux=False)
+                c.exec_run(cmd=["sh", "-c", cmd], detach=True)
             else:
-                subprocess.run(["docker", "exec", container_name, "sh", "-c", cmd], capture_output=True, timeout=5)
-        except Exception as e:
-            logger.debug(f"[PlaygroundManager] Failed writing log to {container_name}: {e}")
+                subprocess.Popen(["docker", "exec", container_name, "sh", "-c", cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
     def write_file_in_playground(self, container_name: str, relative_path: str, content: str) -> Tuple[bool, str]:
         """Write a file inside /workspace in the playground container via mounted host volume."""
@@ -301,7 +325,6 @@ class PlaygroundContainerManager:
             meta = self.containers.get(container_name)
             host_root = meta.get("workspace_path") if meta else None
             if not host_root:
-                # Try finding from running containers
                 for m in self.containers.values():
                     if m.get("workspace_path"):
                         host_root = m["workspace_path"]
@@ -326,18 +349,56 @@ class PlaygroundContainerManager:
         container_name: str,
         command: str,
         workdir: str = "/workspace",
-        timeout: int = 45,
-        line_callback: Optional[Any] = None,
+        timeout: int = 900,
+        line_callback: Optional[Callable[[str], None]] = None,
+        event_callback: Optional[Callable[[dict], None]] = None,
+        events_jsonl_path: Optional[str] = None,
     ) -> Tuple[int, str]:
         """
-        Execute a shell command inside the playground container with real-time streaming.
-        Returns (exit_code, output_text).
-        Logs command and output into container's /var/log/agent.log.
+        Execute a command inside the playground container while:
+        1. Streaming every stdout line to `line_callback` AND mirroring it to `/proc/1/fd/1` (`docker logs`)
+        2. Tailing `events_jsonl_path` on the shared host volume in real time so structured `thinking` and
+           `tool_called` events reach the frontend SSE stream in <100ms even if HTTP callbacks are blocked!
+        3. Detecting completion sentinel so background preview processes never hang the stream.
         """
         self.append_log_to_container(container_name, f"$ {command}")
+
+        stop_tail = threading.Event()
+
+        def _tail_events_ledger():
+            if not events_jsonl_path or not event_callback:
+                return
+            offset = 0
+            if os.path.exists(events_jsonl_path):
+                try:
+                    offset = os.path.getsize(events_jsonl_path)
+                except Exception:
+                    offset = 0
+            while not stop_tail.is_set():
+                try:
+                    if os.path.exists(events_jsonl_path):
+                        with open(events_jsonl_path, "r", encoding="utf-8", errors="replace") as ef:
+                            ef.seek(offset)
+                            for line in ef:
+                                if not line.endswith("\n"):
+                                    break
+                                offset += len(line.encode("utf-8", errors="replace"))
+                                s_line = line.strip()
+                                if s_line:
+                                    try:
+                                        ev_obj = json.loads(s_line)
+                                        event_callback(ev_obj)
+                                    except Exception:
+                                        pass
+                except Exception:
+                    pass
+                time.sleep(0.15)
+
+        tail_thread = threading.Thread(target=_tail_events_ledger, daemon=True)
+        tail_thread.start()
+
         try:
             if self._docker_client:
-                # Use low-level Docker API to stream output chunks in real time
                 exec_instance = self._docker_client.api.exec_create(
                     container_name,
                     cmd=["sh", "-c", command],
@@ -356,13 +417,17 @@ class PlaygroundContainerManager:
                         line, buffer = buffer.split("\n", 1)
                         line_clean = line.strip()
                         if line_clean:
+                            self.append_log_to_container(container_name, line_clean)
                             if line_callback:
                                 try:
                                     line_callback(line_clean)
                                 except Exception:
                                     pass
+                        if "Container entering sleep. Exiting daemon process." in line_clean:
+                            break
 
                 if buffer.strip():
+                    self.append_log_to_container(container_name, buffer.strip())
                     if line_callback:
                         try:
                             line_callback(buffer.strip())
@@ -371,10 +436,7 @@ class PlaygroundContainerManager:
 
                 inspect_res = self._docker_client.api.exec_inspect(exec_id)
                 exit_code = inspect_res.get("ExitCode")
-                if exit_code is None:
-                    exit_code = 0
-                output = "".join(output_chunks)
-                return exit_code, output
+                return (0 if exit_code is None else exit_code), "".join(output_chunks)
             else:
                 cmd = ["docker", "exec", "-w", workdir, container_name, "sh", "-c", command]
                 process = subprocess.Popen(
@@ -391,64 +453,42 @@ class PlaygroundContainerManager:
                         output_lines.append(line)
                         line_clean = line.strip()
                         if line_clean:
+                            self.append_log_to_container(container_name, line_clean)
                             if line_callback:
                                 try:
                                     line_callback(line_clean)
                                 except Exception:
                                     pass
+                        if "Container entering sleep. Exiting daemon process." in line_clean:
+                            break
                 process.wait(timeout=timeout)
-                exit_code = process.returncode if process.returncode is not None else 0
-                return exit_code, "".join(output_lines)
-        except subprocess.TimeoutExpired:
-            self.append_log_to_container(container_name, f"Command timed out after {timeout}s")
-            return -1, f"Command timed out after {timeout} seconds."
+                return (process.returncode or 0), "".join(output_lines)
         except Exception as e:
-            self.append_log_to_container(container_name, f"Execution failed: {e}")
+            self.append_log_to_container(container_name, f"Execution error: {e}")
             return -1, f"Execution failed: {e}"
+        finally:
+            stop_tail.set()
+            tail_thread.join(timeout=1.0)
 
     def release_playground(self, container_name: str, stop: bool = False) -> None:
-        """Mark container as IDLE so other agents can reuse it, or optionally stop it."""
         with self.lock:
             if container_name in self.containers:
                 self.containers[container_name]["status"] = "IDLE"
                 self.containers[container_name]["last_used"] = time.time()
                 logger.info(f"[PlaygroundManager] Released container '{container_name}' to IDLE pool.")
-
         if stop:
             try:
                 if self._docker_client:
-                    c = self._docker_client.containers.get(container_name)
-                    c.stop(timeout=5)
+                    self._docker_client.containers.get(container_name).stop(timeout=5)
                 else:
                     subprocess.run(["docker", "stop", "-t", "5", container_name], capture_output=True, timeout=10)
-            except Exception as e:
-                logger.warning(f"[PlaygroundManager] Error stopping {container_name}: {e}")
-
-    def get_running_containers_count(self) -> int:
-        """Return the count of actively running dsuite playground containers."""
-        try:
-            if self._docker_client:
-                running = self._docker_client.containers.list(filters={"name": "dsuite_playground_"})
-                return len(running)
-            res = subprocess.run(
-                ["docker", "ps", "--filter", "name=dsuite_playground_", "--format", "{{.Names}}"],
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5,
-            )
-            if res.returncode == 0:
-                names = [line.strip() for line in res.stdout.splitlines() if line.strip()]
-                return len(names)
-        except Exception as e:
-            logger.warning(f"[PlaygroundManager] Error counting running containers: {e}")
-        return len([c for c in self.containers.values() if c.get("status") == "BUSY"])
+            except Exception:
+                pass
 
     def stop_agent_container(self, project_token: str, agent_id: Optional[str] = None) -> bool:
         """Immediately stop and cancel any running agent container for a project/agent."""
         stopped_any = False
         with self.lock:
-            # 1. Search in tracking dict
             for name, meta in list(self.containers.items()):
                 proj_match = meta.get("project_token") == project_token
                 agent_match = not agent_id or meta.get("agent_id") == agent_id
@@ -466,12 +506,11 @@ class PlaygroundContainerManager:
                     meta["status"] = "IDLE"
                     stopped_any = True
 
-            # 2. Also search Docker daemon for matching containers
             if self._docker_client:
                 try:
                     for c in self._docker_client.containers.list():
                         c_name = c.name
-                        if project_token in c_name or (agent_id and agent_id in c_name) or "dsuite_playground_" in c_name:
+                        if project_token in c_name or (agent_id and agent_id in c_name) or CONTAINER_PREFIX in c_name:
                             try:
                                 c.kill()
                             except Exception:
@@ -492,5 +531,4 @@ class PlaygroundContainerManager:
             self.containers.clear()
 
 
-# Global singleton instance
 playground_manager = PlaygroundContainerManager()

@@ -255,16 +255,22 @@ def main() -> None:
                 print(f"[AgentRuntime] 🔧 LEGACY MODE: Single task — using Orchestrator")
                 orchestrator.run()
 
-            # Boot live preview dev server upon swarm completion
-            try:
-                print("[AgentRuntime] 🚀 Booting live preview dev server on port 80...")
-                orchestrator._run_preview()
-                print(f"[AgentRuntime] ✅ Live preview ready on port 80: {state.preview_url or 'http://localhost:80'}")
-            except Exception as pe:
-                print(f"[AgentRuntime] Preview initialization note: {pe}")
+            # Boot live preview dev server ONLY if not suppressed by worker batch mode
+            if os.environ.get("SKIP_IN_CONTAINER_PREVIEW", "").lower() not in ("1", "true", "yes"):
+                try:
+                    print("[AgentRuntime] 🚀 Booting live preview dev server on port 80...")
+                    orchestrator._run_preview()
+                    print(f"[AgentRuntime] ✅ Live preview ready on port 80: {state.preview_url or 'http://localhost:80'}")
+                except Exception as pe:
+                    print(f"[AgentRuntime] Preview initialization note: {pe}")
 
             init_marker.touch(exist_ok=True)
             print(f"[AgentRuntime] Task {state.task_id} complete. Preview is live.")
+            if int(os.environ.get("IDLE_TIMEOUT_SECONDS", "30")) <= 2:
+                print("[AgentRuntime] Container entering sleep. Exiting daemon process.")
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os._exit(0)
         except Exception:
             print("[AgentRuntime] UNHANDLED EXCEPTION in agent run:")
             traceback.print_exc()

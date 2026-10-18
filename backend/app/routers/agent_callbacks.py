@@ -167,7 +167,9 @@ async def receive_agent_callback(
         # ── Durable SSE Event Broadcasting with Replay Buffer ──
         broadcaster = get_event_broadcaster()
         clean_agent_id = payload.get("agent_id") or payload.get("agent") or request.headers.get("x-agent-id")
+        event_uid = body.get("event_uid") or payload.get("event_uid")
         norm_event = {
+            "event_uid": event_uid,
             "type": event_type,
             "event_type": event_type,
             "session_id": session_id,
@@ -453,11 +455,12 @@ def _record_callback_outcome(
 async def stream_agent_events(
     request: Request,
     project_token: Optional[str] = None,
+    agent_id: Optional[str] = Query(None),
     session_id: Optional[str] = Query(None),
     last_event_id: Optional[int] = Query(None, alias="last_event_id"),
     token: Optional[str] = Query(None),
 ):
-    """Stream live events from the container agent swarm with replay support."""
+    """Stream live events strictly scoped to (project_token, agent_id) or project_token."""
     proj = (
         project_token
         or request.query_params.get("project_token")
@@ -465,6 +468,7 @@ async def stream_agent_events(
         or session_id
         or "default_project"
     )
+    target_agent = agent_id or request.query_params.get("agent_id") or request.headers.get("x-agent-id")
 
     header_last_id = request.headers.get("Last-Event-ID")
     effective_last_id = last_event_id
@@ -475,14 +479,25 @@ async def stream_agent_events(
             pass
 
     broadcaster = get_event_broadcaster()
-    queue = broadcaster.subscribe(proj)
+    channel_key = (
+        broadcaster.agent_channel(proj, target_agent)
+        if target_agent
+        else broadcaster.project_channel(proj)
+    )
+    queue = broadcaster.subscribe(channel_key)
 
     async def event_generator():
         try:
-            init_frame = json.dumps({"type": "connected", "channel": proj, "status": "online"})
+            init_frame = json.dumps({
+                "type": "connected",
+                "channel": channel_key,
+                "project_token": proj,
+                "agent_id": target_agent,
+                "status": "online",
+            })
             yield f"data: {init_frame}\n\n"
 
-            async for event in broadcaster.stream(proj, queue, last_event_id=effective_last_id):
+            async for event in broadcaster.stream(channel_key, queue, last_event_id=effective_last_id):
                 eid = event.get("_id")
                 frame_lines = []
                 if eid is not None:
@@ -493,7 +508,7 @@ async def stream_agent_events(
         except asyncio.CancelledError:
             return
         finally:
-            broadcaster.unsubscribe(proj, queue)
+            broadcaster.unsubscribe(channel_key, queue)
 
     return StreamingResponse(
         event_generator(),
@@ -512,18 +527,29 @@ async def stream_agent_events(
 async def get_buffered_agent_logs(
     request: Request,
     project_token: Optional[str] = None,
+    agent_id: Optional[str] = Query(None),
     channel: Optional[str] = Query(None),
 ):
-    """Get buffered logs for immediate instant render without waiting for SSE stream."""
-    target_channel = (
+    """Get buffered logs strictly isolated to (project_token, agent_id)."""
+    target_project = (
         project_token
         or channel
         or request.query_params.get("project_token")
         or request.headers.get("x-project-token")
         or "default_project"
     )
+    target_agent = agent_id or request.query_params.get("agent_id") or request.headers.get("x-agent-id")
+
+    settings = get_settings()
+    clean_token = target_project.replace("/", "_").replace("\\", "_")
+    workspace_dir = os.path.join(settings.project_storage_root, clean_token)
+
     broadcaster = get_event_broadcaster()
-    events = broadcaster.get_buffered_events(target_channel)
+    events = broadcaster.get_buffered_events(
+        project_token=target_project,
+        agent_id=target_agent,
+        workspace_dir=workspace_dir,
+    )
     clean_events = [{k: v for k, v in ev.items() if k != "_id"} for ev in events]
     return {"events": clean_events, "count": len(clean_events)}
 
