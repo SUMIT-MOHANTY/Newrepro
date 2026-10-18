@@ -1841,6 +1841,24 @@ class Orchestrator:
             if proj_id:
                 payload["project_id"] = proj_id
 
+        # Always write to local shared volume event ledger for instant, zero-network host sync
+        try:
+            ws_path = getattr(s, "workspace_path", "/workspace")
+            ev_file = os.path.join(ws_path, ".agent", "events.jsonl")
+            os.makedirs(os.path.dirname(ev_file), exist_ok=True)
+            with open(ev_file, "a", encoding="utf-8") as ef:
+                ev_data = {
+                    "event_type": event_type,
+                    "payload": payload,
+                    "session_id": getattr(s, "session_id", ""),
+                    "task_id": getattr(s, "task_id", ""),
+                    "project_id": getattr(s, "project_id", "") or os.environ.get("PROJECT_ID", ""),
+                    "timestamp": time.time(),
+                }
+                ef.write(json.dumps(ev_data) + "\n")
+        except Exception:
+            pass
+
         body = json.dumps({"event_type": event_type, "payload": payload}).encode()
         sig = hmac.new(s.callback_secret.encode(), body, hashlib.sha256).hexdigest()
 
@@ -1858,10 +1876,10 @@ class Orchestrator:
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
                 print(f"[Orchestrator] Event '{event_type}' posted: {resp.status}")
         except urllib.error.URLError as exc:
-            # Non-fatal: agent continues even if callback fails
-            print(f"[Orchestrator] WARNING: Could not post event '{event_type}': {exc}")
+            # Non-fatal: agent continues without stalling
+            print(f"[Orchestrator] Note: Callback post notice '{event_type}': {exc}")
         except Exception as exc:
-            print(f"[Orchestrator] WARNING: Unexpected error posting event: {exc}")
+            print(f"[Orchestrator] Note: Callback post notice: {exc}")

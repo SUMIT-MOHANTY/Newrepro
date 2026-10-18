@@ -67,6 +67,29 @@ class EventBroadcaster:
                 except asyncio.QueueFull:
                     pass
 
+    def publish_sync(self, channel_key: str, event: dict[str, Any]) -> None:
+        """Synchronously push an event to replay buffer and live subscribers."""
+        if not channel_key:
+            return
+
+        event_id = next(_event_id_counter)
+        stamped = {**event, "_id": event_id}
+        self._replay_buffers[channel_key].append((event_id, stamped))
+
+        for queue in list(self._subscribers.get(channel_key, [])):
+            try:
+                queue.put_nowait(stamped)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(stamped)
+                except asyncio.QueueFull:
+                    pass
+
+
     async def stream(
         self,
         channel_key: str,

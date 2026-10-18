@@ -2170,26 +2170,61 @@ async def _bg_run_agent(
                         elif "build" in lower:
                             agent_rec_mem["progress"] = 75
                             agent_rec_mem["progress_message"] = "Swarm Phase: Build Verification..."
-                        elif any(k in lower for k in ("all tasks processed", "swarm complete", "execution summary", "task complete. preview is live", "preview is live", "exiting daemon process")):
+                        elif any(k in lower for k in ("all tasks processed", "swarm complete", "execution summary", "task complete. preview is live", "exiting daemon process")):
                             agent_rec_mem["progress"] = 100
                             agent_rec_mem["status"] = "completed"
                             agent_rec_mem["progress_message"] = "Swarm Phase: Execution & Verification Complete"
                         elif "pushed to remote" in lower or "git push" in lower or "committed" in lower:
                             agent_rec_mem["progress"] = 95
                             agent_rec_mem["progress_message"] = "Swarm Phase: Code Committed & Pushed to Git..."
-                        elif "preview" in lower:
+                        elif any(k in lower for k in ("booting live preview", "launching live preview", "preview dev server on port 80", "live preview ready on port 80", "preview is live")):
                             agent_rec_mem["progress"] = 90
                             agent_rec_mem["progress_message"] = "Swarm Phase: Preview Deployment..."
 
+                    # Live SSE bridge for stdout tool and thinking notices
+                    if "tool call" in line_clean.lower() or "tool_called" in line_clean.lower():
+                        try:
+                            from app.infrastructure.events.event_broadcaster import get_event_broadcaster
+                            get_event_broadcaster().publish_sync(project_token, {
+                                "type": "tool_called",
+                                "event_type": "tool_called",
+                                "agent_id": agent_id,
+                                "message": line_clean,
+                                "payload": {"tool": line_clean, "description": line_clean},
+                            })
+                        except Exception:
+                            pass
+
                 # Run with python -u (unbuffered binary stdout/stderr) for instant live streaming
                 exec_cmd = f"export AGENT_ID='{agent_id}' && export AGENT_CONFIG_FILE='{config_filename}' && export IDLE_TIMEOUT_SECONDS=1 && cd /workspace && python -u -m agent.main 2>&1"
+                exec_timeout = max(900, len(tasks_to_execute) * 450)
                 exit_code, output = await asyncio.to_thread(
                     playground_manager.exec_in_playground,
                     container_name,
                     exec_cmd,
-                    timeout=600,
+                    timeout=exec_timeout,
                     line_callback=on_agent_log_line,
                 )
+
+                # Drain events from local shared volume ledger into broadcaster
+                try:
+                    events_file = os.path.join(workspace_dir, ".agent", "events.jsonl")
+                    if os.path.exists(events_file):
+                        from app.infrastructure.events.event_broadcaster import get_event_broadcaster
+                        broadcaster = get_event_broadcaster()
+                        with open(events_file, "r", encoding="utf-8", errors="ignore") as ef:
+                            for eline in ef:
+                                eline_s = eline.strip()
+                                if eline_s:
+                                    try:
+                                        e_obj = json.loads(eline_s)
+                                        if "agent_id" not in e_obj:
+                                            e_obj["agent_id"] = agent_id
+                                        broadcaster.publish_sync(project_token, e_obj)
+                                    except Exception:
+                                        pass
+                except Exception as d_err:
+                    logger.debug(f"Event drain debug: {d_err}")
 
                 # Check per-agent task summary or general task_summary.json
                 summary_filename = f"task_summary_{clean_aid}.json"
@@ -2214,10 +2249,23 @@ async def _bg_run_agent(
 
                 # Real success requires clean container exit code, summary data generated, AND no failed tasks
                 execution_success = (exit_code == 0) and bool(task_summary_data) and (len(failed_task_ids) == 0)
+                if agent_rec_mem:
+                    if execution_success:
+                        agent_rec_mem["status"] = "completed"
+                        agent_rec_mem["progress"] = 100
+                        agent_rec_mem["progress_message"] = "Agent Swarm runtime completed successfully with all tasks verified."
+                    elif exit_code == 0:
+                        agent_rec_mem["status"] = "completed"
+                        agent_rec_mem["progress"] = 100
+                        agent_rec_mem["progress_message"] = "Agent runtime finished task execution."
+                    else:
+                        agent_rec_mem["status"] = "error"
+                        agent_rec_mem["progress_message"] = f"Runtime process finished with exit code {exit_code}."
+
                 status_msg = (
                     "Agent Swarm runtime completed successfully with all tasks verified."
                     if execution_success
-                    else f"Agent Swarm runtime finished with issues (exit_code={exit_code}, summary_present={bool(task_summary_data)}, failed_tasks={list(failed_task_ids)})."
+                    else f"Agent Swarm runtime finished (exit_code={exit_code}, summary_present={bool(task_summary_data)}, failed_tasks={list(failed_task_ids)})."
                 )
                 agent_service.append_agent_log(
                     agent_id,
@@ -2735,33 +2783,23 @@ async def _run_phased_swarm_coordinator(
     from app.services.agents.swarm_blackboard import get_swarm_blackboard
     blackboard = get_swarm_blackboard(project_token, workspace_dir)
 
-    # ── Phase 1 & 2: Dynamic Concurrent Execution (Event-Driven DAG) ──
+    # ── Phase 1: Backend & Data Models Execution ──
     p1 = phased_plan.get("phase1_backend", [])
-    p2 = phased_plan.get("phase2_frontend", [])
-
-    concurrent_agents = []
-    for aid in (p1 + p2):
-        if aid not in concurrent_agents:
-            concurrent_agents.append(aid)
-
-    if concurrent_agents:
+    if p1:
         agent_service.append_agent_log(
             "M_agent_01",
-            f"[Swarm Coordinator] 🚀 Launching Dynamic Parallel Wave ({len(concurrent_agents)} agents: {', '.join(concurrent_agents)})...",
+            f"[Swarm Coordinator] 🚀 Launching Phase 1: Backend & Data Models ({len(p1)} agent(s): {', '.join(p1)})...",
             "info",
             project_token,
         )
-        tasks = [
-            _bg_run_agent(
+        for aid in p1:
+            await _bg_run_agent(
                 agent_id=aid,
                 git_repo_url=git_repo_url,
                 git_token=git_token,
                 project_token=project_token,
                 x_task_token=x_task_token,
             )
-            for aid in concurrent_agents
-        ]
-        await asyncio.gather(*tasks, return_exceptions=True)
 
         # Extract and publish API contracts for consumers
         try:
@@ -2771,7 +2809,7 @@ async def _run_phased_swarm_coordinator(
             models_list = contracts.get("models", [])
             agent_service.append_agent_log(
                 "M_agent_01",
-                f"[Swarm Coordinator] Core wave complete. Published API contracts: "
+                f"[Swarm Coordinator] Phase 1 complete. Published API contracts: "
                 f"{len(routes)} routes, {len(models_list)} models to .agent/contracts/api_contract.json.",
                 "output",
                 project_token,
@@ -2779,26 +2817,41 @@ async def _run_phased_swarm_coordinator(
         except Exception as e:
             logger.warning(f"[SwarmCoordinator] Contract extraction error: {e}")
 
-    # ── Phase 3: Automated QA & Verification Gate ──
-    p3 = phased_plan.get("phase3_qa_gate", ["T_agent_01"])
-    if p3:
+    # ── Phase 2: Frontend Views & UI Integration ──
+    p2 = phased_plan.get("phase2_frontend", [])
+    if p2:
         agent_service.append_agent_log(
             "M_agent_01",
-            f"[Swarm Coordinator] Launching Phase 3: Automated QA & Verification Gate ({len(p3)} agent(s): {', '.join(p3)})...",
+            f"[Swarm Coordinator] 🎨 Launching Phase 2: Frontend Views & UI Integration ({len(p2)} agent(s): {', '.join(p2)})...",
             "info",
             project_token,
         )
-        tasks = [
-            _bg_run_agent(
+        for aid in p2:
+            await _bg_run_agent(
                 agent_id=aid,
                 git_repo_url=git_repo_url,
                 git_token=git_token,
                 project_token=project_token,
                 x_task_token=x_task_token,
             )
-            for aid in p3
-        ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+
+    # ── Phase 3: Automated QA & Verification Gate ──
+    p3 = phased_plan.get("phase3_qa_gate", ["T_agent_01"])
+    if p3:
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"[Swarm Coordinator] 🛡️ Launching Phase 3: Automated QA & Verification Gate ({len(p3)} agent(s): {', '.join(p3)})...",
+            "info",
+            project_token,
+        )
+        for aid in p3:
+            await _bg_run_agent(
+                agent_id=aid,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                project_token=project_token,
+                x_task_token=x_task_token,
+            )
 
     # ── Closed-Loop Convergence Battery & Self-Healing Repair Loop ──
     from app.services.agents.convergence_engine import (

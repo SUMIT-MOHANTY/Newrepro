@@ -179,6 +179,8 @@ class PlaygroundContainerManager:
                 ports_dict = {"80/tcp": ("0.0.0.0", 8085)} if preview_port_free else None
                 cli_port_args = ["-p", "8085:80"] if preview_port_free else []
 
+                extra_hosts = {"host.docker.internal": "host-gateway"}
+
                 if self._docker_client:
                     c = self._docker_client.containers.run(
                         image=image,
@@ -186,6 +188,7 @@ class PlaygroundContainerManager:
                         detach=True,
                         volumes=vols,
                         ports=ports_dict,
+                        extra_hosts=extra_hosts,
                         working_dir="/workspace",
                         entrypoint="/bin/sh",
                         command=["-c", "mkdir -p /var/log && printf '[Playground Container Online] Ready for Agent Swarm execution.\\n' > /proc/1/fd/1; tail -f /dev/null"],
@@ -203,6 +206,7 @@ class PlaygroundContainerManager:
                     cmd = [
                         "docker", "run", "-d",
                         "--name", container_name,
+                        "--add-host", "host.docker.internal:host-gateway",
                         "-v", f"{os.path.abspath(workspace_host_path)}:/workspace",
                     ]
                     if cli_port_args:

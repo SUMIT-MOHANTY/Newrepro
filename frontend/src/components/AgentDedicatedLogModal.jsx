@@ -214,7 +214,7 @@ function isEventForAgent(ev, agent) {
 }
 
 /**
- * Normalize an event or raw static log into Image 1 step item
+ * Normalize an event into Image 1 step item
  */
 function normalizeEvent(item) {
   if (!item) return null;
@@ -276,28 +276,44 @@ function normalizeEvent(item) {
 
   // Parse raw text string / static log line
   const rawMsg = typeof item === 'string' ? item : (item.message || item.content || '');
+  const clean = rawMsg.trim();
   const time = item.time || item.timestamp;
 
-  if (rawMsg.startsWith('Thinking:') || rawMsg.includes('[Thinking]') || rawMsg.startsWith('Thought for')) {
+  // 1. Thinking / Reasoning
+  if (clean.startsWith('Thinking:') || clean.includes('[Thinking]') || clean.startsWith('Thought for') || clean.includes('[AI Output Content]:')) {
+    const thoughtText = clean.replace(/.*(\[AI Output Content\]:|Thinking:|\[Thinking\])\s*/, '');
     return {
       id: Math.random().toString(),
       kind: 'thinking',
-      text: rawMsg.replace(/^(Thinking:\s*|\[Thinking\]\s*)/, ''),
+      text: thoughtText || clean,
       time,
     };
   }
 
-  if (rawMsg.includes('tool_called') || rawMsg.includes('Tool called:') || rawMsg.includes('[SingleFileGen Tool]') || rawMsg.startsWith('Writing') || rawMsg.startsWith('Editing')) {
+  // 2. Tool invocation
+  if (clean.includes('[Tool Call]') || clean.startsWith('tool_called') || clean.includes('Tool called:') || clean.includes('[SingleFileGen Tool]') || clean.includes('[MCP] SUCCEEDED') || clean.includes('[MCP] EXECUTING')) {
+    let toolName = 'tool_called';
+    let toolDesc = clean;
+    const toolCallMatch = clean.match(/\[Tool Call\]\s*([a-zA-Z0-9_-]+)(\([^)]*\))?/);
+    if (toolCallMatch) {
+      toolName = toolCallMatch[1];
+      toolDesc = toolCallMatch[2] ? toolCallMatch[2].slice(1, -1) : toolName;
+    } else if (clean.includes('|')) {
+      const parts = clean.split('|');
+      toolName = (parts[1] || 'tool_called').trim();
+      toolDesc = (parts[2] || '').trim();
+    }
     return {
       id: Math.random().toString(),
       kind: 'tool',
-      label: 'tool_called',
-      desc: rawMsg,
+      label: toolName,
+      desc: toolDesc,
       time,
     };
   }
 
-  if (rawMsg.includes('files_changed') || rawMsg.includes('files committed') || rawMsg.includes('Generated file')) {
+  // 3. Files changed
+  if (clean === 'files_changed' || clean.startsWith('files_changed') || clean.includes('files committed') || clean.includes('Generated file')) {
     return {
       id: Math.random().toString(),
       kind: 'files',
@@ -306,21 +322,122 @@ function normalizeEvent(item) {
     };
   }
 
-  if (rawMsg.includes('llm_call_completed') || rawMsg.includes('LLM turn completed') || rawMsg.includes('Preparing prompt')) {
+  // 4. Genuine Milestone Checkmarks
+  if (
+    clean === 'llm_call_completed' ||
+    clean.startsWith('task_completed') ||
+    clean.includes('Syntax check PASSED') ||
+    clean.includes('Agent Swarm runtime completed successfully')
+  ) {
     return {
       id: Math.random().toString(),
       kind: 'check',
-      label: 'llm_call_completed',
+      label: clean,
       time,
     };
   }
 
+  // 5. Error
+  if (
+    item.type === 'error' ||
+    item.level === 'error' ||
+    clean.toLowerCase().startsWith('error:') ||
+    clean.includes('timed out') ||
+    clean.includes('[ERROR]') ||
+    clean.includes('🛑 [Progress Guard]')
+  ) {
+    return {
+      id: Math.random().toString(),
+      kind: 'error',
+      label: clean,
+      time,
+    };
+  }
+
+  // 6. Normal plain terminal log line (NO green checkmark)
   return {
     id: Math.random().toString(),
-    kind: item.type === 'error' || rawMsg.toLowerCase().includes('error') ? 'error' : 'check',
+    kind: 'log',
     label: rawMsg,
     time,
   };
+}
+
+/**
+ * Parses static log lines, aggregating multi-line AI thoughts into structured thinking blocks
+ */
+function parseStaticLogs(lines) {
+  if (!lines || !Array.isArray(lines)) return [];
+  const results = [];
+  let currentThinking = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const text = typeof raw === 'string' ? raw : (raw.message || raw.content || '');
+    const clean = text.trim();
+    if (!clean) continue;
+
+    // Check if line starts an AI reasoning block
+    if (clean.includes('[AI Output Content]:')) {
+      if (currentThinking && currentThinking.text.length > 0) {
+        results.push({
+          ...currentThinking,
+          text: currentThinking.text.join('\n').trim(),
+        });
+      }
+      const initialThought = clean.replace(/.*\[AI Output Content\]:\s*/, '').trim();
+      currentThinking = {
+        id: `thinking-${i}`,
+        kind: 'thinking',
+        text: initialThought ? [initialThought] : [],
+        time: raw.timestamp || raw.time,
+      };
+      continue;
+    }
+
+    if (currentThinking) {
+      if (
+        clean.includes('[Tool Call]') ||
+        clean.startsWith('tool_called') ||
+        clean.includes('DSML') ||
+        clean.includes('llm_call_completed') ||
+        clean.includes('[Token Usage]') ||
+        clean.includes('[Token Accumulator]') ||
+        clean.startsWith('•') ||
+        clean.startsWith('[Orchestrator]')
+      ) {
+        if (currentThinking.text.length > 0) {
+          results.push({
+            ...currentThinking,
+            text: currentThinking.text.join('\n').trim(),
+          });
+        }
+        currentThinking = null;
+      } else {
+        currentThinking.text.push(text);
+        continue;
+      }
+    }
+
+    // Skip DSML tags and token accumulators from cluttering the clean UI
+    if (clean.startsWith('DSML') || clean.includes('[Token Accumulator]') || clean.includes('[Token Usage]')) {
+      continue;
+    }
+
+    const norm = normalizeEvent(raw);
+    if (norm) {
+      results.push(norm);
+    }
+  }
+
+  if (currentThinking && currentThinking.text.length > 0) {
+    results.push({
+      ...currentThinking,
+      text: currentThinking.text.join('\n').trim(),
+    });
+  }
+
+  return results;
 }
 
 /**
@@ -401,7 +518,7 @@ export default function AgentDedicatedLogModal({
 
     // 2. Fall back to agent's own static output_log if available
     if (initialStaticLogs && initialStaticLogs.length > 0) {
-      return initialStaticLogs.map(normalizeEvent).filter(Boolean);
+      return parseStaticLogs(initialStaticLogs);
     }
 
     return [];
@@ -569,9 +686,9 @@ export default function AgentDedicatedLogModal({
                 );
               }
 
-              // 5. Normal log line fallback
+              // 5. Normal log line fallback (clean monospace terminal log)
               return (
-                <div key={step.id || idx} className="text-slate-600 dark:text-slate-400 font-mono text-xs py-0.5 pl-5">
+                <div key={step.id || idx} className="text-slate-500 dark:text-slate-400 font-mono text-xs py-0.5 pl-6 select-text leading-relaxed">
                   {step.label}
                 </div>
               );
