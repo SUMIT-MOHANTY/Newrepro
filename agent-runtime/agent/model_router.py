@@ -25,27 +25,46 @@ class ModelConfig:
     provider: str          # "anthropic"
     model: str             # e.g. "claude-sonnet-4-5" or "claude-3-7-sonnet-20250219"
     api_key: str | None
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     temperature: float = 0.2
     supports_tool_use: bool = True  # True for Anthropic Claude models
+    _api_url: str | None = None
+
+    @property
+    def api_url(self) -> str:
+        """Required by checklist_generator.py and external callers."""
+        return (
+            self._api_url
+            or os.environ.get("AI_API_URL")
+            or "https://brn-llama.bourntec.com/api/process"
+        )
 
     @property
     def is_claude(self) -> bool:
         """Check if this model is a Claude model that supports native tool-use."""
-        return self.provider == "anthropic" and self.supports_tool_use
+        return "claude" in (self.model or "").lower() or self.provider == "anthropic"
 
 
 class ModelRouter:
-    """Routes task types to the appropriate model config for Anthropic Claude."""
+    """Routes task types to the appropriate model config across Claude, DeepSeek, and Kimi."""
 
     def __init__(self, model: str | None = None) -> None:
-        self._api_key: str | None = os.environ.get("ANTHROPIC_API_KEY")
-        self._model: str = model or os.environ.get("MODEL_NAME", "kimi")
-        self._provider: str = os.environ.get("MODEL_PROVIDER", "moonshot")
+        self._api_key: str | None = (
+            os.environ.get("AI_API_KEY")
+            or os.environ.get("ANTHROPIC_API_KEY")
+        )
+        self._api_url: str = (
+            os.environ.get("AI_API_URL")
+            or "https://brn-llama.bourntec.com/api/process"
+        )
+        self._model: str = model or os.environ.get("MODEL_NAME") or os.environ.get("AI_MODEL", "claude")
+        self._provider: str = os.environ.get("MODEL_PROVIDER", "anthropic")
         self._tool_use_enabled: bool = os.environ.get("TOOL_USE_ENABLED", "true").lower() == "true"
 
-        print(f"[ModelRouter] Model: {self._model} | Provider: {self._provider} | "
-              f"Tool-use: {self._tool_use_enabled}")
+        print(
+            f"[ModelRouter] Model: {self._model} | Provider: {self._provider} | "
+            f"Tool-use: {self._tool_use_enabled}"
+        )
 
     def set_model(self, model: str) -> None:
         """Dynamically switch the active model (e.g. on follow-up prompt or model selector change)."""
@@ -58,41 +77,30 @@ class ModelRouter:
     @property
     def supports_tool_use(self) -> bool:
         """Whether the current model supports tool-use API."""
-        return (self._provider in ("anthropic", "moonshot") or self._model in ("kimi", "claude")) and self._tool_use_enabled
+        return self._tool_use_enabled
 
     def route(self, task_type: TaskType = TaskType.general, model: str | None = None) -> ModelConfig:
-        """Return the ModelConfig for the given task type.
-
-        ``model`` overrides the startup MODEL_NAME so a model switch on a
-        follow-up actually changes which engine the subsequent calls use.
-        The caller is responsible for passing the session's current model
-        (state.model_name).
-        """
+        """Return the ModelConfig for the given task type."""
+        active_model = (model or self._model).lower()
         temperature = {
-            TaskType.planning: 0.3,
-            TaskType.coding: 0.15,
+            TaskType.planning: 0.25,
+            TaskType.coding: 0.1,
             TaskType.reviewing: 0.1,
             TaskType.build_fix: 0.1,
             TaskType.general: 0.2,
-        }.get(task_type, 0.2)
+        }.get(task_type, 0.15)
 
-        # Higher token limits for tool-use mode (more back-and-forth)
-        if self.supports_tool_use:
-            max_tokens = {
-                TaskType.planning: 8192,
-                TaskType.coding: 16384,
-                TaskType.reviewing: 4096,
-                TaskType.build_fix: 8192,
-                TaskType.general: 8192,
-            }.get(task_type, 8192)
-        else:
-            max_tokens = {
-                TaskType.planning: 4096,
-                TaskType.coding: 8192,
-                TaskType.reviewing: 2048,
-                TaskType.build_fix: 4096,
-                TaskType.general: 4096,
-            }.get(task_type, 4096)
+        # Model-aware output token ceiling (prevents truncation while respecting provider limits)
+        is_deepseek = "deepseek" in active_model
+        default_coding_max = 8192 if is_deepseek else 16384
+
+        max_tokens = {
+            TaskType.planning: 8192,
+            TaskType.coding: default_coding_max,
+            TaskType.reviewing: 4096,
+            TaskType.build_fix: 8192,
+            TaskType.general: 8192,
+        }.get(task_type, 8192)
 
         env_max = os.environ.get("MAX_OUTPUT_TOKENS") or os.environ.get("AI_MAX_TOKENS")
         if env_max and env_max.isdigit():
@@ -105,4 +113,5 @@ class ModelRouter:
             max_tokens=max_tokens,
             temperature=temperature,
             supports_tool_use=self.supports_tool_use,
+            _api_url=self._api_url,
         )

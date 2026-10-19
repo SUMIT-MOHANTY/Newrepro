@@ -16,7 +16,7 @@ class EventBroadcaster:
     """Singleton in-memory broadcaster for SSE agent events with replay & disk persistence."""
 
     def __init__(self) -> None:
-        self._subscribers: dict[str, list[asyncio.Queue]] = defaultdict(list)
+        self._subscribers: dict[str, list[tuple[asyncio.Queue, Optional[asyncio.AbstractEventLoop]]]] = defaultdict(list)
         self._replay_buffers: dict[str, deque[tuple[int, dict]]] = defaultdict(
             lambda: deque(maxlen=600)
         )
@@ -36,16 +36,52 @@ class EventBroadcaster:
         return f"agent:{clean_pt}:{base_aid}"
 
     def subscribe(self, channel_key: str) -> asyncio.Queue:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
         queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
-        self._subscribers[channel_key].append(queue)
+        self._subscribers[channel_key].append((queue, loop))
         return queue
 
     def unsubscribe(self, channel_key: str, queue: asyncio.Queue) -> None:
-        queues = self._subscribers.get(channel_key, [])
-        if queue in queues:
-            queues.remove(queue)
-        if not queues:
+        pairs = self._subscribers.get(channel_key, [])
+        self._subscribers[channel_key] = [p for p in pairs if p[0] is not queue]
+        if not self._subscribers[channel_key]:
             self._subscribers.pop(channel_key, None)
+
+    def _enqueue_to_queue(
+        self,
+        queue: asyncio.Queue,
+        loop: Optional[asyncio.AbstractEventLoop],
+        item: dict[str, Any],
+    ) -> None:
+        def _do_put():
+            try:
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except (asyncio.QueueEmpty, Exception):
+                        pass
+                queue.put_nowait(item)
+            except Exception:
+                pass
+
+        if loop and not loop.is_closed():
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+
+            if current_loop is loop:
+                _do_put()
+            else:
+                try:
+                    loop.call_soon_threadsafe(_do_put)
+                except RuntimeError:
+                    pass
+        else:
+            _do_put()
 
     def _enqueue(self, channel_key: str, event: dict[str, Any]) -> Optional[dict[str, Any]]:
         if not channel_key:
@@ -62,18 +98,8 @@ class EventBroadcaster:
         stamped = {**event, "_id": event_id}
         self._replay_buffers[channel_key].append((event_id, stamped))
 
-        for queue in list(self._subscribers.get(channel_key, [])):
-            try:
-                queue.put_nowait(stamped)
-            except asyncio.QueueFull:
-                try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    pass
-                try:
-                    queue.put_nowait(stamped)
-                except asyncio.QueueFull:
-                    pass
+        for queue, loop in list(self._subscribers.get(channel_key, [])):
+            self._enqueue_to_queue(queue, loop, stamped)
         return stamped
 
     async def publish(self, channel_key: str, event: dict[str, Any]) -> None:

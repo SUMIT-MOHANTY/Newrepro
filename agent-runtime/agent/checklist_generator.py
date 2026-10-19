@@ -175,24 +175,17 @@ async def generate_task_checklist(
     
     # Get LLM config
     config = model_router.route(TaskType.planning)
-    llm_client = LLMClient(
-        model=config.model,
-        api_key=config.api_key,
-        api_url=config.api_url,
-        max_tokens=2000,
-        temperature=0.3,  # Lower temperature for structured output
-    )
+    llm_client = LLMClient(config=config)
     
     try:
-        response = await llm_client.complete(
+        response = llm_client.complete(
+            system=_get_system_prompt(lane),
             messages=[
-                {"role": "system", "content": _get_system_prompt(lane)},
                 {"role": "user", "content": prompt},
             ],
-            timeout=30.0,
         )
         
-        # Parse checklist from response
+        # Parse checklist from response (supports LLMResponse or raw string)
         checklist = _parse_checklist_response(response)
         
         if not checklist:
@@ -296,8 +289,12 @@ Focus on the {lane} lane responsibilities:
 Break this down into 5-10 actionable steps."""
 
 
-def _parse_checklist_response(response: str) -> List[Dict[str, Any]]:
+def _parse_checklist_response(response: Any) -> List[Dict[str, Any]]:
     """Parse LLM response into checklist items."""
+    if hasattr(response, "content"):
+        response = response.content
+    if not isinstance(response, str):
+        response = str(response or "")
     
     # Clean response - remove markdown fences
     response_clean = response.strip()
@@ -381,7 +378,8 @@ def build_tracker_tasks(
         if f
     ]
     tracker_tasks: List[Dict[str, Any]] = []
-    for idx, item in enumerate(checklist or [], start=1):
+    task_idx = 1
+    for item in checklist or []:
         if isinstance(item, dict):
             text = str(item.get("text", "")).strip()
         else:
@@ -389,24 +387,47 @@ def build_tracker_tasks(
         if not text:
             continue
 
-        file_path = ""
+        candidates: List[str] = []
         for candidate in _FILE_RE.findall(text):
             cand = candidate.replace("\\", "/").lstrip("/")
             if not cand or len(cand) < 4:
                 continue
-            # Prefer candidates that map to a known involved file.
-            if any(k == cand or k in cand or cand.endswith(k) for k in known_files):
-                file_path = cand
-                break
-            if not file_path:
-                file_path = cand
-        tracker_tasks.append({
-            "task_id": idx,
-            "action": "edit" if file_path else "step",
-            "file": file_path,
-            "description": text,
-            "guideline": not file_path,
-        })
+            if cand not in candidates:
+                candidates.append(cand)
+
+        # Sort candidate files so known_files come first if any
+        if candidates and known_files:
+            candidates.sort(key=lambda c: 0 if any(k == c or k in c or c.endswith(k) for k in known_files) else 1)
+
+        if not candidates:
+            tracker_tasks.append({
+                "task_id": task_idx,
+                "action": "step",
+                "file": "",
+                "description": text,
+                "guideline": True,
+            })
+            task_idx += 1
+        elif len(candidates) == 1:
+            tracker_tasks.append({
+                "task_id": task_idx,
+                "action": "edit",
+                "file": candidates[0],
+                "description": text,
+                "guideline": False,
+            })
+            task_idx += 1
+        else:
+            # Multi-file checklist step: emit an atomic task per file so no file is dropped
+            for c_file in candidates:
+                tracker_tasks.append({
+                    "task_id": task_idx,
+                    "action": "edit",
+                    "file": c_file,
+                    "description": f"{text} (target file: {c_file})",
+                    "guideline": False,
+                })
+                task_idx += 1
     return tracker_tasks
 
 

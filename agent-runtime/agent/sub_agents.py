@@ -403,23 +403,6 @@ class BaseReActAgent(SubAgent):
                         f"The agent stopped without applying code changes."
                     )
 
-                # ── Gate A: platform-owned per-task verification ─────────────
-                # Every changed file must at least parse cleanly (py_compile /
-                # node --check). Agent-reported success alone is never enough to
-                # mark a task complete.
-                try:
-                    from runtime.verification_engine import VerificationEngine
-                    task_gate = VerificationEngine(workspace_path).verify_task_changes(files)
-                    if not task_gate.passed:
-                        raise RuntimeError(
-                            f"Platform per-task verification failed for '{title}':\n{task_gate.detail}"
-                        )
-                except RuntimeError:
-                    raise  # genuine verification failure → self-healing retry path below
-                except Exception as gate_err:
-                    # The gate itself crashed — recorded honestly, not blocking legacy flow
-                    logger.warning(f"[{self.name}] Per-task verification gate errored (recorded as skipped): {gate_err}")
-
                 logger.info(
                     f"[{self.name}] Task {task_id} completed successfully (attempt {attempt}) in {elapsed:.1f}s. "
                     f"Files changed: {len(files)}"

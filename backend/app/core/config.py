@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     # Agent Runtime & Docker Sandbox Settings
     agent_runtime_image: str = "dsuite-agent-runtime:latest"
     project_storage_root: str = os.path.abspath(os.path.join(BASE_DIR, "storage", "projects"))
-    agent_callback_url: str = "http://host.docker.internal:8000/api/v1"
+    agent_callback_url: str = "http://host.docker.internal:8000/api"
     agent_callback_secret: str = "dsuite-agent-callback-secret"
     agent_container_memory_limit: str = "2g"
     agent_container_cpu_quota: int = 200000

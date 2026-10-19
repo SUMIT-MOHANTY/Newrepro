@@ -168,40 +168,41 @@ class FileManifest:
         self.track_file(path, content, iteration)
     
     def _extract_summary(self, path: str, content: Any) -> str:
-        """Extract key structural info from file content (exports, component names)."""
+        """Extract polyglot structural symbols (Python classes/defs/routes + JS/TS exports/props)."""
         if not isinstance(content, str):
-            if isinstance(content, dict):
-                content = content.get("content") or content.get("code") or json.dumps(content)
-            else:
-                content = str(content or "")
+            content = json.dumps(content) if isinstance(content, dict) else str(content or "")
         parts = []
-        
-        # Extract exports
-        exports = re.findall(
-            r'export\s+(?:default\s+)?(?:function|const|class)\s+(\w+)',
-            content
-        )
-        if exports:
-            parts.append(f"exports: {', '.join(exports)}")
-        
-        # Extract imports (just the module names)
-        imports = re.findall(r"import\s+.*?from\s+['\"]([^'\"]+)['\"]", content)
-        if imports:
-            unique_imports = list(dict.fromkeys(imports))  # dedupe, preserve order
-            parts.append(f"imports: {', '.join(unique_imports[:6])}")
-        
-        # For mockData files, extract top-level export names
-        if "mockData" in path or "mock" in path.lower():
-            mock_exports = re.findall(r'export\s+const\s+(\w+)', content)
-            if mock_exports:
-                parts.append(f"mock exports: {', '.join(mock_exports[:10])}")
-        
-        # For component files, extract prop interface
-        if ".jsx" in path or ".tsx" in path:
-            props_match = re.search(r'(?:function|const)\s+(\w+)\s*=\s*\(\s*\{([^}]+)\}', content)
-            if props_match:
-                parts.append(f"props: {props_match.group(2).strip()[:100]}")
-        
+
+        if path.endswith(".py"):
+            classes = re.findall(r"^class\s+(\w+)", content, flags=re.MULTILINE)
+            funcs = re.findall(r"^(?:async\s+)?def\s+([a-zA-Z_]\w*)", content, flags=re.MULTILINE)
+            funcs = [f for f in funcs if not f.startswith("__")]
+            routes = re.findall(r"@\w+\.(?:get|post|put|patch|delete)\(\s*['\"]([^'\"]+)['\"]", content)
+            if classes:
+                parts.append(f"classes: {', '.join(classes[:8])}")
+            if funcs:
+                parts.append(f"defs: {', '.join(funcs[:8])}")
+            if routes:
+                parts.append(f"routes: {', '.join(routes[:6])}")
+        else:
+            exports = re.findall(
+                r"export\s+(?:default\s+)?(?:async\s+)?(?:function|const|class|interface|type)\s+(\w+)",
+                content,
+            )
+            if exports:
+                parts.append(f"exports: {', '.join(dict.fromkeys(exports)[:10])}")
+            imports = re.findall(r"import\s+.*?from\s+['\"]([^'\"]+)['\"]", content)
+            if imports:
+                parts.append(f"imports: {', '.join(list(dict.fromkeys(imports))[:6])}")
+            if "mockData" in path or "mock" in path.lower():
+                mock_exports = re.findall(r'export\s+const\s+(\w+)', content)
+                if mock_exports:
+                    parts.append(f"mock exports: {', '.join(mock_exports[:10])}")
+            if ".jsx" in path or ".tsx" in path:
+                props_match = re.search(r"(?:function|const)\s+(\w+)\s*=\s*\(\s*\{([^}]+)\}", content)
+                if props_match:
+                    parts.append(f"props: {props_match.group(2).strip()[:100]}")
+
         return "; ".join(parts) if parts else f"{len(content)} chars"
 
     def scan_workspace(self, workspace_path: str) -> None:
@@ -447,10 +448,11 @@ class TaskChecklistTracker:
         ):
             self.active_task_index += 1
 
-        # Clear inspected-files cache when task advances to prevent stale context bleed
-        if self.active_task_index != prev_index and clear_cache_callback:
-            clear_cache_callback()
-            log(f"🧹 [Task Tracker] Cleared inspected-files cache on task advance ({prev_index} -> {self.active_task_index}).")
+        # DO NOT wipe the inspected-files cache on subtask advance!
+        # Sibling subtasks in the same module share models/configs/schemas.
+        # The LRU token-budget manager in run_tool_loop automatically trims old files if >35% window.
+        if self.active_task_index != prev_index:
+            log(f"➡️ [Task Tracker] Advanced task pointer ({prev_index} -> {self.active_task_index}) while preserving LRU read cache.")
 
     def mark_verification_completed(self, clear_cache_callback: "Callable[[], None] | None" = None) -> None:
         """Mark build verification task as completed."""
@@ -459,16 +461,15 @@ class TaskChecklistTracker:
             if t.get("action") == "verify" or "build" in t.get("file", "").lower():
                 tid = t.get("task_id", idx + 1)
                 self.completed_task_ids.add(tid)
-                log(f"âœ… [Task Tracker] Verification Task {tid} COMPLETED.")
+                log(f"✅ [Task Tracker] Verification Task {tid} COMPLETED.")
         # Advance index
         while (
             self.active_task_index < len(self.tasks)
             and self.tasks[self.active_task_index].get("task_id", self.active_task_index + 1) in self.completed_task_ids
         ):
             self.active_task_index += 1
-        if self.active_task_index != prev_index and clear_cache_callback:
-            clear_cache_callback()
-            log(f"ðŸ§¹ [Task Tracker] Cleared inspected-files cache on verify advance ({prev_index} -> {self.active_task_index}).")
+        if self.active_task_index != prev_index:
+            log(f"➡️ [Task Tracker] Advanced task pointer on verification ({prev_index} -> {self.active_task_index}) while preserving LRU read cache.")
 
     def mark_install_completed(self, clear_cache_callback: "Callable[[], None] | None" = None) -> None:
         """Mark install task as completed and advance to next."""
@@ -484,11 +485,8 @@ class TaskChecklistTracker:
             and self.tasks[self.active_task_index].get("task_id", self.active_task_index + 1) in self.completed_task_ids
         ):
             self.active_task_index += 1
-        # Clear inspected-files cache whenever task advances so the AI cannot
-        # confuse content from a previous task as the current task's context
-        if self.active_task_index != prev_index and clear_cache_callback:
-            clear_cache_callback()
-            log(f"🧹 [Task Tracker] Cleared inspected-files cache on task advance ({prev_index} -> {self.active_task_index}).")
+        if self.active_task_index != prev_index:
+            log(f"➡️ [Task Tracker] Advanced task pointer on install ({prev_index} -> {self.active_task_index}) while preserving LRU read cache.")
 
     def is_all_file_tasks_completed(self) -> bool:
         """Check if all non-verification file tasks are completed."""
@@ -689,6 +687,8 @@ class ClaudeToolClient:
         self._last_build_error_summary: str = ""
         self._last_build_error_files: list[str] = []
         self._consecutive_reads_since_build_failure: int = 0
+        self._inspected_directories: dict[str, str] = {}
+        self._episodic_action_log: list[str] = []
 
     def _log_to_transcript(self, role: str, content: Any, metadata: dict[str, Any] | None = None) -> None:
         """Persist full conversation history and tool events to disk transcript for recall."""
@@ -739,9 +739,6 @@ class ClaudeToolClient:
         # Log incoming messages to transcript
         for m in messages:
             self._log_to_transcript(m.get("role", "user"), m.get("content", ""))
-        write_counts: dict[str, int] = {}
-        failed_calls: dict[str, int] = {}
-        patch_fails_per_file: dict[str, int] = {}
         was_truncated_previous_turn = False
 
         log(f"ðŸš€ [Tool Loop] Starting agent session with model: '{self._model}'")
@@ -754,6 +751,17 @@ class ClaudeToolClient:
         self._consecutive_reads_since_build_failure = 0
         self._clear_build_repair_state()
         self._active_task_tracker = task_tracker
+
+        # Auto-scan physical workspace and generate clean file tree if not populated
+        if self._file_manifest.get_file_count() == 0:
+            self._file_manifest.scan_workspace(self._workspace_path)
+        if not clean_file_tree:
+            try:
+                clean_file_tree = generate_clean_file_tree(self._workspace_path)
+            except Exception:
+                pass
+        self._inspected_directories = {}
+        self._episodic_action_log = []
 
         for iteration in range(max_iterations):
             result.iterations = iteration + 1
@@ -794,6 +802,28 @@ class ClaudeToolClient:
             manifest_str = self._file_manifest.to_manifest_string()
             if manifest_str and self._file_manifest.get_file_count() > 0:
                 parts.append(f"\n{manifest_str}")
+
+            # 2b. Persistent Directory & File-Exists Cache (Prevents list_directory amnesia loops!)
+            if self._inspected_directories:
+                dir_lines = ["## Cached Directory & Path Lookups (DO NOT re-call `list_directory` or `file_exists` on these paths):"]
+                for d_path, d_summary in self._inspected_directories.items():
+                    dir_lines.append(f"  - `{d_path}`: {d_summary}")
+                parts.append("\n".join(dir_lines))
+
+            # 2c. Episodic Action Ledger (Last 12 tool actions in this session so model never loses state)
+            if self._episodic_action_log:
+                parts.append(
+                    "## Session Execution Ledger (Recent Actions):\n"
+                    + "\n".join(f"  {entry}" for entry in self._episodic_action_log[-12:])
+                )
+
+            # Output Window Governor: prevent multi-file JSON truncation on 8k-output models
+            if self._max_tokens <= 8192:
+                parts.append(
+                    "## ⚡ OUTPUT WINDOW PACING RULE:\n"
+                    "- Issue AT MOST 1 `write_file` tool call per turn (or `write_files` with at most 2 small files <150 lines each) "
+                    "so your tool call JSON never exceeds the output token limit."
+                )
 
             # 3. Active Inspected Files Cache (Preserves all read files in context)
             if self._inspected_files:
@@ -1371,6 +1401,25 @@ class ClaudeToolClient:
                 out_str = str(exec_result.get("content", ""))
                 log(f"   Tool output:\n{out_str}")
 
+                # Cache list_directory and file_exists permanently in _inspected_directories
+                if tool_name == "list_directory" and not exec_result.get("is_error"):
+                    p = (tool_input.get("path", "/workspace") if isinstance(tool_input, dict) else "/workspace")
+                    try:
+                        items = json.loads(out_str) if out_str.strip().startswith("[") else []
+                        names = [f"{i.get('name')}/" if i.get("type") == "directory" else str(i.get("name")) for i in items if isinstance(i, dict)]
+                        self._inspected_directories[p] = f"[{', '.join(names[:40])}]" if names else "(empty directory)"
+                    except Exception:
+                        self._inspected_directories[p] = out_str[:300]
+                elif tool_name == "file_exists" and not exec_result.get("is_error"):
+                    p = (tool_input.get("path", "") if isinstance(tool_input, dict) else "")
+                    self._inspected_directories[p] = out_str.strip().replace("\n", " ")
+
+                # Record 1-line entry in Episodic Action Ledger
+                status_tag = "ERROR" if exec_result.get("is_error") else "OK"
+                arg_sum = _summarize_args(tool_input if isinstance(tool_input, dict) else {})
+                self._episodic_action_log.append(
+                    f"[Step {iteration + 1}] {tool_name}({arg_sum}) -> {status_tag}"
+                )
 
                 # Track file writes in the manifest
                 if tool_name in ("write_file", "write_files") and not exec_result.get("is_error"):
@@ -1993,6 +2042,26 @@ class ClaudeToolClient:
             escalated_tools.add(tool_name)
             log(f"\U0001F513 [Phase Escalation] '{tool_name}' promoted into the active phase from live task state.")
 
+        # Cache Hit Guard: Intercept redundant list_directory or file_exists calls immediately
+        if tool_name in ("list_directory", "file_exists") and isinstance(tool_input, dict):
+            req_path = tool_input.get("path", "/workspace")
+            if req_path in getattr(self, "_inspected_directories", {}):
+                self._consecutive_reads += 1
+                cached_val = self._inspected_directories[req_path]
+                written_so_far = ", ".join(f"`{f}`" for f in tool_executor.files_changed) or "None"
+                log(f"⚡ [Cache Hit Guard] '{tool_name}({req_path})' already in memory cache. Redirecting model to write_file.")
+                return {
+                    "type": "tool_result",
+                    "content": (
+                        f"CACHED RESULT for `{req_path}`: {cached_val}\n\n"
+                        f"🛑 STOP CALLING `{tool_name}`! The complete workspace file tree and directory contents "
+                        f"are ALREADY in your prompt above.\n"
+                        f"Files written so far in this session: {written_so_far}.\n"
+                        f"Your NEXT action MUST be `write_file` or `replace_file_content` for the next missing/incomplete file!"
+                    ),
+                    "is_error": False,
+                }
+
         # Post-Build Action Firewall: If build already succeeded with 0 errors, block exploratory read tools (strictly when all file tasks are done)
         if getattr(tool_executor, "built_successfully", False):
             active_tracker = getattr(self, "_active_task_tracker", None)
@@ -2298,6 +2367,31 @@ class ClaudeToolClient:
                     else:
                         result = {"content": truncated}
                     log(f"âœ‚ï¸  [SingleFileGen] get_generated_file truncated to {max_inspection_lines} lines (saved ~{omitted * 40} chars)")
+
+        # Range-Bounded read_file Enforcement: prevent giant files from blowing the context window
+        if tool_name == "read_file" and isinstance(tool_input, dict) and not tool_input.get("start_line") and not tool_input.get("end_line"):
+            raw_content = result.get("content", "") if isinstance(result, dict) else str(result)
+            if isinstance(raw_content, str):
+                lines = raw_content.split("\n")
+                if len(lines) > 300:
+                    head_lines = lines[:250]
+                    # Index classes and functions in remainder of file
+                    symbol_index = []
+                    for idx, line in enumerate(lines[250:], start=251):
+                        str_line = line.strip()
+                        if str_line.startswith(("class ", "def ", "async def ", "export function", "export const", "export class")):
+                            symbol_index.append(f"  Line {idx}: {str_line[:80]}")
+
+                    index_msg = ("\nSymbol index for remaining lines:\n" + "\n".join(symbol_index[:30])) if symbol_index else ""
+                    truncated = (
+                        "\n".join(head_lines)
+                        + f"\n// ... ({len(lines) - 250} more lines omitted. Use start_line/end_line to inspect specific ranges){index_msg}"
+                    )
+                    if isinstance(result, dict):
+                        result = {**result, "content": truncated}
+                    else:
+                        result = {"content": truncated}
+                    log(f"✂️ [Range Bound] read_file truncated to 250 lines with symbol index (file had {len(lines)} lines)")
 
         return result
 

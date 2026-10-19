@@ -802,22 +802,6 @@ async def list_agents(
     project_token = _normalize_project_token(project_token)
     requested_kind = _normalized_text(kind).lower() or None
     
-    # CACHE DISABLED - Always fetch fresh data for real-time agent status
-    # Check cache first
-    # cache_key = _get_cache_key(organization_name, project_token, current_user.id)
-    # cached_result = _get_cached_agents(cache_key)
-    # if cached_result is not None:
-    #     # Merge live output_log from in-memory state into cached structural data
-    #     live_agents = {a["id"]: a for a in agent_service.get_all_agents(project_token)}
-    #     merged_agents = []
-    #     for a in cached_result["agents"]:
-    #         live = live_agents.get(a.get("id"), {})
-    #         merged_agents.append({**a, "output_log": live.get("output_log", []), "status": live.get("status", a.get("status")), "progress": live.get("progress", a.get("progress")), "progress_message": live.get("progress_message", a.get("progress_message")), "current_task": live.get("current_task", a.get("current_task"))})
-    #     merged = {"agents": merged_agents}
-    #     if requested_kind:
-    #         return {"agents": [a for a in merged_agents if a.get("agent_kind") == requested_kind]}
-    #     return merged
-    
     _ensure_default_agents_for_org(db, organization_name, project_token)
     _bootstrap_org_agent_mappings_if_missing(db, organization_name, project_token)
 
@@ -1004,14 +988,6 @@ async def list_agents(
     
     logger.info(f"[GET /agents] Returning {len(agents)} agents for kind={requested_kind}, include_defaults={include_defaults}")
     
-    # CACHE DISABLED - Don't cache for real-time updates
-    # Cache only the structural data (not output_log which changes constantly)
-    # agents_for_cache = [
-    #     {k: v for k, v in a.items() if k != "output_log"}
-    #     for a in agents
-    # ]
-    # _cache_agents(cache_key, {"agents": agents_for_cache})
-    
     # Fetch org quota for metadata enrichment
     org_quota_data = {}
     try:
@@ -1067,16 +1043,6 @@ async def list_agents(
     )
     return response_data
 
-
-
-# --- Extracted Block (Lines 12566-12578) ---
-@router.get("/agents/tasks")
-async def get_pending_tasks(
-    current_user: models.User = Depends(auth.get_current_user),
-):
-    """Get pending tasks for agents"""
-    # Placeholder implementation
-    return {"tasks": []}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1732,6 +1698,77 @@ async def reconcile_and_dispatch_next(
     return dispatched_agents
 
 
+def _ensure_workspace_git_ignores(workspace_dir: str) -> None:
+    """Ensure internal agent communication and sync files are strictly ignored and untracked."""
+    patterns = [
+        ".agent/",
+        ".agent",
+        ".agent_history/",
+        ".agent_history",
+        ".agent_ipc/",
+        ".agent_ipc",
+        ".agent_signals/",
+        ".agent_signals",
+        ".agent_initialized",
+        ".package_deps_hash",
+    ]
+    gi_path = os.path.join(workspace_dir, ".gitignore")
+    try:
+        content = ""
+        if os.path.exists(gi_path):
+            with open(gi_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        missing = [p for p in patterns if p not in content]
+        if missing:
+            with open(gi_path, "a", encoding="utf-8") as f:
+                if content and not content.endswith("\n"):
+                    f.write("\n")
+                f.write("\n# Dsuite internal agent communication & synchronization\n")
+                for p in missing:
+                    f.write(f"{p}\n")
+    except Exception:
+        pass
+
+    git_dir = os.path.join(workspace_dir, ".git")
+    if os.path.exists(git_dir):
+        exclude_path = os.path.join(git_dir, "info", "exclude")
+        try:
+            os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
+            ex_content = ""
+            if os.path.exists(exclude_path):
+                with open(exclude_path, "r", encoding="utf-8", errors="replace") as f:
+                    ex_content = f.read()
+            ex_missing = [p for p in patterns if p not in ex_content]
+            if ex_missing:
+                with open(exclude_path, "a", encoding="utf-8") as f:
+                    if ex_content and not ex_content.endswith("\n"):
+                        f.write("\n")
+                    f.write("\n# Dsuite internal agent communication & synchronization\n")
+                    for p in ex_missing:
+                        f.write(f"{p}\n")
+        except Exception:
+            pass
+
+
+def _resolve_dsuite_agent_identity(agent_name: Optional[str] = None) -> tuple[str, str]:
+    """Format standard Dsuite agent commit author and email."""
+    raw = (agent_name or "Agent").strip()
+    if "vibecoding" in raw.lower():
+        raw = "Agent"
+    clean_lower = raw.lower()
+    if clean_lower.startswith("dsuite-"):
+        raw = raw[7:].strip()
+    elif clean_lower.startswith("dsuite_"):
+        raw = raw[7:].strip()
+    elif clean_lower.startswith("dsuite"):
+        raw = raw[6:].strip().lstrip("-_ ")
+    clean_name = raw.replace(" ", "") if raw else "Agent"
+    author_name = f"Dsuite-{clean_name}"
+    email_handle = author_name.lower().replace("-", "_")
+    author_email = f"{email_handle}@dsuite.internal"
+    return author_name, author_email
+
+
 async def _bg_run_agent(
     agent_id: str,
     git_repo_url: Optional[str],
@@ -1795,6 +1832,54 @@ async def _bg_run_agent(
                 or "test" in (agent_name or "").lower()
                 or "qa" in agent_lanes
             )
+
+            # ── Pre-flight: Tool Adequacy Check ──────────────────────────────
+            # Abort early if critical tools are missing; warn but continue otherwise.
+            try:
+                from app.services.agents.tool_adequacy_service import analyse_tool_adequacy
+                _adequacy = analyse_tool_adequacy(
+                    agent_tools=assigned_tools,
+                    lanes=agent_lanes,
+                    tasks=[],   # tasks not yet loaded; lane-level check is sufficient here
+                )
+                if _adequacy["status"] == "critical" and project_token:
+                    _verdict = _adequacy["verdict"]
+                    _missing = ", ".join(_adequacy["missing_required"])
+                    await broadcast_preview_log(
+                        project_token=project_token,
+                        content=(
+                            f"[{agent_name}] ❌ TOOL CHECK FAILED — execution aborted. "
+                            f"Missing required tools: {_missing}. "
+                            f"{_verdict} "
+                            "Please attach the missing tools via Resource Onboarding and re-run."
+                        ),
+                        event_type="tool_check_failed",
+                        payload={
+                            "agent": agent_name,
+                            "adequacy": _adequacy,
+                        },
+                    )
+                    logger.error(
+                        "[_bg_run_agent] Tool check CRITICAL for agent=%s lanes=%s missing=%s",
+                        agent_name, agent_lanes, _adequacy["missing_required"],
+                    )
+                    return  # hard-abort: do NOT start the container
+                elif _adequacy["status"] == "warning" and project_token:
+                    _missing_rc = ", ".join(_adequacy["missing_recommended"])
+                    await broadcast_preview_log(
+                        project_token=project_token,
+                        content=(
+                            f"[{agent_name}] ⚠️ Tool warning: recommended tools missing ({_missing_rc}). "
+                            "Agent will run but may produce lower quality results."
+                        ),
+                        event_type="tool_check_warning",
+                        payload={"agent": agent_name, "adequacy": _adequacy},
+                    )
+            except Exception as _tc_err:
+                logger.warning(
+                    "[_bg_run_agent] Tool adequacy check skipped due to error: %s", _tc_err
+                )
+            # ── End Tool Adequacy Check ───────────────────────────────────────
 
             if project_token:
                 await broadcast_preview_log(
@@ -1915,6 +2000,7 @@ async def _bg_run_agent(
             clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
             workspace_dir = os.path.join(app_settings.project_storage_root, clean_token)
             os.makedirs(workspace_dir, exist_ok=True)
+            _ensure_workspace_git_ignores(workspace_dir)
 
             container_name = await asyncio.to_thread(
                 playground_manager.acquire_playground,
@@ -2081,6 +2167,9 @@ async def _bg_run_agent(
             )
             task_config["git_branch"] = base_branch
             task_config["branch"] = base_branch
+            task_config["agent_name"] = agent_name
+            task_config["agent_id"] = agent_id
+            task_config["agent_role"] = agent_role
             if blueprint_info.get("has_content"):
                 task_config["has_architecture_blueprints"] = True
                 task_config["blueprint_docs"] = blueprint_info.get("available_documents", [])
@@ -2183,11 +2272,11 @@ async def _bg_run_agent(
                         return
                     # Ignore MCP registration startup lines so "[MCP] Preview QA..." at t=0 never triggers 90% Preview phase!
                     if line_clean.startswith("[MCP]") or line_clean.startswith("[ToolRegistry]"):
-                        agent_service.append_agent_log(agent_id, line_clean[:500], "info", project_token)
+                        agent_service.append_agent_log(agent_id, line_clean[:500], "info", project_token, mirror_to_container=False)
                         return
 
                     log_type = "error" if "error" in line_clean.lower() else "output"
-                    agent_service.append_agent_log(agent_id, line_clean[:500], log_type, project_token)
+                    agent_service.append_agent_log(agent_id, line_clean[:500], log_type, project_token, mirror_to_container=False)
 
                     # Also publish raw terminal output to dedicated agent channel for live terminal lines
                     broadcaster.publish_sync(project_token, {
@@ -2223,12 +2312,25 @@ async def _bg_run_agent(
                             agent_rec_mem["status"] = "completed"
                             agent_rec_mem["progress_message"] = "Swarm Phase: Execution & Verification Complete"
 
+                safe_agent_name = (agent_name or agent_id or 'Agent').replace("'", "").replace('"', "")
+                safe_agent_role = (agent_role or 'Software Engineer').replace("'", "").replace('"', "")
+                safe_callback_url = (getattr(settings, "agent_callback_url", None) or "http://host.docker.internal:8000/api").rstrip("/")
+                safe_callback_secret = getattr(settings, "agent_callback_secret", "") or "dsuite-agent-callback-secret"
+                safe_task_api_url = getattr(settings, "task_api_base_url", "") or "https://stg-nxdune.bourntec.com/api"
+                safe_x_task_token = (x_task_token or "").replace("'", "")
                 exec_cmd = (
                     f"export AGENT_ID='{agent_id}' && "
+                    f"export AGENT_NAME='{safe_agent_name}' && "
+                    f"export AGENT_ROLE='{safe_agent_role}' && "
                     f"export PROJECT_ID='{project_token}' && "
                     f"export AGENT_CONFIG_FILE='{config_filename}' && "
                     f"export SKIP_IN_CONTAINER_PREVIEW='true' && "
                     f"export IDLE_TIMEOUT_SECONDS=1 && "
+                    f"export CALLBACK_URL='{safe_callback_url}' && "
+                    f"export CALLBACK_SECRET='{safe_callback_secret}' && "
+                    f"export TASK_API_BASE_URL='{safe_task_api_url}' && "
+                    f"export TASK_TOKEN='{safe_x_task_token}' && "
+                    f"export TZ='UTC' && "
                     f"cd /workspace && python -u -m agent.main 2>&1"
                 )
                 exec_timeout = max(900, len(tasks_to_execute) * 450)
@@ -2435,11 +2537,15 @@ async def _bg_run_agent(
                         elif auth_repo_url.startswith("http://"):
                             auth_repo_url = auth_repo_url.replace("http://", f"http://x-access-token:{git_token}@")
 
+                    _ensure_workspace_git_ignores(workspace_dir)
+                    author_name, author_email = _resolve_dsuite_agent_identity(agent_name or agent_id)
                     git_cmds = [
-                        "git config --replace-all user.email 'agent@dsuite.internal'",
-                        "git config --replace-all user.name 'DSuite Swarm'",
+                        f"git config --replace-all user.email '{author_email}'",
+                        f"git config --replace-all user.name '{author_name}'",
+                        "git rm -r --cached --ignore-unmatch .agent .agent_history .agent_ipc .agent_signals .agent_initialized .package_deps_hash || true",
                         "git add -A",
-                        f"git commit -m 'feat({agent_id}): Complete tasks for project' --allow-empty",
+                        "git rm -r --cached --ignore-unmatch .agent .agent_history .agent_ipc .agent_signals .agent_initialized .package_deps_hash || true",
+                        f"git commit --author='{author_name} <{author_email}>' -m 'feat({author_name.replace('Dsuite-', '')}): Complete tasks for project' --allow-empty",
                         f"git push {auth_repo_url} HEAD:main || git push {auth_repo_url} HEAD:master || true",
                     ]
                     full_cmd = " && ".join(git_cmds)
@@ -2530,8 +2636,7 @@ async def run_agent(
     project_token = _normalize_project_token(project_token)
     organization_name = _require_organization(current_user)
     
-    # Auto-launch the log capture script to write live log files
-    _auto_launch_log_capture(authorization, project_token)
+
     
     # Invalidate cache since agent status will change
     _invalidate_agent_cache(organization_name, project_token)
@@ -2743,35 +2848,7 @@ class RunAllRequest(BaseModel):
     source_repo_url: Optional[str] = None
 
 
-def _auto_launch_log_capture(authorization: Optional[str], project_token: Optional[str]):
-    try:
-        token = ""
-        if authorization and authorization.lower().startswith("bearer "):
-            token = authorization[7:].strip()
-        elif authorization:
-            token = authorization.strip()
-            
-        if token:
-            import subprocess
-            import sys
-            import os
-            dir_path = os.path.dirname(os.path.abspath(__file__))
-            script_path = os.path.join(dir_path, "capture_agent_logs.py")
-            if os.path.exists(script_path):
-                env = dict(os.environ)
-                env["LOGIN_TOKEN"] = token
-                env["PYTHONIOENCODING"] = "utf-8"
-                log_file = open(os.path.join(dir_path, "capture_agent_logs.log"), "w", encoding="utf-8")
-                subprocess.Popen(
-                    [sys.executable, script_path],
-                    env=env,
-                    stdout=log_file,
-                    stderr=log_file,
-                    cwd=dir_path
-                )
-                logger.info(f"🚀 Auto-launched capture_agent_logs.py for project {project_token}")
-    except Exception as e:
-        logger.warning(f"Failed to auto-launch capture_agent_logs.py: {e}")
+
 
 
 async def _run_phased_swarm_coordinator(
@@ -3019,11 +3096,15 @@ async def _run_phased_swarm_coordinator(
                     elif auth_repo_url.startswith("http://"):
                         auth_repo_url = auth_repo_url.replace("http://", f"http://x-access-token:{git_token}@")
 
+                _ensure_workspace_git_ignores(workspace_dir)
+                author_name, author_email = _resolve_dsuite_agent_identity("MasterOrchestrator")
                 git_cmds = [
-                    "git config user.email 'agent@dsuite.internal'",
-                    "git config user.name 'DSuite Swarm'",
+                    f"git config user.email '{author_email}'",
+                    f"git config user.name '{author_name}'",
+                    "git rm -r --cached --ignore-unmatch .agent .agent_history .agent_ipc .agent_signals .agent_initialized .package_deps_hash || true",
                     "git add -A",
-                    "git commit -m 'feat(release): Complete application build based on BRD specification' --allow-empty",
+                    "git rm -r --cached --ignore-unmatch .agent .agent_history .agent_ipc .agent_signals .agent_initialized .package_deps_hash || true",
+                    f"git commit --author='{author_name} <{author_email}>' -m 'feat(release): Complete application build based on BRD specification' --allow-empty",
                     f"git push {auth_repo_url} HEAD:main || git push {auth_repo_url} HEAD:master || true",
                 ]
                 import subprocess
@@ -3078,8 +3159,7 @@ async def run_all_agents(
     project_token = _normalize_project_token(project_token)
     organization_name = _require_organization(current_user)
     
-    # Auto-launch the log capture script to write live log files
-    _auto_launch_log_capture(authorization, project_token)
+
     
     # Invalidate cache since agent status will change
     _invalidate_agent_cache(organization_name, project_token)
@@ -3296,6 +3376,7 @@ class UpdateAgentRequest(BaseModel):
     name: Optional[str] = None
     git_repo_url: Optional[str] = None
     git_token: Optional[str] = None
+    tools: Optional[List[str]] = None
 
 
 class AddAgentSkillsRequest(BaseModel):
@@ -3505,22 +3586,8 @@ async def add_agent(
     return response
 
 
-@router.post("/agents/skills/add")
-async def add_agent_with_skills(
-    request: AddAgentSkillsRequest,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-):
-    organization_name = _require_organization(current_user)
-    name = request.name.strip()
-    skills_content = request.skills_content.strip()
-    project_token = _normalize_project_token(request.project_token)
-
-    if not name:
-        raise HTTPException(status_code=400, detail="Agent name is required")
-    if not skills_content:
-        raise HTTPException(status_code=400, detail="Skills file content is required")
-
+async def _analyze_agent_skills_with_llm(skills_content: str) -> tuple[str, list[str], str]:
+    """Analyze agent skills markdown using LLM to extract summary, tags, and specialization."""
     summary = "Developer with custom capabilities."
     tags = []
     specialization = "Development"
@@ -3549,9 +3616,8 @@ async def add_agent_with_skills(
             }
         ]
         llm_response = await llm_gateway.call_llm_and_extract(messages, timeout=60.0)
-        llm_response = llm_response.strip()
+        llm_response = (llm_response or "").strip()
 
-        # Clean markdown wrappers if any
         if llm_response.startswith("```"):
             lines = llm_response.splitlines()
             if lines[0].startswith("```"):
@@ -3567,7 +3633,6 @@ async def add_agent_with_skills(
             specialization = parsed.get("specialization", "Development").strip()
         except Exception as parse_err:
             logger.error(f"Error parsing LLM JSON response: {parse_err}. Response was: {llm_response}")
-            # Try to regex parse
             import re
             summary_match = re.search(r'"summary"\s*:\s*"([^"]+)"', llm_response)
             if summary_match:
@@ -3575,22 +3640,18 @@ async def add_agent_with_skills(
             spec_match = re.search(r'"specialization"\s*:\s*"([^"]+)"', llm_response)
             if spec_match:
                 specialization = spec_match.group(1)
-            # Find array-like tags
             tags_match = re.search(r'"tags"\s*:\s*\[([^\]]+)\]', llm_response)
             if tags_match:
                 tags = [t.strip().replace('"', '') for t in tags_match.group(1).split(",")]
 
-        # Enforce summary length constraints
         if len(summary) > 200:
             summary = summary[:197] + "..."
 
-        # Enforce tags list constraints
         if not isinstance(tags, list):
             tags = []
         else:
             tags = [str(t).strip() for t in tags if t]
 
-        # Enforce specialization constraints
         if specialization not in ["Development", "Testing"]:
             spec_lower = specialization.lower()
             if any(keyword in spec_lower for keyword in ["test", "qa", "verify", "check", "assert", "mock"]):
@@ -3600,8 +3661,7 @@ async def add_agent_with_skills(
 
     except Exception as e:
         logger.error(f"Failed to generate skills summary with AI: {e}")
-        # Basic heuristic fallback
-        content_lower = skills_content.lower()
+        content_lower = (skills_content or "").lower()
         test_keywords = ["test", "qa", "assert", "check", "verify", "mock", "unittest", "pytest"]
         if any(keyword in content_lower for keyword in test_keywords):
             specialization = "Testing"
@@ -3609,6 +3669,27 @@ async def add_agent_with_skills(
         else:
             specialization = "Development"
             tags = ["Development"]
+
+    return summary, tags, specialization
+
+
+@router.post("/agents/skills/add")
+async def add_agent_with_skills(
+    request: AddAgentSkillsRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    organization_name = _require_organization(current_user)
+    name = request.name.strip()
+    skills_content = request.skills_content.strip()
+    project_token = _normalize_project_token(request.project_token)
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Agent name is required")
+    if not skills_content:
+        raise HTTPException(status_code=400, detail="Skills file content is required")
+
+    summary, tags, specialization = await _analyze_agent_skills_with_llm(skills_content)
 
     # Load ALL mapped agents to find the correct display_id sequence
     mapping_q = db.query(models.OrganizationAgentMapping.agent_id).filter(
@@ -3752,87 +3833,7 @@ async def update_agent_with_skills(
     if not project_token and agent_rec.project_token:
         project_token = agent_rec.project_token
 
-    summary = "Developer with custom capabilities."
-    tags = []
-    specialization = "Development"
-
-    try:
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an AI that analyzes a software agent's skills from a markdown description.\n"
-                    "Analyze the skills content and output a raw JSON object with the following fields:\n"
-                    "- \"summary\": A high-level summary of skills and capabilities. Maximum 200 characters.\n"
-                    "- \"tags\": A JSON list of technical skills and tools (e.g., [\"React\", \"FastAPI\", \"Testing\", \"Python\"]). Extract up to 10 key technical skills.\n"
-                    "- \"specialization\": This must be strictly either \"Development\" or \"Testing\". Classify based on whether they focus more on writing code and building features (\"Development\") vs writing tests, QA, checks, mocking, and verification (\"Testing\").\n\n"
-                    "Output ONLY the raw JSON object, without any markdown formatting, backticks, or explanation. Example:\n"
-                    "{\n"
-                    "  \"summary\": \"Expert in web automation, e2e testing, and integration verification.\",\n"
-                    "  \"tags\": [\"Playwright\", \"Selenium\", \"Python\", \"Pytest\"],\n"
-                    "  \"specialization\": \"Testing\"\n"
-                    "}"
-                )
-            },
-            {
-                "role": "user",
-                "content": f"Skills document:\n\n{skills_content}"
-            }
-        ]
-        llm_response = await llm_gateway.call_llm_and_extract(messages, timeout=60.0)
-        llm_response = llm_response.strip()
-
-        if llm_response.startswith("```"):
-            lines = llm_response.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            llm_response = "\n".join(lines).strip()
-
-        try:
-            parsed = json.loads(llm_response)
-            summary = parsed.get("summary", "Developer with custom capabilities.").strip()
-            tags = parsed.get("tags", [])
-            specialization = parsed.get("specialization", "Development").strip()
-        except Exception as parse_err:
-            logger.error(f"Error parsing LLM JSON response: {parse_err}")
-            # regex parse fallback
-            import re
-            summary_match = re.search(r'"summary"\s*:\s*"([^"]+)"', llm_response)
-            if summary_match:
-                summary = summary_match.group(1)
-            spec_match = re.search(r'"specialization"\s*:\s*"([^"]+)"', llm_response)
-            if spec_match:
-                specialization = spec_match.group(1)
-            tags_match = re.search(r'"tags"\s*:\s*\[([^\]]+)\]', llm_response)
-            if tags_match:
-                tags = [t.strip().replace('"', '') for t in tags_match.group(1).split(",")]
-
-        if len(summary) > 200:
-            summary = summary[:197] + "..."
-
-        if not isinstance(tags, list):
-            tags = []
-        else:
-            tags = [str(t).strip() for t in tags if t]
-
-        if specialization not in ["Development", "Testing"]:
-            spec_lower = specialization.lower()
-            if any(keyword in spec_lower for keyword in ["test", "qa", "verify", "check", "assert", "mock"]):
-                specialization = "Testing"
-            else:
-                specialization = "Development"
-    except Exception as e:
-        logger.error(f"Failed to generate skills summary with AI: {e}")
-        content_lower = skills_content.lower()
-        test_keywords = ["test", "qa", "assert", "check", "verify", "mock", "unittest", "pytest"]
-        if any(keyword in content_lower for keyword in test_keywords):
-            specialization = "Testing"
-            tags = ["Testing", "QA"]
-        else:
-            specialization = "Development"
-            tags = ["Development"]
+    summary, tags, specialization = await _analyze_agent_skills_with_llm(skills_content)
 
     if request.tags:
         manual_tags = [t.strip() for t in request.tags.split(",") if t.strip()]
@@ -4075,7 +4076,171 @@ async def onboard_agents(
     }
 
 
+# ---------------------------------------------------------------------------
+# Tool Adequacy Feature — Endpoints defined BEFORE /agents/{agent_id}
+# ---------------------------------------------------------------------------
+
+class RecommendAgentsRequest(BaseModel):
+    project_token: Optional[str] = None
+
+
+class AutoCreateAgentsRequest(BaseModel):
+    project_token: str
+    agents: List[Dict[str, Any]]
+
+
+@router.get("/api/agent/tool-check")
+@router.get("/agents/tool-check")
+async def agent_tool_check(
+    agent_id: str = Query(..., description="Agent ID to check"),
+    project_token: Optional[str] = Query(None, description="Project token to fetch tasks for"),
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return a tool adequacy report for *agent_id* relative to *project_token*'s tasks."""
+    from app.services.agents.tool_adequacy_service import analyse_tool_adequacy
+    from app.services.agents.local_state_manager import get_agent_lanes_from_skills
+
+    base_id = agent_id.split("#")[0]
+    agent_rec = db.query(models.Agent).filter(models.Agent.id == base_id).first()
+    if not agent_rec:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_id}' not found.")
+
+    assigned_tools: List[str] = agent_rec.allowed_tools or []
+    lanes = get_agent_lanes_from_skills(
+        agent_id=base_id,
+        skills_tags=agent_rec.skills_tags,
+        specialization=agent_rec.specialization,
+    )
+
+    tasks: List[Dict[str, Any]] = []
+    if project_token:
+        pt = _normalize_project_token(project_token)
+        task_rows = db.query(models.Task).filter(models.Task.project_token == pt).all()
+        tasks = [
+            {
+                "title": getattr(t, "task_name", None) or getattr(t, "title", ""),
+                "description": getattr(t, "description", "") or "",
+            }
+            for t in task_rows
+        ]
+
+    result = analyse_tool_adequacy(
+        agent_tools=assigned_tools,
+        lanes=lanes,
+        tasks=tasks,
+    )
+    result["agent_id"] = agent_id
+    result["agent_name"] = agent_rec.name or agent_id
+    result["current_tools"] = assigned_tools
+    return result
+
+
+@router.post("/agents/recommend")
+@router.post("/api/agents/recommend")
+async def recommend_agents(
+    body: Optional[RecommendAgentsRequest] = None,
+    project_token: Optional[str] = Query(None),
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Analyse a project's tasks and return recommended agent configurations."""
+    from app.services.agents.tool_adequacy_service import recommend_agents_for_project
+    from app.services.agents.master_orchestrator import _infer_task_lane
+
+    target_token = (body.project_token if body and body.project_token else project_token) or None
+    target_token = _normalize_project_token(target_token)
+    if not target_token:
+        raise HTTPException(status_code=400, detail="project_token is required.")
+
+    tasks = db.query(models.Task).filter(models.Task.project_token == target_token).all()
+
+    lane_counts: Dict[str, int] = {}
+    for t in tasks:
+        title = getattr(t, "task_name", None) or getattr(t, "title", "") or ""
+        desc = getattr(t, "description", "") or ""
+        lane = _infer_task_lane(title, desc)
+        lane_counts[lane] = lane_counts.get(lane, 0) + 1
+
+    recommendations = recommend_agents_for_project(lane_counts)
+    return {"project_token": target_token, "recommendations": recommendations}
+
+
+@router.post("/agents/auto-create")
+@router.post("/api/agents/auto-create")
+async def auto_create_agents(
+    body: AutoCreateAgentsRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Bulk-create agents from a recommendations list and onboard them with 1 dedicated slot each."""
+    target_token = _normalize_project_token(body.project_token)
+    if not target_token:
+        raise HTTPException(status_code=400, detail="project_token is required.")
+
+    agent_specs = body.agents or []
+    if not agent_specs:
+        raise HTTPException(status_code=400, detail="agents list is required and must not be empty.")
+
+    organization_name = _require_organization(current_user)
+    _ensure_default_agents_for_org(db, organization_name, target_token)
+
+    created_agents: List[Dict[str, Any]] = []
+
+    for spec in agent_specs:
+        role = spec.get("role", "Agent")
+        tools = spec.get("tools") or ["filesystem", "git", "terminal"]
+        spec_str = spec.get("specialization", "Development")
+
+        skills_tags = list({spec.get("lane", "general")} | set(tools))
+
+        new_id = f"auto_{uuid.uuid4().hex[:8]}"
+        new_agent = models.Agent(
+            id=new_id,
+            name=role,
+            type="custom",
+            project_token=target_token,
+            specialization=spec_str,
+            allowed_tools=tools,
+            skills_tags=skills_tags,
+            skills_summary=f"Auto-created {role} with tools: {', '.join(tools)}",
+            model_name="claude",
+        )
+        db.add(new_agent)
+
+        sub_type = "test" if spec_str == "Testing" else "dev"
+        mapping = models.OrganizationAgentMapping(
+            organization_name=organization_name,
+            agent_id=new_id,
+            project_token=target_token,
+            home_project_token=target_token,
+            agent_kind="dedicated",
+            agent_sub_type=sub_type,
+            is_default=False,
+            dedicated_count=1,
+            shared_count=0,
+            is_virtual_shared=False,
+        )
+        db.add(mapping)
+        created_agents.append({"id": new_id, "name": role, "tools": tools})
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("[auto_create_agents] DB commit failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to persist agents: {exc}") from exc
+
+    return {
+        "created": created_agents,
+        "onboarded": True,
+        "project_token": target_token,
+    }
+
+
 @router.patch("/agents/{agent_id}")
+@router.put("/agents/{agent_id}")
+@router.post("/agents/{agent_id}")
 async def update_agent(
     agent_id: str,
     request: Optional[UpdateAgentRequest] = None,
@@ -4083,12 +4248,15 @@ async def update_agent(
     db: Session = Depends(get_db),
     project_token: Optional[str] = None,
 ):
+    if agent_id in ("recommend", "auto-create", "onboard", "add", "run-all", "tasks", "tool-check"):
+        raise HTTPException(status_code=404, detail=f"Endpoint not found: /agents/{agent_id}")
     if not request:
         raise HTTPException(status_code=400, detail="Request body is required")
     name_provided = request.name is not None
     repo_provided = request.git_repo_url is not None
     token_provided = request.git_token is not None
-    if not (name_provided or repo_provided or token_provided):
+    tools_provided = request.tools is not None
+    if not (name_provided or repo_provided or token_provided or tools_provided):
         raise HTTPException(status_code=400, detail="Provide at least one field to update")
     next_name = request.name.strip() if name_provided and request.name else None
     if name_provided and not next_name:
@@ -4119,6 +4287,14 @@ async def update_agent(
                 git_token=request.git_token,
                 project_token=project_token,
             )
+        if tools_provided:
+            agent_rec = db.query(models.Agent).filter(models.Agent.id == base_agent_id).first()
+            if agent_rec:
+                agent_rec.allowed_tools = request.tools
+                db.add(agent_rec)
+                db.commit()
+            if isinstance(agent, dict):
+                agent["allowed_tools"] = request.tools
         global_cred = _resolve_project_global_credential(db, current_user, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
         if sanitized_agent:
@@ -4127,58 +4303,6 @@ async def update_agent(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-
-@router.post("/agents/{agent_id}")
-async def update_agent_post(
-    agent_id: str,
-    request: Optional[UpdateAgentRequest] = None,
-    current_user: models.User = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),
-    project_token: Optional[str] = None,
-):
-    if not request:
-        raise HTTPException(status_code=400, detail="Request body is required")
-    name_provided = request.name is not None
-    repo_provided = request.git_repo_url is not None
-    token_provided = request.git_token is not None
-    if not (name_provided or repo_provided or token_provided):
-        raise HTTPException(status_code=400, detail="Provide at least one field to update")
-    next_name = request.name.strip() if name_provided and request.name else None
-    if name_provided and not next_name:
-        raise HTTPException(status_code=400, detail="Agent name cannot be empty")
-    try:
-        project_token = _normalize_project_token(project_token)
-        # Handle instance suffix
-        base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
-        
-        _ensure_default_agents(db, project_token)
-        query = db.query(models.Agent)
-        if project_token:
-            query = query.filter(models.Agent.project_token == project_token)
-        else:
-            query = query.filter(models.Agent.project_token.is_(None))
-        records = query.all()
-        agent_service.ensure_project_initialized(project_token, _runtime_agent_records(records, project_token))
-
-        agent = agent_service.get_agent_status(agent_id, project_token)
-        if next_name:
-            agent = agent_service.update_agent_name(agent_id, next_name, project_token)
-        _upsert_agent_record(db, agent["id"], agent.get("name"), agent.get("type"), project_token)
-        if repo_provided or token_provided:
-            _upsert_project_global_credentials(
-                db,
-                current_user,
-                git_repo_url=request.git_repo_url,
-                git_token=request.git_token,
-                project_token=project_token,
-            )
-        global_cred = _resolve_project_global_credential(db, current_user, project_token)
-        sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
-        if sanitized_agent:
-            sanitized_agent = {**sanitized_agent, "id": agent_id}
-        return {"agent": sanitized_agent}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.delete("/agents/{agent_id}")
@@ -5180,6 +5304,26 @@ def _reconcile_progress_from_ledger(db: Session, db_tasks: List[models.Task], pr
                 ow.task_data = data
                 dirty = True
 
+            # Reconcile models.Task row as well so TaskCreation UI immediately sees progress
+            task_status_map = {
+                "done": "DONE",
+                "in_review": "IN_PROGRESS",
+                "failed": "FAILED",
+            }
+            target_t_status = task_status_map.get(new_status)
+            if target_t_status and t.status != target_t_status:
+                t.status = target_t_status
+                dirty = True
+            if status == "completed":
+                v_stat = "PASSED" if entry.get("platform_verified") else "PENDING"
+                if t.verification_status != v_stat:
+                    t.verification_status = v_stat
+                    dirty = True
+            elif status == "failed":
+                if t.verification_status != "FAILED":
+                    t.verification_status = "FAILED"
+                    dirty = True
+
         if dirty:
             db.commit()
     except Exception as e:
@@ -5740,14 +5884,7 @@ async def get_agent_billing_dashboard(
                 logger.warning(f"Failed to fetch total tasks from NXDune for billing: {exc}")
                 tasks = []
         
-        # 2. Extract tasks array
-        tasks = []
-        if isinstance(tasks_response, list):
-            tasks = tasks_response
-        elif isinstance(tasks_response, dict):
-            tasks = tasks_response.get("results", tasks_response.get("tasks", []))
-            
-        # 3. Calculate agent metrics
+        # 2. Calculate agent metrics
         agent_costs = {}
         total_tasks_completed = 0
         total_time_spent = 0.0
@@ -7337,6 +7474,8 @@ async def get_local_tasks(
     total = base_query.count()
     offset = (page - 1) * page_size
     tasks = base_query.order_by(models.Task.created_at).offset(offset).limit(page_size).all()
+    # Self-heal stale progress from the runtime task ledger before serializing
+    _reconcile_progress_from_ledger(db, tasks, project_token)
 
     def serialize(t):
         # Strip project_token prefix from task_id for display (e.g. "proj_EPIC-01" → "EPIC-01")

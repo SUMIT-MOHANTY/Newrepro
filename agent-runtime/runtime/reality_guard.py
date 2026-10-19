@@ -35,6 +35,30 @@ FAKE_TOOL_PATTERNS = [
     re.compile(r'\[System:\s*File\s*operation\s*completed', re.IGNORECASE),
     re.compile(r'Tool\s*Outputs?:', re.IGNORECASE),
     re.compile(r'Tool\s*execution\s*outputs?:', re.IGNORECASE),
+    # DeepSeek DSML markup tags
+    re.compile(r'<[｜|]DSML[｜|][^>]*>', re.IGNORECASE),
+    re.compile(r'<[｜|]/?(?:DSML|function_calls?)[｜|]>', re.IGNORECASE),
+    # XML function tags
+    re.compile(r'(?s)<function=[^>]+>.*?</function>', re.IGNORECASE),
+    re.compile(r'</function>', re.IGNORECASE),
+    # XML pseudo-tool tags (DeepSeek/Kimi)
+    re.compile(
+        r'</?(?:git_status|git_commit|git_push|git_diff|git_log|checkout_branch|'
+        r'merge_branch|run_command|execute_command|read_file|write_file|write_files|'
+        r'replace_file_content|list_directory|file_exists|install_dependencies|'
+        r'install_and_build|tool_call)\b[^>]*>',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'(?s)<(?:git_status|git_commit|git_push|git_diff|git_log|checkout_branch|'
+        r'merge_branch|run_command|execute_command|read_file|write_file|write_files|'
+        r'replace_file_content|list_directory|file_exists|install_dependencies|'
+        r'install_and_build|tool_call)\b[^>]*>.*?</(?:git_status|git_commit|'
+        r'git_push|git_diff|git_log|checkout_branch|merge_branch|run_command|'
+        r'execute_command|read_file|write_file|write_files|replace_file_content|'
+        r'list_directory|file_exists|install_dependencies|install_and_build|tool_call)>',
+        re.IGNORECASE,
+    ),
 ]
 
 

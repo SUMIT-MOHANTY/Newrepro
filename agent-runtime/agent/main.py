@@ -81,6 +81,9 @@ def main() -> None:
             "GIT_PAT_TOKEN": "git_pat_token",
             "GIT_BRANCH": "git_branch",
             "MAX_TOOL_CALLS": "max_tool_calls",
+            "AGENT_NAME": "agent_name",
+            "AGENT_ID": "agent_id",
+            "AGENT_ROLE": "agent_role",
         }
         for env_key, config_key in env_mapping.items():
             if config_key in task_config and env_key not in os.environ:
@@ -106,6 +109,15 @@ def main() -> None:
         git_tok = os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN")
         git_br = os.environ.get("GIT_BRANCH", "main")
         print(f"[AgentRuntime] 📦 Git Config: repo={'configured' if git_repo else 'NONE'}, token={'configured' if git_tok else 'NONE'}, branch={git_br}")
+
+        # Ensure ignore rules and untrack any internal coordination directories at startup
+        try:
+            from mcp.git_tools import GitTools
+            _gt = GitTools(workspace_path)
+            _gt._ensure_ignore_rules()
+            _gt._untrack_internal_agent_dirs()
+        except Exception:
+            pass
 
     try:
         state = AgentState.from_env()

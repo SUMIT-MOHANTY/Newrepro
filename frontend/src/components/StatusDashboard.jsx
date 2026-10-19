@@ -17,8 +17,6 @@ import nModLogo from '../assets/N-Mod-icon.png';
 import masterLogo from '../assets/logo1.png';
 import cloudIcon from '../assets/cloud-icon.png';
 import ContextTracker from './ContextTracker';
-// import KnowledgeGraphCard from './KnowledgeGraphCard';
-// import PrStatusCard from './PrStatusCard';
 
 const PROJECT_STORAGE_KEY = 'status_dashboard_selected_project_key';
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
@@ -373,21 +371,11 @@ export default function StatusDashboard({
     const [isFixing, setIsFixing] = useState(false);
     const [showPreviewLogs, setShowPreviewLogs] = useState(false);
     const [deployLogs, setDeployLogs] = useState([]);
-    const [executionSteps, setExecutionSteps] = useState([]);
-    const [agentRunStartTime, setAgentRunStartTime] = useState(null);
-    const [agentRunCompletedTime, setAgentRunCompletedTime] = useState(null);
     const wsRef = useRef(null);
     const [processMode, setProcessMode] = useState(() => getProcessModeForProject(localStorage.getItem(PROJECT_STORAGE_KEY) || ''));
-    const [activeSwarmFile, setActiveSwarmFile] = useState(null);
-    const [activeSwarmAgent, setActiveSwarmAgent] = useState(null);
-    const [contractInfo, setContractInfo] = useState(null);
-    const [showExecutionStream, setShowExecutionStream] = useState(true);
-    const [showInFlightWorkspace, setShowInFlightWorkspace] = useState(false);
     const currentPreviewLogs = (deployLogs && deployLogs.length > 0) ? deployLogs : (previewStatus?.logs || []);
 
-
     // ── External Task API State ──────────────────────────────────────
-    const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
     const [taskList, setTaskList] = useState([]);
     const [isLoadingTasks, setIsLoadingTasks] = useState(false);
     const [taskListError, setTaskListError] = useState(null);
@@ -846,9 +834,6 @@ export default function StatusDashboard({
     const handleRunAgent = async (agentId, repoUrl = null, repoToken = null) => {
         setRunningAgent(agentId);
         setGitModalAgent(null); // close modal if open
-        setAgentRunStartTime(new Date().toISOString());
-        setAgentRunCompletedTime(null);
-        setExecutionSteps([]);
 
         // Optimistically update UI to show it's running immediately
         setAgents(prev => prev.map(a => a.id === agentId ? { ...a, status: 'running', progress: 0, progress_message: 'Starting agent...' } : a));
@@ -968,9 +953,6 @@ export default function StatusDashboard({
 
         setGitModalAgent(null);
         setRunningAll(true);
-        setAgentRunStartTime(new Date().toISOString());
-        setAgentRunCompletedTime(null);
-        setExecutionSteps([]);
         setAgents(prev => (prev || []).map(a => a.status !== 'running'
             ? { ...a, status: 'running', progress: 10, progress_message: 'Starting agent in container playground...' }
             : a));
@@ -1309,7 +1291,6 @@ export default function StatusDashboard({
                         preview_url: readyUrl,
                         stack: prev.stack || 'auto',
                     }));
-                    setAgentRunCompletedTime(new Date().toISOString());
                     refreshRoadmap();
                     fetchAgents();
                 } else if (data.metadata?.status === 'error' || eventType === 'session_failed') {
@@ -1317,92 +1298,27 @@ export default function StatusDashboard({
                         ...prev,
                         status: 'error',
                     }));
-                    setAgentRunCompletedTime(new Date().toISOString());
                     fetchAgents();
                 }
 
-                // 3. Format structured steps for ExecutionStream
-                if (msg) {
-                    const isFile = Boolean(
-                        payload.is_file ||
-                        msg.startsWith('Writing') ||
-                        msg.startsWith('Editing') ||
-                        msg.startsWith('Reading') ||
-                        msg.startsWith('Created') ||
-                        eventType === 'tool_called'
-                    );
-                    const isThinking = eventType === 'thinking' || payload.type === 'thinking' || msg.startsWith('Thinking:');
-                    const isPreview = Boolean(eventType === 'preview_ready' || (data.metadata?.status === 'success' && data.metadata?.preview_url));
-
-                    let label = msg;
-                    if (isThinking) {
-                        label = msg.replace(/^Thinking:\s*/, '');
-                    } else if (eventType === 'file_written' && (payload.file_path || payload.file)) {
-                        const fp = payload.file_path || payload.file;
-                        setActiveSwarmFile(fp);
-                        label = `📝 [${payload.agent_id || 'Agent'}] Generated file: ${fp}`;
-                    } else if (eventType === 'contract_published') {
-                        setContractInfo(payload);
-                        label = `📜 Published Verified API Contract: ${payload.routes_count || 0} routes, ${payload.models_count || 0} schemas`;
-                    } else if (eventType === 'task_started') {
-                        setActiveSwarmAgent(payload.agent || payload.agent_id);
-                        label = `🚀 [${payload.agent || 'Agent'}] Started Task: ${payload.title || payload.task_id}`;
-                    } else if (eventType === 'task_completed') {
-                        label = `✅ [${payload.agent || 'Agent'}] Completed Task: ${payload.title || payload.task_id}`;
-                        refreshRoadmap();
-                        fetchTasks();
-                        fetchAgents();
-                    } else if (eventType === 'supervisor_completed' || eventType === 'session_completed') {
-                        label = `🎉 [Swarm Runtime] All tasks executed and verified successfully`;
-                        refreshRoadmap();
-                        fetchTasks();
-                        fetchAgents();
-                        setAgents(prev => (prev || []).map(a => ({
-                            ...a,
-                            status: 'completed',
-                            progress: 100,
-                            progress_message: 'All tasks completed successfully.',
-                        })));
-                    } else if (eventType === 'task_failed') {
-                        label = `❌ [${payload.agent || 'Agent'}] Task Failed: ${payload.title || payload.task_id}`;
-                        fetchTasks();
-                        fetchAgents();
-                    } else if (eventType === 'agent_dispatched') {
-                        label = `⚡ Autonomous Swarm Dispatched: ${payload.agent_id} (${payload.ready_tasks?.length || 0} tasks ready)`;
-                    } else if (eventType === 'phase_failed') {
-                        label = `⚠️ Swarm Phase Paused: backend verification gate failed`;
-                    } else if (eventType === 'planning_completed') {
-                        label = `Architecture Plan Created (${payload.steps || 1} steps)`;
-                    } else if (eventType === 'git_clone_started') {
-                        label = `Cloning repository: ${payload.repo_url || ''}`;
-                    } else if (eventType === 'git_clone_completed') {
-                        label = `Repository synchronized (${payload.branch || 'main'})`;
-                    } else if (eventType === 'build_started') {
-                        label = 'Building and compiling application sandbox...';
-                    } else if (eventType === 'build_completed') {
-                        label = 'Sandbox build & dependency verification passed';
-                    } else if (isPreview) {
-                        label = `Live preview ready: ${data.metadata?.preview_url || payload?.preview_url || `/app/${selectedProjectKey}/`}`;
-                    }
-
-                    const stepItem = {
-                        id: data.id || `step-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-                        label: label,
-                        isFile: isFile,
-                        status: (data.metadata?.status === 'error' || eventType === 'session_failed') ? 'error' : 'done',
-                        kind: isPreview ? 'preview' : (isThinking ? 'thinking' : (isFile ? 'file' : 'log')),
-                        tool_name: payload.tool || payload.tool_name,
-                        args: payload.args,
-                        details: payload.output || payload.details || payload.result,
-                        timestamp: data.timestamp || new Date().toISOString(),
-                    };
-
-                    setExecutionSteps((prev) => {
-                        if (prev.length > 0 && prev[prev.length - 1].label === stepItem.label) {
-                            return prev;
-                        }
-                        return [...prev, stepItem];
-                    });
+                // 3. Status sync triggers
+                if (eventType === 'task_completed') {
+                    refreshRoadmap();
+                    fetchTasks();
+                    fetchAgents();
+                } else if (eventType === 'supervisor_completed' || eventType === 'session_completed') {
+                    refreshRoadmap();
+                    fetchTasks();
+                    fetchAgents();
+                    setAgents(prev => (prev || []).map(a => ({
+                        ...a,
+                        status: 'completed',
+                        progress: 100,
+                        progress_message: 'All tasks completed successfully.',
+                    })));
+                } else if (eventType === 'task_failed') {
+                    fetchTasks();
+                    fetchAgents();
                 }
             } catch (err) {
                 console.error('[Preview WS] Failed to parse message:', err);
@@ -1429,9 +1345,6 @@ export default function StatusDashboard({
     const handleDeployPreview = async () => {
         setIsDeploying(true);
         setDeployLogs([]);
-        setAgentRunStartTime(new Date().toISOString());
-        setAgentRunCompletedTime(null);
-        setExecutionSteps([]);
         const activeToken = token || localStorage.getItem('token');
         const targetProject = selectedProjectKey || location.state?.projectToken;
         if (!activeToken) {
@@ -1473,9 +1386,6 @@ export default function StatusDashboard({
     const handleFixWithAI = async () => {
         setIsFixing(true);
         setDeployLogs([]);
-        setAgentRunStartTime(new Date().toISOString());
-        setAgentRunCompletedTime(null);
-        setExecutionSteps([]);
         try {
             const params = selectedProjectKey ? `?project_token=${selectedProjectKey}` : '';
             const res = await fetch(`${API_ENDPOINTS.AGENT_PREVIEW_FIX}${params}`, {
@@ -1750,67 +1660,6 @@ export default function StatusDashboard({
             </div >
         );
     };
-
-    const handleGenerateTasks = async () => {
-        if (!selectedProjectKey) return;
-        setIsGeneratingTasks(true);
-
-
-        try {
-            const token = localStorage.getItem('token');
-            const { API_ENDPOINTS } = await import('../config.js');
-            const headers = {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            };
-            if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
-            if (hasValidTaskToken) headers['x-task-token'] = taskToken;
-
-            // Include prerequisites data if available
-            let prerequisitesPayload = null;
-            try {
-                const savedPrereqs = localStorage.getItem(`prerequisites_completed_${selectedProjectKey}`);
-                if (savedPrereqs) {
-                    const parsed = JSON.parse(savedPrereqs);
-                    const parsedItems = Array.isArray(parsed?.items) ? parsed.items : [];
-                    prerequisitesPayload = parsedItems
-                        .map((item) => sanitizePrerequisiteForAiPayload(item))
-                        .filter((item) => item.name || item.description);
-                }
-            } catch { /* ignore */ }
-
-            const requestBody = {
-                project_token: selectedProjectKey,
-                process_mode: processMode,
-            };
-            if (prerequisitesPayload && prerequisitesPayload.length > 0) {
-                requestBody.prerequisites = prerequisitesPayload;
-            }
-
-            const response = await fetch(API_ENDPOINTS.AGENT_AUTO_GENERATE, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(requestBody)
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.detail || 'Failed to generate tasks');
-            }
-
-            await response.json();
-
-            // Refresh the task list and project info to show newly created tasks
-            await fetchTasks();
-            await queryClient.invalidateQueries({ queryKey: ['projectInfo', selectedProjectKey, taskToken] });
-        } catch (err) {
-            console.error(err.message);
-        } finally {
-            setIsGeneratingTasks(false);
-        }
-    };
-
-
 
     const renderDashboardSkeleton = () => (
         <SkeletonTheme baseColor="#e5e7eb" highlightColor="#f3f4f6">

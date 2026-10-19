@@ -150,6 +150,13 @@ export const API_ENDPOINTS = {
     AGENT_WORKSPACE_FILES: (projectToken) => `${API_BASE_URL}/agents/workspace/files?project_token=${encodeURIComponent(projectToken || 'default_project')}`,
     AGENT_WORKSPACE_FILE_CONTENT: (projectToken, filePath) => `${API_BASE_URL}/agents/workspace/file-content?project_token=${encodeURIComponent(projectToken || 'default_project')}&file_path=${encodeURIComponent(filePath || '')}`,
 
+    // Tool Adequacy
+    AGENT_TOOL_CHECK: (agentId, projectToken) =>
+        `${API_BASE_URL}/api/agent/tool-check?agent_id=${encodeURIComponent(agentId)}${projectToken ? `&project_token=${encodeURIComponent(projectToken)}` : ''}`,
+    AGENT_RECOMMEND: `${API_BASE_URL}/agents/recommend`,
+    AGENT_AUTO_CREATE: `${API_BASE_URL}/agents/auto-create`,
+
+
     // Preview Deploy
     AGENT_PREVIEW_DEPLOY: `${API_BASE_URL}/agents/preview/deploy`,
     AGENT_PREVIEW_STATUS: `${API_BASE_URL}/agents/preview/status`,

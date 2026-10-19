@@ -42,10 +42,12 @@ def git_push_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
     # Step 2: Commit checkpoint on feature branch
     mode_tag = (state.get("project_mode") or "greenfield").upper()
     summary = f"[{mode_tag}] {state.get('final_text', 'Agent task completed')[:100]}"
+    agent_name = state.get("agent_name") or state.get("agent_id") or os.environ.get("AGENT_NAME") or os.environ.get("AGENT_ID") or "Agent"
     commit_result = git.commit_checkpoint(
         task_id=task_id,
         summary=summary,
         files_changed=files_changed,
+        agent_name=agent_name,
     )
 
     commit_hash = "unknown"
@@ -69,6 +71,7 @@ def git_push_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
                 branch=feature_branch,
                 auth_token=auth_token if auth_token else None,
                 repo_url=repo_url if repo_url else None,
+                agent_name=agent_name,
             )
             if push_result.success:
                 push_success = True
@@ -90,7 +93,7 @@ def git_push_node(state: LangGraphState, ctx: NodeContext) -> dict[str, Any]:
         if merge_res.success:
             print(f"[Graph:GitPushNode] 🔀 Merged '{feature_branch}' into '{base_branch}'")
             if repo_url:
-                git.push(branch=base_branch, auth_token=auth_token if auth_token else None, repo_url=repo_url if repo_url else None)
+                git.push(branch=base_branch, auth_token=auth_token if auth_token else None, repo_url=repo_url if repo_url else None, agent_name=agent_name)
         else:
             print(f"[Graph:GitPushNode] Merge warning (auto-aborted if conflict): {merge_res.error}")
     except Exception as merge_err:

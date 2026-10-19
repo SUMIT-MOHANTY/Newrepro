@@ -171,47 +171,69 @@ function ThinkingRow({ text, isLive = false, defaultExpanded = true }) {
 function isEventForAgent(ev, agent) {
   if (!agent) return true;
   const agentId = String(agent.id || '').toLowerCase();
+  const baseId = agentId.split('#')[0];
+  const displayId = String(agent.display_id || '').toLowerCase();
   const agentName = String(agent.name || '').toLowerCase();
-  const agentSub = String(agent.sub_type || agent.specialization || '').toLowerCase();
-  const evAgent = String(ev.agent_id || ev.agent || ev.agent_name || ev.payload?.agent_id || ev.payload?.agent || '').toLowerCase();
+  const cleanAgentName = agentName.replace(/[^a-z0-9]/g, '');
 
-  // 1. Direct agent ID match
-  if (evAgent && (evAgent === agentId || evAgent === agentId.split('#')[0] || agentId.startsWith(evAgent))) {
+  const evAgentId = String(ev.agent_id || ev.payload?.agent_id || '').toLowerCase();
+  const evAgent = String(ev.agent || ev.payload?.agent || '').toLowerCase();
+  const cleanEvAgent = evAgent.replace(/[^a-z0-9]/g, '');
+  const evAgentName = String(ev.agent_name || ev.payload?.agent_name || '').toLowerCase();
+  const cleanEvAgentName = evAgentName.replace(/[^a-z0-9]/g, '');
+  const evSubAgent = String(ev.sub_agent || ev.payload?.sub_agent || '').toLowerCase();
+  const cleanEvSubAgent = evSubAgent.replace(/[^a-z0-9]/g, '');
+
+  // 1. Strict Agent ID match (UUID, base ID, or display ID)
+  if (evAgentId) {
+    if (
+      evAgentId === agentId ||
+      evAgentId === baseId ||
+      (displayId && evAgentId === displayId)
+    ) {
+      return true;
+    }
+  }
+
+  // 2. Strict Sub-Agent Role / Name match (BackendAgent, FrontendAgent, QAAgent, etc.)
+  if (evAgent) {
+    if (
+      evAgent === agentId ||
+      evAgent === baseId ||
+      (displayId && evAgent === displayId) ||
+      (agentName && evAgent === agentName) ||
+      (cleanAgentName && cleanEvAgent === cleanAgentName)
+    ) {
+      return true;
+    }
+  }
+
+  if (evSubAgent) {
+    if (
+      evSubAgent === agentId ||
+      evSubAgent === baseId ||
+      (cleanAgentName && cleanEvSubAgent === cleanAgentName)
+    ) {
+      return true;
+    }
+  }
+
+  if (evAgentName && (evAgentName === agentName || (cleanAgentName && cleanEvAgentName === cleanAgentName))) {
     return true;
   }
 
-  // Master Agent / Supervisor
-  if (agentId.includes('master') || agentId === 'm_agent_01' || agentName.includes('master')) {
-    const evLane = String(ev.lane || ev.payload?.lane || '').toLowerCase();
+  // 3. Fallback for supervisor/master agent events
+  if (agentId.includes('master') || agentId === 'm_agent_01' || agentName.includes('master') || agentName.includes('supervisor')) {
     return (
-      evAgent.includes('supervisor') ||
+      evAgentId.includes('master') ||
+      evAgentId.includes('supervisor') ||
       evAgent.includes('master') ||
-      evAgent.includes('orchestrator') ||
-      evLane.includes('system') ||
-      (ev.event_type && ev.event_type.includes('supervisor'))
+      evAgent.includes('supervisor') ||
+      (ev.event_type && ev.event_type.startsWith('supervisor_'))
     );
   }
 
-  // Test Agent / QA
-  if (agentId.includes('test') || agentId === 't_agent_01' || agentName.includes('test') || agentSub.includes('test') || agentSub.includes('qa')) {
-    const evLane = String(ev.lane || ev.payload?.lane || '').toLowerCase();
-    return evAgent.includes('qa') || evAgent.includes('test') || evLane.includes('qa') || evLane.includes('test');
-  }
-
-  // Frontend Developer
-  if (agentName.includes('front') || agentSub.includes('front') || agentId.includes('front')) {
-    const evLane = String(ev.lane || ev.payload?.lane || '').toLowerCase();
-    return evAgent.includes('front') || evLane.includes('front');
-  }
-
-  // Backend Developer
-  if (agentName.includes('back') || agentSub.includes('back') || agentId.includes('back')) {
-    const evLane = String(ev.lane || ev.payload?.lane || '').toLowerCase();
-    return evAgent.includes('back') || evLane.includes('back');
-  }
-
-  // Generic match
-  return !evAgent || evAgent.includes(agentId) || agentId.includes(evAgent) || evAgent.includes(agentName);
+  return false;
 }
 
 /**

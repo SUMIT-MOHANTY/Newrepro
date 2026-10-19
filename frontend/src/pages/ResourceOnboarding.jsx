@@ -1,9 +1,11 @@
 // Resource Onboarding page
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock, Shield } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock, Shield, Wand2, Sparkles, Wrench } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from '../components/RequestCapacityModal';
+import AgentToolPicker from '../components/AgentToolPicker';
+
 
 const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
 
@@ -117,6 +119,20 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
   const [userRbac, setUserRbac] = useState(null);
   const isOrgAdmin = Boolean(userRbac?.is_org_admin);
 
+  // ─── Tool Adequacy state ────────────────────────────────────────────────────
+  // toolAdequacy: { [agentId]: { status, missing_required, missing_recommended, verdict, suggested_tools } }
+  const [toolAdequacy, setToolAdequacy] = useState({});
+  const [toolPickerOpen, setToolPickerOpen] = useState(null); // agentId or null
+  const adequacyFetchedRef = useRef({}); // tracks which agentIds we've already fetched
+
+  // ─── Auto-create recommendations state ─────────────────────────────────────
+  const [recommendations, setRecommendations] = useState(null); // null = not loaded
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false);
+  const [autoCreateLoading, setAutoCreateLoading] = useState(false);
+  const [autoCreateError, setAutoCreateError] = useState('');
+  // Incrementing this counter re-triggers the agent fetch useEffect after auto-create
+  const [autoCreateDone, setAutoCreateDone] = useState(0);
+
   useEffect(() => {
     if (!token) return;
     fetch(API_ENDPOINTS.ORG_RBAC_ME, {
@@ -221,13 +237,17 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       }
     };
 
-    fetchCustomAgents();
+    fetchCustomAgents().then(() => {
+      // After a successful auto-create re-fetch, clear recommendations panel
+      if (autoCreateDone > 0) setRecommendations(null);
+    });
 
     return () => {
       isMounted = false;
       controller.abort();
     };
-  }, [token, currentProjectToken]);
+  }, [token, currentProjectToken, autoCreateDone]);
+
 
   // ─── Fetch quota ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -364,9 +384,97 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
 
   // ─── Derived counts ──────────────────────────────────────────────────────────
   const totalAllocated = thisProjectUiSharedTotal + thisProjectUiDedicatedTotal;
+
+  // hasCriticalToolGap: true if any *active* (allocated) agent has a critical tool gap
+  const hasCriticalToolGap = useMemo(() =>
+    Object.entries(toolAdequacy).some(([agentId, adequacy]) => {
+      const alloc = allocations[agentId] || { shared: 0, dedicated: 0 };
+      const isActive = (alloc.shared || 0) + (alloc.dedicated || 0) > 0;
+      return isActive && adequacy?.status === 'critical';
+    }),
+    [toolAdequacy, allocations]
+  );
+  // Note: hasCriticalToolGap does NOT block the submit button (per spec — hard block is at runtime).
   const canSubmit = !isSubmitting && !quotaExceeded && agents.length > 0;
 
+  // ─── Fetch tool adequacy for a single active agent ────────────────────────
+  const fetchToolAdequacy = useCallback(async (agentId) => {
+    if (!token || adequacyFetchedRef.current[agentId]) return;
+    adequacyFetchedRef.current[agentId] = true;
+    try {
+      const res = await fetch(
+        API_ENDPOINTS.AGENT_TOOL_CHECK(agentId, currentProjectToken),
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setToolAdequacy(prev => ({ ...prev, [agentId]: data }));
+    } catch (_) {
+      // silently ignore — tool check is non-blocking
+    }
+  }, [token, currentProjectToken]);
+
+  // ─── Fetch recommendations for empty state ────────────────────────────────
+  const fetchRecommendations = useCallback(async () => {
+    if (!token || !currentProjectToken) return;
+    setLoadingRecommendations(true);
+    try {
+      const res = await fetch(API_ENDPOINTS.AGENT_RECOMMEND, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ project_token: currentProjectToken }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setRecommendations(data.recommendations || []);
+    } catch (_) {
+      setRecommendations([]);
+    } finally {
+      setLoadingRecommendations(false);
+    }
+  }, [token, currentProjectToken]);
+
+  // ─── Auto-create agents from recommendations ──────────────────────────────
+  const handleAutoCreate = useCallback(async () => {
+    if (!token || !recommendations || recommendations.length === 0) return;
+    setAutoCreateLoading(true);
+    setAutoCreateError('');
+    try {
+      const res = await fetch(API_ENDPOINTS.AGENT_AUTO_CREATE, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          project_token: currentProjectToken,
+          agents: recommendations,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'Auto-create failed');
+      // Refresh agent list so the new agents appear
+      adequacyFetchedRef.current = {};
+      setAllocations({});
+      // Re-trigger the fetchCustomAgents useEffect by bumping a counter wouldn't
+      // work cleanly; instead, we navigate away and back is not ideal — just reload agents inline.
+      // We'll dispatch a synthetic re-fetch by toggling a dummy state.
+      setAgents([]); // triggers the useEffect that depends on token + currentProjectToken indirectly
+      // Actually setAgents([]) alone won't re-trigger. We need to call the fetch again.
+      // Use a small trick: set a state flag that useEffect watches.
+      setAutoCreateDone(prev => prev + 1);
+    } catch (err) {
+      setAutoCreateError(err.message || 'Auto-create failed');
+    } finally {
+      setAutoCreateLoading(false);
+    }
+  }, [token, currentProjectToken, recommendations]);
+
   return (
+
     <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
       <div className="max-w-4xl mx-auto px-3 py-3 sm:py-4">
         <div className="bg-app-bg-card/95 backdrop-blur-md rounded-xl border border-app-border-light shadow-md p-3 sm:p-4 space-y-3">
@@ -522,12 +630,73 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 {agentsError}
               </div>
             ) : agents.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-8 border border-dashed border-app-border-light rounded-xl bg-app-bg-muted/5">
-                <Bot className="w-8 h-8 text-app-text-muted/30 mb-2 animate-bounce" />
-                <p className="text-xs font-semibold text-app-text-muted">No custom agents added yet</p>
-                <p className="text-[10px] text-app-text-muted/60 mt-0.5 max-w-xs text-center">
-                  Add custom skills-based agents under the Agents dashboard first.
-                </p>
+              /* ── Smart Empty State: AI Recommendations Panel ── */
+              <div className="space-y-3">
+                <div className="flex flex-col items-center justify-center py-6 border border-dashed border-app-border-light rounded-xl bg-app-bg-muted/5">
+                  <Bot className="w-8 h-8 text-app-text-muted/30 mb-2 animate-bounce" />
+                  <p className="text-xs font-semibold text-app-text-muted">No custom agents added yet</p>
+                  <p className="text-[10px] text-app-text-muted/60 mt-0.5 max-w-xs text-center mb-3">
+                    You can add agents manually via the Agents dashboard, or let AI recommend the right agents for this project.
+                  </p>
+                  {recommendations === null ? (
+                    <button
+                      type="button"
+                      onClick={fetchRecommendations}
+                      disabled={loadingRecommendations || !currentProjectToken}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-lg bg-app-primary text-white hover:bg-app-primary/90 disabled:opacity-60 transition-colors shadow-sm"
+                    >
+                      {loadingRecommendations
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : <Sparkles className="w-3 h-3" />
+                      }
+                      {loadingRecommendations ? 'Analyzing project tasks…' : 'Recommend Agents for This Project'}
+                    </button>
+                  ) : recommendations.length === 0 ? (
+                    <p className="text-[10px] text-app-text-muted italic">
+                      No tasks found for this project — add tasks first, then come back.
+                    </p>
+                  ) : (
+                    <div className="w-full mt-1 space-y-2">
+                      <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider px-1">
+                        AI-Recommended Agents
+                      </p>
+                      {recommendations.map((rec, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-2 rounded-lg border border-app-primary/20 bg-app-primary/5">
+                          <div className="flex items-center gap-2">
+                            <Wand2 className="w-3.5 h-3.5 text-app-primary shrink-0" />
+                            <div>
+                              <p className="text-[11px] font-bold text-app-text-main">{rec.role}</p>
+                              <p className="text-[9px] text-app-text-muted">
+                                {rec.task_count} task{rec.task_count !== 1 ? 's' : ''} · {rec.tools.join(', ')}
+                              </p>
+                            </div>
+                          </div>
+                          <span className="px-1.5 py-0.5 text-[8px] font-bold rounded uppercase bg-app-primary/15 text-app-primary border border-app-primary/20">
+                            {rec.specialization}
+                          </span>
+                        </div>
+                      ))}
+                      {autoCreateError && (
+                        <div className="flex items-center gap-1.5 text-[10px] text-red-400 px-1">
+                          <AlertTriangle className="w-3 h-3 shrink-0" />
+                          {autoCreateError}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleAutoCreate}
+                        disabled={autoCreateLoading}
+                        className="w-full mt-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-lg bg-emerald-600 text-white hover:bg-emerald-600/90 disabled:opacity-60 transition-colors shadow-sm"
+                      >
+                        {autoCreateLoading
+                          ? <Loader2 className="w-3 h-3 animate-spin" />
+                          : <Sparkles className="w-3 h-3" />
+                        }
+                        {autoCreateLoading ? 'Creating agents…' : `Auto-Create ${recommendations.length} Recommended Agent${recommendations.length !== 1 ? 's' : ''}`}
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="space-y-1.5">
@@ -538,11 +707,19 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                   const totalForAgent = sharedVal + dedicatedVal;
                   const isActive = totalForAgent > 0;
 
+                  // Trigger tool adequacy fetch lazily when an agent becomes active
+                  if (isActive && token && !adequacyFetchedRef.current[agent.id]) {
+                    fetchToolAdequacy(agent.id);
+                  }
+
                   // Determine if we can still increase each type
                   const canAddShared = sharedRemaining > 0;
                   const canAddDedicated = dedicatedRemaining > 0;
 
                   const spec = agent.specialization || 'Development';
+                  const adequacy = toolAdequacy[agent.id];
+
+
 
                   return (
                     <div
@@ -577,6 +754,69 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                                 Allocated
                               </span>
                             )}
+
+                            {/* Tool Adequacy Status Badge & Picker */}
+                            <div className="relative inline-flex items-center gap-1">
+                              {isActive && (
+                                !adequacy ? (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-medium rounded-full bg-app-bg-muted text-app-text-muted border border-app-border-light">
+                                    <Loader2 className="w-2.5 h-2.5 animate-spin" /> Checking tools...
+                                  </span>
+                                ) : adequacy.status === 'sufficient' ? (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-bold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" title={adequacy.verdict}>
+                                    <CheckCircle2 className="w-2.5 h-2.5" /> Tools Verified
+                                  </span>
+                                ) : adequacy.status === 'warning' ? (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-bold rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20" title={adequacy.verdict}>
+                                    <AlertTriangle className="w-2.5 h-2.5" /> Missing: {(adequacy.missing_recommended || []).join(', ')}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8px] font-bold rounded-full bg-red-500/10 text-red-400 border border-red-500/20 animate-pulse" title={adequacy.verdict}>
+                                    <AlertTriangle className="w-2.5 h-2.5" /> Critical Missing: {(adequacy.missing_required || []).join(', ')}
+                                  </span>
+                                )
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => setToolPickerOpen(toolPickerOpen === agent.id ? null : agent.id)}
+                                className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8px] font-bold rounded border transition-colors ${
+                                  isActive && adequacy?.status === 'critical'
+                                    ? 'border-red-500/30 bg-red-500/15 text-red-300 hover:bg-red-500/25'
+                                    : isActive && adequacy?.status === 'warning'
+                                    ? 'border-amber-500/30 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25'
+                                    : 'border-app-border-light bg-app-bg-muted/40 text-app-text-muted hover:text-app-text-main hover:bg-app-bg-muted'
+                                }`}
+                                title="Assign or modify agent tools"
+                              >
+                                <Wrench className="w-2.5 h-2.5" />
+                                {isActive && adequacy?.status === 'critical'
+                                  ? 'Add Missing Tools'
+                                  : isActive && adequacy?.status === 'warning'
+                                  ? 'Add Tools'
+                                  : 'Tools'}
+                              </button>
+
+                              {toolPickerOpen === agent.id && (
+                                <AgentToolPicker
+                                  agentId={agent.id}
+                                  agentName={agent.name}
+                                  currentTools={agent.allowed_tools || []}
+                                  missingTools={
+                                    adequacy?.status === 'critical'
+                                      ? (adequacy.missing_required || [])
+                                      : (adequacy?.missing_recommended || [])
+                                  }
+                                  token={token}
+                                  onClose={() => setToolPickerOpen(null)}
+                                  onUpdate={(newTools) => {
+                                    setAgents(prev => prev.map(a => a.id === agent.id ? { ...a, allowed_tools: newTools } : a));
+                                    delete adequacyFetchedRef.current[agent.id];
+                                    fetchToolAdequacy(agent.id);
+                                  }}
+                                />
+                              )}
+                            </div>
                           </div>
                           {agent.skills_summary && (
                             <p className="text-[10px] text-app-text-muted mt-0.5 leading-relaxed truncate max-w-md sm:max-w-lg" title={agent.skills_summary}>
@@ -642,6 +882,19 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                   <span className="text-purple-400"> · {thisProjectUiDedicatedTotal} dedicated</span>
                 )}
               </span>
+            </div>
+          )}
+
+          {/* Critical Tool Gap Advisory Notice */}
+          {hasCriticalToolGap && (
+            <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 flex items-start gap-2 text-xs text-red-400 animate-in fade-in duration-200 shadow-xs">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
+              <div>
+                <p className="font-bold">Missing Required Tools Detected</p>
+                <p className="text-[10px] text-red-300 mt-0.5 leading-relaxed">
+                  One or more allocated agents are missing required tools for their tasks. Use the <span className="font-semibold underline">"Add Missing Tools"</span> button on the agent card to attach them. The Master Agent will abort container execution at runtime if critical tools remain missing.
+                </p>
+              </div>
             </div>
           )}
 

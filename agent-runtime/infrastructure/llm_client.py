@@ -74,14 +74,22 @@ class LLMClient:
         """
         cls._usage_sink = sink
 
-    def __init__(self, config: ModelConfig | None = None) -> None:
+    def __init__(self, config: ModelConfig | None = None, **kwargs: Any) -> None:
         self._config = config
         self._limits = ResourceLimits()
-        self._api_url = os.environ.get("AI_API_URL", "https://brn-llama.bourntec.com/api/process")
-        self._agent_id = os.environ.get("AI_AGENT_ID", "igi3yge8763t876gsd97ys97t76543sd5tt3e866e876riyueg87eyt78eh-38eh9e8sh")
-        self._platform_id = os.environ.get("AI_PLATFORM_ID", "DSuite")
+        self._api_url = (
+            kwargs.get("api_url")
+            or (getattr(config, "api_url", None) if config else None)
+            or os.environ.get("AI_API_URL", "https://brn-llama.bourntec.com/api/process")
+        )
+        self._agent_id = (
+            kwargs.get("agent_id")
+            or os.environ.get("AI_AGENT_ID", "igi3yge8763t876gsd97ys97t76543sd5tt3e866e876riyueg87eyt78eh-38eh9e8sh")
+        )
+        self._platform_id = kwargs.get("platform_id") or os.environ.get("AI_PLATFORM_ID", "DSuite")
         self._model = (
-            (config.model if config else None)
+            kwargs.get("model")
+            or (config.model if config else None)
             or os.environ.get("AI_MODEL")
             or os.environ.get("MODEL_NAME", "claude")
         )

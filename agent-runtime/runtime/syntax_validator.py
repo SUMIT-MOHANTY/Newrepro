@@ -248,7 +248,8 @@ class SyntaxValidator:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _validate_python(self, filepath: Path, content: str) -> Optional[Dict]:
-        """Validate Python syntax using py_compile."""
+        """Validate Python syntax using py_compile and critical framework trap detection."""
+        # 1. Structural parse check via py_compile
         try:
             result = subprocess.run(
                 [_py_interpreter(), "-m", "py_compile", str(filepath)],
@@ -261,18 +262,39 @@ class SyntaxValidator:
                 line_num = int(line_match.group(1)) if line_match else 0
                 return {"error": error_msg, "line": line_num, "fixable": True}
 
-            return None
-
         except FileNotFoundError:
             try:
                 compile(content, str(filepath), "exec")
-                return None
             except SyntaxError as e:
                 return {"error": str(e), "line": e.lineno or 0, "fixable": True}
-
         except Exception as e:
             self._log(f"Python validation error: {e}")
-            return None
+
+        # 2. Critical Framework Pre-Flight Traps (Pydantic v2 & SQLAlchemy 2.0)
+        lines = content.splitlines()
+        for idx, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+
+            # Trap A: Pydantic v2 BaseSettings import error
+            if "pydantic" in stripped and "BaseSettings" in stripped:
+                if re.search(r'from\s+pydantic\s+import\s+[^#]*\bBaseSettings\b', stripped):
+                    return {
+                        "error": "Pydantic v2 Error: 'BaseSettings' must be imported from 'pydantic_settings', not 'pydantic'. Use: 'from pydantic_settings import BaseSettings'",
+                        "line": idx,
+                        "fixable": True,
+                    }
+
+            # Trap B: SQLAlchemy mapped_column / Column using python datetime instead of SQLAlchemy DateTime
+            if re.search(r'\b(?:mapped_column|Column)\s*\(\s*datetime(?:\.datetime)?\b', stripped):
+                return {
+                    "error": "SQLAlchemy Error: Invalid column type 'datetime'. SQLAlchemy models require 'DateTime' from 'sqlalchemy', not Python's 'datetime' module/class.",
+                    "line": idx,
+                    "fixable": True,
+                }
+
+        return None
 
     # ─────────────────────────────────────────────────────────────────────────
     # JAVASCRIPT / JSX / TYPESCRIPT

@@ -452,7 +452,8 @@ class AgentService:
         agent_id: str,
         message: str,
         log_type: str = "info",
-        project_token: Optional[str] = None
+        project_token: Optional[str] = None,
+        mirror_to_container: bool = True,
     ) -> Dict[str, Any]:
         """Append a real-time execution log entry to the agent's output log terminal."""
         key = project_token or "default"
@@ -480,7 +481,7 @@ class AgentService:
             agent["output_log"] = agent["output_log"][-300:]
 
         # Mirror log to container playground if active (only for host-initiated events, not container stdout)
-        if log_type != "output":
+        if mirror_to_container and log_type not in ("output", "stdout"):
             try:
                 from app.infrastructure.containers.playground_manager import playground_manager
                 base_id = agent_id.split("#")[0] if agent_id else ""

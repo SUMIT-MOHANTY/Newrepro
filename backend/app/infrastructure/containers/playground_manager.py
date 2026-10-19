@@ -416,23 +416,19 @@ class PlaygroundContainerManager:
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         line_clean = line.strip()
-                        if line_clean:
-                            self.append_log_to_container(container_name, line_clean)
-                            if line_callback:
-                                try:
-                                    line_callback(line_clean)
-                                except Exception:
-                                    pass
+                        if line_clean and line_callback:
+                            try:
+                                line_callback(line_clean)
+                            except Exception:
+                                pass
                         if "Container entering sleep. Exiting daemon process." in line_clean:
                             break
 
-                if buffer.strip():
-                    self.append_log_to_container(container_name, buffer.strip())
-                    if line_callback:
-                        try:
-                            line_callback(buffer.strip())
-                        except Exception:
-                            pass
+                if buffer.strip() and line_callback:
+                    try:
+                        line_callback(buffer.strip())
+                    except Exception:
+                        pass
 
                 inspect_res = self._docker_client.api.exec_inspect(exec_id)
                 exit_code = inspect_res.get("ExitCode")
@@ -452,13 +448,11 @@ class PlaygroundContainerManager:
                     for line in process.stdout:
                         output_lines.append(line)
                         line_clean = line.strip()
-                        if line_clean:
-                            self.append_log_to_container(container_name, line_clean)
-                            if line_callback:
-                                try:
-                                    line_callback(line_clean)
-                                except Exception:
-                                    pass
+                        if line_clean and line_callback:
+                            try:
+                                line_callback(line_clean)
+                            except Exception:
+                                pass
                         if "Container entering sleep. Exiting daemon process." in line_clean:
                             break
                 process.wait(timeout=timeout)

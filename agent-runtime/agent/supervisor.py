@@ -572,6 +572,7 @@ class SupervisorAgent:
                         task_id=task_id,
                         summary=task.title,
                         files_changed=result.files_changed,
+                        agent_name=agent.name,
                     )
                     if commit_res.success:
                         commit_hash = commit_res.data.get("commit_hash", "unknown")
@@ -584,7 +585,7 @@ class SupervisorAgent:
                     auth_token = os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN")
                     if repo_url:
                         print(f"[Supervisor] 🚀 Pushing feature branch '{feature_branch}' to remote: {repo_url}...")
-                        push_res = self.git_tools.push(branch=feature_branch, auth_token=auth_token, repo_url=repo_url)
+                        push_res = self.git_tools.push(branch=feature_branch, auth_token=auth_token, repo_url=repo_url, agent_name=agent.name)
                         if push_res.success:
                             push_success = True
                             push_message = f"Pushed {feature_branch} to {repo_url}"
@@ -615,7 +616,7 @@ class SupervisorAgent:
                         if merge_res.success:
                             print(f"[Supervisor] 🔀 Merged '{feature_branch}' into '{base_branch}'")
                             if repo_url:
-                                self.git_tools.push(branch=base_branch, auth_token=auth_token, repo_url=repo_url)
+                                self.git_tools.push(branch=base_branch, auth_token=auth_token, repo_url=repo_url, agent_name=agent.name)
                         else:
                             print(f"[Supervisor] ⚠️ Merge conflict/error (auto-aborted cleanly): {merge_res.error}")
                     except Exception as merge_err:

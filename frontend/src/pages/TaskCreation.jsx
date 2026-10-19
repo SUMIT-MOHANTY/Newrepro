@@ -274,6 +274,22 @@ export default function TaskCreation({
         };
     }, [loadData, selectedProjectKey, buildHeaders]);
 
+    // Poll for live task updates if any tasks are actively in progress or in review
+    useEffect(() => {
+        const hasActiveTasks = tasks.some(t => {
+            const st = String(t.status || '').toUpperCase();
+            return st === 'IN_PROGRESS' || st === 'IN_REVIEW' || st === 'DOING';
+        });
+
+        if (!hasActiveTasks || isGenerating) return;
+
+        const interval = setInterval(() => {
+            loadData();
+        }, 5000);
+
+        return () => clearInterval(interval);
+    }, [tasks, isGenerating, loadData]);
+
     // Active sprint
     const activeSprint = useMemo(() => {
         if (sprints.length > 0 && sprints[activeSprintIndex]) {
