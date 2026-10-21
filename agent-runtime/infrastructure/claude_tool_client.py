@@ -190,7 +190,7 @@ class FileManifest:
                 content,
             )
             if exports:
-                parts.append(f"exports: {', '.join(dict.fromkeys(exports)[:10])}")
+                parts.append(f"exports: {', '.join(list(dict.fromkeys(exports))[:10])}")
             imports = re.findall(r"import\s+.*?from\s+['\"]([^'\"]+)['\"]", content)
             if imports:
                 parts.append(f"imports: {', '.join(list(dict.fromkeys(imports))[:6])}")
@@ -2217,9 +2217,13 @@ class ClaudeToolClient:
             self._last_tool_sig = call_sig
             self._duplicate_call_count = 1
 
-        # Track read-inspection tools vs write tools to stop ping-pong read loops
+        # Track read-inspection tools vs write/action tools to stop ping-pong read loops
         inspection_tools = ("read_file", "list_directory", "check_syntax", "get_generated_file", "file_exists")
-        write_tools = ("write_file", "write_files", "replace_file_content", "batch_replace_file_content", "run_command", "install_and_build", "run_build")
+        write_tools = (
+            "write_file", "write_files", "replace_file_content", "batch_replace_file_content",
+            "run_command", "install_and_build", "run_build",
+            "git_commit", "git_push", "git_add_all", "submit_plan", "verify_and_summarize", "finish_task"
+        )
 
         # ── P4 Guard: repeated follow-up task submissions ────────────────────
         # A model that discovers "more work" can keep spawning follow-up tasks
@@ -2288,7 +2292,7 @@ class ClaudeToolClient:
                     "is_error": False,
                 }
 
-        if getattr(self, "_consecutive_inspection_count", 0) >= 5:
+        if tool_name in inspection_tools and getattr(self, "_consecutive_inspection_count", 0) >= 5:
             log(f"🛑 [Progress Guard] Intercepted runaway inspection sequence ({self._consecutive_inspection_count} turns)")
             return {
                 "type": "tool_result",
@@ -2563,7 +2567,7 @@ class ClaudeToolClient:
                     key_decisions.append(first_line)
 
         if tools_called:
-            summary_parts.append(f"Operations executed: {len(tools_called)} ({', '.join(dict.fromkeys(tools_called)[:5])})")
+            summary_parts.append(f"Operations executed: {len(tools_called)} ({', '.join(list(dict.fromkeys(tools_called))[:5])})")
         if key_decisions:
             summary_parts.append(f"Key decisions: {'; '.join(key_decisions[:3])}")
 

@@ -1,51 +1,26 @@
 // Resource Onboarding page
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock, Shield, Wand2, Sparkles, Wrench } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock, Shield, Wand2, Sparkles, Wrench, FileText, Edit3, X, Cpu } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from '../components/RequestCapacityModal';
 import AgentToolPicker from '../components/AgentToolPicker';
 
 
-const TASK_TOKEN_STORAGE_KEY = 'status_dashboard_task_token_cache';
-
-function decodeJwtExpiry(token) {
-  try {
-    const parts = token.split('.');
-    if (parts.length < 2) return null;
-    const payloadB64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const padded = payloadB64 + '='.repeat((4 - (payloadB64.length % 4)) % 4);
-    const payload = JSON.parse(atob(padded));
-    return typeof payload.exp === 'number' ? payload.exp : null;
-  } catch {
-    return null;
+function getLaneBadgeColor(lane) {
+  switch ((lane || '').toLowerCase()) {
+    case 'backend':
+      return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+    case 'frontend':
+      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+    case 'devops':
+      return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+    case 'qa':
+    case 'test':
+      return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+    default:
+      return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
   }
-}
-
-function readTaskTokenCache() {
-  try {
-    const raw = localStorage.getItem(TASK_TOKEN_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function getCachedTaskToken(projectKey) {
-  if (!projectKey) return null;
-  const cache = readTaskTokenCache();
-  const entry = cache[projectKey];
-  if (!entry || !entry.token) return null;
-  if (entry.expiresAt) {
-    const now = Math.floor(Date.now() / 1000);
-    if (entry.expiresAt <= now) return null;
-  } else {
-    const exp = decodeJwtExpiry(entry.token);
-    if (exp && exp <= Math.floor(Date.now() / 1000)) return null;
-  }
-  return entry.token;
 }
 
 /**
@@ -143,8 +118,8 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       .catch(() => {});
   }, [token]);
 
-  const taskToken = useMemo(() => getCachedTaskToken(currentProjectToken), [currentProjectToken]);
-  const hasValidTaskToken = Boolean(taskToken);
+  const [selectedPromptAgentIndex, setSelectedPromptAgentIndex] = useState(null);
+  const [editingPromptText, setEditingPromptText] = useState('');
 
   // ─── Quota helpers ──────────────────────────────────────────────────────────
   const maxAgentCap = quota?.max_agent_capacity ?? 0;
@@ -473,6 +448,34 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
     }
   }, [token, currentProjectToken, recommendations]);
 
+  const handleOpenPromptModal = useCallback((idx) => {
+    setSelectedPromptAgentIndex(idx);
+    setEditingPromptText(recommendations?.[idx]?.skills_content || '');
+  }, [recommendations]);
+
+  const handleSavePrompt = useCallback(() => {
+    if (selectedPromptAgentIndex !== null && recommendations) {
+      const updated = [...recommendations];
+      updated[selectedPromptAgentIndex] = {
+        ...updated[selectedPromptAgentIndex],
+        skills_content: editingPromptText,
+      };
+      setRecommendations(updated);
+      setSelectedPromptAgentIndex(null);
+    }
+  }, [selectedPromptAgentIndex, recommendations, editingPromptText]);
+
+  const handleUpdateModel = useCallback((idx, newModel) => {
+    if (recommendations) {
+      const updated = [...recommendations];
+      updated[idx] = {
+        ...updated[idx],
+        model_name: newModel,
+      };
+      setRecommendations(updated);
+    }
+  }, [recommendations]);
+
   return (
 
     <div className="h-full overflow-y-auto bg-gradient-to-br from-app-bg-page via-app-bg-page to-app-primary-light/30">
@@ -609,16 +612,141 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
             </div>
           )}
 
-          {/* Agents List */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between border-b border-app-border-light pb-1">
-              <h3 className="text-[9px] font-bold uppercase tracking-wider text-app-text-muted">
-                Available Custom Agents
-              </h3>
-              <span className="text-[9px] text-app-text-muted font-semibold">
-                {agents.length} in Pool
-              </span>
+          {/* Agents List & AI Recommendations */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-app-border-light pb-1.5">
+              <div className="flex items-center gap-2">
+                <h3 className="text-[9px] font-bold uppercase tracking-wider text-app-text-muted">
+                  Custom Project Agents
+                </h3>
+                <span className="text-[9px] text-app-text-muted font-semibold">
+                  ({agents.length} in Pool)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={fetchRecommendations}
+                disabled={loadingRecommendations || !currentProjectToken}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[10.5px] font-bold rounded-lg bg-gradient-to-r from-indigo-500 to-purple-600 text-white hover:from-indigo-600 hover:to-purple-700 disabled:opacity-60 transition-all shadow-sm"
+              >
+                {loadingRecommendations ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Sparkles className="w-3 h-3 text-amber-300" />
+                )}
+                <span>{loadingRecommendations ? 'Synthesizing...' : 'AI-Recommend'}</span>
+              </button>
             </div>
+
+            {/* AI-Synthesized Swarm Recommendations Panel */}
+            {recommendations && recommendations.length > 0 && (
+              <div className="p-3.5 rounded-xl border border-indigo-500/30 bg-indigo-500/5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-indigo-400" />
+                    <div>
+                      <h4 className="text-xs font-bold text-app-text-main">
+                        AI-Synthesized Project Team ({recommendations.length} Specialized Roles)
+                      </h4>
+                      <p className="text-[10px] text-app-text-muted">
+                        Review roles, customize AI models or system prompts, and onboard into project pool.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRecommendations(null)}
+                    className="p-1 text-app-text-muted hover:text-app-text-main text-xs rounded hover:bg-app-bg-muted"
+                    title="Dismiss"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  {recommendations.map((rec, idx) => (
+                    <div key={idx} className="p-3 rounded-lg border border-app-border-light bg-app-bg-card flex flex-col justify-between space-y-2">
+                      <div className="space-y-1">
+                        <div className="flex items-start justify-between gap-1.5">
+                          <div>
+                            <span className={`inline-block px-1.5 py-0.5 text-[8px] font-bold uppercase rounded border mb-1 ${getLaneBadgeColor(rec.lane)}`}>
+                              {rec.lane || 'general'}
+                            </span>
+                            <h5 className="text-xs font-bold text-app-text-main leading-tight">{rec.role}</h5>
+                          </div>
+                          <span className="text-[9px] font-semibold text-app-text-muted shrink-0">
+                            {rec.task_count || 0} task{rec.task_count !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-app-text-muted line-clamp-2">
+                          {rec.skills_summary || rec.justification || rec.specialization}
+                        </p>
+                      </div>
+
+                      {/* Tool tags */}
+                      <div className="flex flex-wrap gap-1">
+                        {(rec.tools || []).map((t, ti) => (
+                          <span key={ti} className="px-1.5 py-0.5 text-[8.5px] font-mono rounded bg-app-bg-muted/60 text-app-text-muted border border-app-border-light">
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+
+                      {/* Model Selector & System Prompt Button */}
+                      <div className="flex items-center justify-between pt-1 border-t border-app-border-light gap-2">
+                        <div className="flex items-center gap-1">
+                          <Cpu className="w-3 h-3 text-app-text-muted" />
+                          <select
+                            value={rec.model_name || 'claude'}
+                            onChange={(e) => handleUpdateModel(idx, e.target.value)}
+                            className="text-[10px] font-medium bg-app-bg-muted border border-app-border-light rounded px-1.5 py-0.5 text-app-text-main focus:outline-none"
+                          >
+                            <option value="claude">Claude 3.5 Sonnet</option>
+                            <option value="deepseek">DeepSeek V3</option>
+                            <option value="kimi">Kimi K1.5</option>
+                          </select>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenPromptModal(idx)}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded bg-app-bg-muted hover:bg-app-primary/10 text-app-primary border border-app-primary/30 transition-colors"
+                        >
+                          <FileText className="w-3 h-3" />
+                          <span>System Prompt</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {autoCreateError && (
+                  <div className="flex items-center gap-1.5 text-xs text-red-400 p-2 rounded bg-red-500/10 border border-red-500/20">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{autoCreateError}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={handleAutoCreate}
+                    disabled={autoCreateLoading}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-60 transition-colors shadow-sm"
+                  >
+                    {autoCreateLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    )}
+                    <span>
+                      {autoCreateLoading
+                        ? 'Creating Agents...'
+                        : `Create & Onboard ${recommendations.length} Recommended Agent${recommendations.length !== 1 ? 's' : ''}`}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
 
             {isLoadingAgents ? (
               <div className="flex flex-col items-center justify-center py-6">
@@ -630,72 +758,14 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                 {agentsError}
               </div>
             ) : agents.length === 0 ? (
-              /* ── Smart Empty State: AI Recommendations Panel ── */
+              /* ── Smart Empty State: Prompt to use AI-Recommend ── */
               <div className="space-y-3">
                 <div className="flex flex-col items-center justify-center py-6 border border-dashed border-app-border-light rounded-xl bg-app-bg-muted/5">
                   <Bot className="w-8 h-8 text-app-text-muted/30 mb-2 animate-bounce" />
                   <p className="text-xs font-semibold text-app-text-muted">No custom agents added yet</p>
                   <p className="text-[10px] text-app-text-muted/60 mt-0.5 max-w-xs text-center mb-3">
-                    You can add agents manually via the Agents dashboard, or let AI recommend the right agents for this project.
+                    Click "AI-Recommend" above to automatically generate specialized agents and handcrafted system prompts based on this project's BRD and blueprints.
                   </p>
-                  {recommendations === null ? (
-                    <button
-                      type="button"
-                      onClick={fetchRecommendations}
-                      disabled={loadingRecommendations || !currentProjectToken}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-lg bg-app-primary text-white hover:bg-app-primary/90 disabled:opacity-60 transition-colors shadow-sm"
-                    >
-                      {loadingRecommendations
-                        ? <Loader2 className="w-3 h-3 animate-spin" />
-                        : <Sparkles className="w-3 h-3" />
-                      }
-                      {loadingRecommendations ? 'Analyzing project tasks…' : 'Recommend Agents for This Project'}
-                    </button>
-                  ) : recommendations.length === 0 ? (
-                    <p className="text-[10px] text-app-text-muted italic">
-                      No tasks found for this project — add tasks first, then come back.
-                    </p>
-                  ) : (
-                    <div className="w-full mt-1 space-y-2">
-                      <p className="text-[10px] font-bold text-app-text-muted uppercase tracking-wider px-1">
-                        AI-Recommended Agents
-                      </p>
-                      {recommendations.map((rec, idx) => (
-                        <div key={idx} className="flex items-center justify-between p-2 rounded-lg border border-app-primary/20 bg-app-primary/5">
-                          <div className="flex items-center gap-2">
-                            <Wand2 className="w-3.5 h-3.5 text-app-primary shrink-0" />
-                            <div>
-                              <p className="text-[11px] font-bold text-app-text-main">{rec.role}</p>
-                              <p className="text-[9px] text-app-text-muted">
-                                {rec.task_count} task{rec.task_count !== 1 ? 's' : ''} · {rec.tools.join(', ')}
-                              </p>
-                            </div>
-                          </div>
-                          <span className="px-1.5 py-0.5 text-[8px] font-bold rounded uppercase bg-app-primary/15 text-app-primary border border-app-primary/20">
-                            {rec.specialization}
-                          </span>
-                        </div>
-                      ))}
-                      {autoCreateError && (
-                        <div className="flex items-center gap-1.5 text-[10px] text-red-400 px-1">
-                          <AlertTriangle className="w-3 h-3 shrink-0" />
-                          {autoCreateError}
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        onClick={handleAutoCreate}
-                        disabled={autoCreateLoading}
-                        className="w-full mt-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-bold rounded-lg bg-emerald-600 text-white hover:bg-emerald-600/90 disabled:opacity-60 transition-colors shadow-sm"
-                      >
-                        {autoCreateLoading
-                          ? <Loader2 className="w-3 h-3 animate-spin" />
-                          : <Sparkles className="w-3 h-3" />
-                        }
-                        {autoCreateLoading ? 'Creating agents…' : `Auto-Create ${recommendations.length} Recommended Agent${recommendations.length !== 1 ? 's' : ''}`}
-                      </button>
-                    </div>
-                  )}
                 </div>
               </div>
             ) : (
@@ -948,6 +1018,70 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
           );
         }}
       />
+      {/* System Prompt Inspection & Editing Modal */}
+      {selectedPromptAgentIndex !== null && recommendations && recommendations[selectedPromptAgentIndex] && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-app-bg-card border border-app-border-light rounded-xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[85vh] overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-app-border-light">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4 text-app-primary" />
+                <div>
+                  <h3 className="text-sm font-bold text-app-text-main">
+                    {recommendations[selectedPromptAgentIndex].role} — System Prompt
+                  </h3>
+                  <p className="text-[11px] text-app-text-muted">
+                    Bespoke role instructions synthesized by AI based on BRD & architecture blueprints
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedPromptAgentIndex(null)}
+                className="p-1 rounded-md text-app-text-muted hover:text-app-text-main hover:bg-app-bg-muted transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-4 flex-1 overflow-y-auto space-y-3">
+              <div className="flex items-center justify-between text-[11px] text-app-text-muted">
+                <span>Markdown instructions injected into container at startup:</span>
+                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-app-bg-muted border border-app-border-light">
+                  Lane: {recommendations[selectedPromptAgentIndex].lane}
+                </span>
+              </div>
+              <textarea
+                value={editingPromptText}
+                onChange={(e) => setEditingPromptText(e.target.value)}
+                rows={16}
+                className="w-full p-3 font-mono text-xs rounded-lg border border-app-border-light bg-app-bg-muted/40 text-app-text-main focus:outline-none focus:ring-1 focus:ring-app-primary resize-y"
+                placeholder="# System Prompt..."
+              />
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-2 p-3 border-t border-app-border-light bg-app-bg-muted/10">
+              <button
+                type="button"
+                onClick={() => setSelectedPromptAgentIndex(null)}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg text-app-text-muted hover:text-app-text-main hover:bg-app-bg-card transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSavePrompt}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-app-primary text-white hover:bg-app-primary/90 transition-colors shadow-sm"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Save Instructions
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

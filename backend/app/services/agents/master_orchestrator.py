@@ -555,33 +555,42 @@ def organize_tasks_into_phases(assignments: List[Dict[str, Any]]) -> Dict[str, L
 
     Phase 1: Backend & Data Layer (agents working on backend/database/server)
     Phase 2: Frontend & UI Layer (agents working on frontend/ui/web)
-    Phase 3: QA & Verification Gate (Test Agent T_agent_01 / QA specialists)
+    Phase 3: DevOps & Container Infrastructure (Dockerfile, docker-compose, nginx, packaging)
+    Phase 4: QA & Verification Gate (Test Agent T_agent_01 / QA specialists)
     """
-    phase1_agents = set()
-    phase2_agents = set()
-    phase3_agents = set()
+    phase1_backend: List[str] = []
+    phase2_frontend: List[str] = []
+    phase3_devops: List[str] = []
+    phase4_qa: List[str] = []
+
+    seen_agents: Set[str] = set()
 
     for a in assignments:
-        lane = a.get("lane", "general")
+        lane = str(a.get("lane", "general")).lower()
         aid = a.get("assigned_to")
-        if not aid:
+        if not aid or aid in seen_agents:
             continue
-        if lane in ("backend", "devops") or any(k in lane for k in ("db", "data", "api")):
-            phase1_agents.add(aid)
-        elif lane in ("frontend", "ui", "web"):
-            phase2_agents.add(aid)
-        elif lane in ("qa", "test", "verification"):
-            phase3_agents.add(aid)
-        else:
-            phase1_agents.add(aid)
+        seen_agents.add(aid)
 
-    if not phase3_agents:
-        phase3_agents.add("T_agent_01")
+        if lane in ("backend", "api", "database", "data") or any(k in lane for k in ("db", "server", "model")):
+            phase1_backend.append(aid)
+        elif lane in ("frontend", "ui", "web", "client"):
+            phase2_frontend.append(aid)
+        elif lane in ("devops", "infra", "infrastructure", "docker", "deploy", "ci"):
+            phase3_devops.append(aid)
+        elif lane in ("qa", "test", "verification", "testing"):
+            phase4_qa.append(aid)
+        else:
+            phase1_backend.append(aid)
+
+    if not phase4_qa:
+        phase4_qa.append("T_agent_01")
 
     return {
-        "phase1_backend": list(phase1_agents),
-        "phase2_frontend": list(phase2_agents),
-        "phase3_qa_gate": list(phase3_agents),
+        "phase1_backend": phase1_backend,
+        "phase2_frontend": phase2_frontend,
+        "phase3_devops": phase3_devops,
+        "phase4_qa_gate": phase4_qa,
     }
 
 
@@ -861,6 +870,8 @@ def _infer_task_lane(title: str, description: str) -> str:
     desc_lower = (description or "").lower()
 
     # 1. Title is the definitive intent of the task
+    if any(w in title_lower for w in ("test suite", "test suites", "e2e test", "e2e tests", "unit test", "unit & integration")):
+        return "qa"
     if any(w in title_lower for w in ("screen", "screens", "ui", "view", "page", "dashboard", "component", "components", "frontend", "form", "loading", "spinner", "toast", "skeleton", "theme")):
         return "frontend"
     if any(w in title_lower for w in ("backend", "api", "database", "model", "schema", "controller", "server", "auth", "jwt", "migration")):
@@ -1080,6 +1091,7 @@ def build_agent_prompt(
     workspace_analysis: Dict[str, Any],
     is_qa_agent: bool = False,
     workspace_dir: Optional[str] = None,
+    skills_content: Optional[str] = None,
 ) -> str:
     """Build a comprehensive, tech-stack-agnostic prompt for an agent.
 
@@ -1212,6 +1224,7 @@ def build_agent_prompt(
         f"- Authorized Container Tools: {tools_str}\n"
         f"- Primary Focus Scope: {file_ownership}\n"
         + (f"- Skills & Focus: {skills_summary}\n" if skills_summary else "")
+        + (f"\n## Bespoke System Prompt & Specialization Instructions:\n{skills_content.strip()}\n" if skills_content and skills_content.strip() else "")
         + f"\n{workspace_context}\n{contracts_context}\n{blueprints_context}\n"
         + (f"## Business Requirements & Architecture:\n{brd_context}\n" if brd_context else "")
         + f"\n{task_summary}\n"
@@ -1434,3 +1447,109 @@ def assess_project_runnable_state(
             "error": str(e),
         }
 
+
+
+def triage_deployment_failure_for_hotfix(
+    db: Session,
+    project_token: str,
+    workspace_dir: str,
+    deploy_error: str,
+    deploy_report: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Master Agent Hot-Fix Triage:
+    Analyzes a deployment failure raised by the Deploy Agent, determines whether the root cause
+    is in the Backend, Frontend, or DevOps/Nginx layer, looks up the exact AI agent assigned to
+    those tasks in `models.Task`, and constructs a surgical Hot-Fix instruction prompt.
+    """
+    report = deploy_report or {}
+    fe_err = str(report.get("frontend_error") or "")
+    be_err = str(report.get("backend_error") or "")
+    combined = f"{fe_err}\n{be_err}\n{deploy_error}".strip()
+    lower_err = combined.lower()
+
+    # 1. Determine responsible lane from error signature & file paths
+    if fe_err or any(k in lower_err for k in (
+        "vite", "rollup", "tsx", "jsx", "npm run build", "postcss", "tailwind", "react", "src/components", "src/pages", "src/app"
+    )):
+        target_lane = "frontend"
+    elif any(k in lower_err for k in (
+        "nginx", "docker-compose", "dockerfile", "502 bad gateway", "upstream", "nginx.conf"
+    )) and not be_err:
+        target_lane = "devops"
+    else:
+        target_lane = "backend"
+
+    # 2. Find the exact AI agent who owns tasks in `target_lane` (or modified the offending file)
+    tasks = db.query(models.Task).filter(models.Task.project_token == project_token).all()
+    responsible_agent_id = None
+    responsible_task_title = None
+
+    # Extract any file paths mentioned in the traceback
+    mentioned_files = re.findall(
+        r'([a-zA-Z0-9_\-./]+\.(?:py|tsx|jsx|ts|js|vue|svelte|css|conf|yml|yaml))',
+        combined,
+    )
+
+    for t in tasks:
+        t_aid = getattr(t, "assigned_agent_id", None)
+        if not t_aid or _is_system_id(t_aid):
+            continue
+        t_title = getattr(t, "task_name", None) or getattr(t, "title", "") or ""
+        t_desc = getattr(t, "description", "") or ""
+        t_lane = _infer_task_lane(t_title, t_desc)
+
+        # Match by offending file name in task description/title first
+        if mentioned_files and any(mf.split("/")[-1] in f"{t_title} {t_desc}" for mf in mentioned_files):
+            responsible_agent_id = t_aid
+            responsible_task_title = t_title
+            break
+
+        if t_lane == target_lane and not responsible_agent_id:
+            responsible_agent_id = t_aid
+            responsible_task_title = t_title
+
+    # Fallback: pick any onboarded custom agent matching the lane or first available worker
+    if not responsible_agent_id:
+        from app.services.agents.agent_service import agent_service
+        all_agents = agent_service.get_all_agents(project_token)
+        for a in all_agents:
+            aid = a.get("id", "")
+            if _is_system_id(aid):
+                continue
+            lanes = get_agent_lanes_from_skills(
+                agent_id=aid,
+                skills_tags=a.get("skills_tags"),
+                specialization=a.get("specialization"),
+            )
+            if target_lane in lanes:
+                responsible_agent_id = aid
+                break
+        if not responsible_agent_id:
+            workers = [a["id"] for a in all_agents if not _is_system_id(a.get("id", ""))]
+            responsible_agent_id = workers[0] if workers else "M_agent_01"
+
+    offending_str = ", ".join(list(dict.fromkeys(mentioned_files[:6]))) or "Inspect entrypoint and logs below"
+    hotfix_prompt = (
+        f"# 🚨 URGENT PRODUCTION DEPLOYMENT HOT-FIX (Assigned by Master Agent)\n\n"
+        f"- **Target Lane**: `{target_lane.upper()}`\n"
+        f"- **Responsible Agent**: `{responsible_agent_id}`\n"
+        f"- **Related Task Scope**: `{responsible_task_title or 'Application Runtime & Build'}`\n"
+        f"- **Suspected Files**: `{offending_str}`\n\n"
+        f"## Exact Deployment / Runtime Failure Captured by Deploy Agent:\n"
+        f"```\n{combined[:3000]}\n```\n\n"
+        "## MANDATORY HOT-FIX INSTRUCTIONS:\n"
+        "1. Read the failing file(s) identified in the traceback above using `read_file`.\n"
+        "2. Apply a surgical fix using `replace_file_content` or `write_file` to resolve the root cause "
+        "(missing import, broken schema/model, startup crash, or build error).\n"
+        "3. Verify syntax and compilation using `check_syntax` or `run_command`.\n"
+        "4. Commit your hot-fix so the Deploy Agent can re-pull `main` and complete live deployment."
+    )
+
+    return {
+        "target_lane": target_lane,
+        "responsible_agent_id": responsible_agent_id,
+        "responsible_task_title": responsible_task_title,
+        "offending_files": list(dict.fromkeys(mentioned_files[:6])),
+        "hotfix_prompt": hotfix_prompt,
+        "error_summary": combined[:500],
+    }

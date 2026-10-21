@@ -1752,7 +1752,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const bootstrapJson = await bootstrapRes.json().catch(() => ({}));
                 if (!bootstrapRes.ok) {
                     const errorMsg = bootstrapJson?.detail || 'Failed to create project during prerequisites.';
-                    throw new Error(sanitizeErrorMessage(errorMsg));
+                    console.warn('Project bootstrap warning (proceeding with local flow):', errorMsg);
                 }
 
                 // If bootstrap returned external task credentials, persist them into the draft project

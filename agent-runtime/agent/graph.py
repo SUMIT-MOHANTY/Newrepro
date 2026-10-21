@@ -80,17 +80,24 @@ def route_code_result(state: LangGraphState) -> Literal["reconcile_deps", "fail"
     return "reconcile_deps"
 
 
-def route_follow_up_result(state: LangGraphState) -> Literal["preview", "reconcile_deps", "fail"]:
+def _is_deploy_task(state: LangGraphState) -> bool:
+    task_str = str(state.get("task_type", "")).lower()
+    agent_id = str(os.environ.get("AGENT_ID", "")).lower()
+    return task_str == "deploy" or "deploy" in agent_id
+
+
+def route_follow_up_result(state: LangGraphState) -> Literal["preview", "git_push", "reconcile_deps", "fail"]:
     if state.get("build_success"):
-        return "preview"
+        return "preview" if _is_deploy_task(state) else "git_push"
     if state.get("files_changed"):
         return "reconcile_deps"
     return "fail"
 
 
-def route_build_result(state: LangGraphState) -> Literal["preview", "fix", "fail"]:
+def route_build_result(state: LangGraphState) -> Literal["preview", "git_push", "fix", "fail"]:
     if state.get("build_success"):
-        return "preview"
+        # Developer agents NEVER start live preview — they commit & push to Git immediately after build passes!
+        return "preview" if _is_deploy_task(state) else "git_push"
 
     fix_attempts = state.get("fix_attempts", 0)
     current_sig = state.get("verification_signature") or ""
@@ -174,7 +181,7 @@ def create_agent_graph(ctx: NodeContext) -> StateGraph:
         builder.add_conditional_edges(
             f_node,
             route_follow_up_result,
-            {"preview": "preview", "reconcile_deps": "reconcile_deps", "fail": "fail"},
+            {"preview": "preview", "git_push": "git_push", "reconcile_deps": "reconcile_deps", "fail": "fail"},
         )
 
     builder.add_edge("fail", END)
@@ -183,7 +190,7 @@ def create_agent_graph(ctx: NodeContext) -> StateGraph:
     builder.add_conditional_edges(
         "build",
         route_build_result,
-        {"preview": "preview", "fix": "fix", "fail": "fail"},
+        {"preview": "preview", "git_push": "git_push", "fix": "fix", "fail": "fail"},
     )
 
     builder.add_edge("fix", "build")

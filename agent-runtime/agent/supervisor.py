@@ -255,9 +255,18 @@ class SupervisorAgent:
         return added
 
     def _ensure_early_preview_running(self) -> None:
-        """Auto-boot live application preview early in a background daemon thread
-        as soon as baseline frontend or backend structure is in place, so user can see
-        the running UI while remaining swarm tasks continue in the background."""
+        """Strictly disabled for developer agents.
+        Only the dedicated Deploy Agent container is permitted to boot Nginx / live preview servers.
+        """
+        task_type = os.environ.get("TASK_TYPE", "").lower()
+        agent_id = os.environ.get("AGENT_ID", "").lower()
+        if (
+            os.environ.get("SKIP_IN_CONTAINER_PREVIEW", "true").lower() in ("1", "true", "yes")
+            or task_type != "deploy"
+            or "deploy" not in agent_id
+        ):
+            return
+
         if getattr(self, "_early_preview_started", False):
             return
         ws = self.workspace_path

@@ -20,9 +20,11 @@ CONTAINER_PREFIX = "dsuite_agent_"
 
 PREFERRED_IMAGES = [
     "dsuite-agent-runtime:latest",
-    "python:3.10-slim",
-    "node:18-slim",
-    "ubuntu:22.04",
+    "vibecoding-agent-runtime:latest",
+    "containerhub.bourntec.com/vibecoding-agent-runtime:1.0.8-prod",
+    "containerhub.bourntec.com/vibecoding-agent-runtime:1.0.8",
+    "containerhub.bourntec.com/vibecoding-agent-runtime:1.0.6-prod",
+    "containerhub.bourntec.com/vibecoding-agent-runtime:1.0.3",
 ]
 
 
@@ -180,17 +182,10 @@ class PlaygroundContainerManager:
             if os.path.isdir(runtime_dir):
                 vols[runtime_dir] = {"bind": "/app", "mode": "rw"}
 
-            import socket
-
-            preview_port_free = False
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    preview_port_free = (s.connect_ex(("127.0.0.1", 8085)) != 0)
-            except Exception:
-                preview_port_free = False
-
-            ports_dict = {"80/tcp": ("0.0.0.0", 8085)} if preview_port_free else None
-            cli_port_args = ["-p", "8085:80"] if preview_port_free else []
+            # Developer worker containers NEVER bind host preview port 8085!
+            # Only the dedicated deployment container (provision_deploy_container) binds the live preview port.
+            ports_dict = None
+            cli_port_args = []
             extra_hosts = {"host.docker.internal": "host-gateway"}
 
             try:
@@ -296,6 +291,116 @@ class PlaygroundContainerManager:
         except Exception:
             pass
 
+    def provision_deploy_container(
+        self,
+        project_token: str,
+        workspace_host_path: str,
+        preferred_host_port: int = 8085,
+    ) -> Tuple[Optional[str], int]:
+        """Provision a dedicated, isolated Deployment Container (`dsuite_deploy_<project>`) with Nginx on port 80
+        mapped to `preferred_host_port` (default 8085). Separate from all developer agent containers.
+        """
+        import socket
+
+        abs_workspace = os.path.abspath(workspace_host_path)
+        os.makedirs(abs_workspace, exist_ok=True)
+        clean_proj = "".join(c for c in (project_token or "proj") if c.isalnum() or c == "_")[:16].lower()
+        container_name = f"dsuite_deploy_{clean_proj}"
+
+        with self.lock:
+            # Remove any existing deploy container for this project so we get a clean Nginx/service boot
+            self._force_remove_container(container_name)
+
+            # Find available host port starting at preferred_host_port (8085)
+            host_port = preferred_host_port
+            for cand_port in range(preferred_host_port, preferred_host_port + 25):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        if s.connect_ex(("127.0.0.1", cand_port)) != 0:
+                            host_port = cand_port
+                            break
+                except Exception:
+                    pass
+
+            image = self._get_available_image()
+            runtime_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "agent-runtime")
+            )
+            vols = {abs_workspace: {"bind": "/workspace", "mode": "rw"}}
+            if os.path.isdir(runtime_dir):
+                vols[runtime_dir] = {"bind": "/app", "mode": "rw"}
+
+            ports_dict = {"80/tcp": ("0.0.0.0", host_port)}
+            extra_hosts = {"host.docker.internal": "host-gateway"}
+
+            try:
+                if self._docker_client:
+                    c = self._docker_client.containers.run(
+                        image=image,
+                        name=container_name,
+                        detach=True,
+                        volumes=vols,
+                        ports=ports_dict,
+                        extra_hosts=extra_hosts,
+                        working_dir="/workspace",
+                        entrypoint="/bin/sh",
+                        command=[
+                            "-c",
+                            "mkdir -p /var/log && printf '[Dedicated Deploy Container Online] Ready to host live application on port 80.\n' > /proc/1/fd/1; tail -f /dev/null",
+                        ],
+                        network_mode="bridge",
+                        remove=False,
+                        labels={
+                            "dsuite.project": project_token,
+                            "dsuite.agent": "deploy_agent",
+                            "dsuite.role": "deployment",
+                            "dsuite.host_port": str(host_port),
+                        },
+                    )
+                    c_id = c.id
+                else:
+                    cmd = [
+                        "docker", "run", "-d",
+                        "--name", container_name,
+                        "--add-host", "host.docker.internal:host-gateway",
+                        "-p", f"{host_port}:80",
+                        "-v", f"{abs_workspace}:/workspace",
+                    ]
+                    if os.path.isdir(runtime_dir):
+                        cmd.extend(["-v", f"{runtime_dir}:/app"])
+                    cmd.extend([
+                        "-w", "/workspace",
+                        "--entrypoint", "/bin/sh",
+                        image,
+                        "-c",
+                        "mkdir -p /var/log && printf '[Dedicated Deploy Container Online] Ready to host live application on port 80.\n' > /proc/1/fd/1; tail -f /dev/null",
+                    ])
+                    res = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30)
+                    if res.returncode != 0:
+                        logger.error(f"[PlaygroundManager] Deploy container CLI launch failed: {res.stderr}")
+                        return None, host_port
+                    c_id = res.stdout.strip()
+
+                self.containers[container_name] = {
+                    "id": c_id,
+                    "status": "DEPLOYED",
+                    "org_name": "deploy",
+                    "project_token": project_token,
+                    "agent_id": "deploy_agent",
+                    "workspace_path": abs_workspace,
+                    "host_port": host_port,
+                    "image": image,
+                    "last_used": time.time(),
+                }
+                self.append_log_to_container(
+                    container_name,
+                    f"🚀 Dedicated Deployment Container '{container_name}' provisioned on host port {host_port} -> container port 80",
+                )
+                return container_name, host_port
+            except Exception as e:
+                logger.error(f"[PlaygroundManager] Failed to provision deploy container {container_name}: {e}", exc_info=True)
+                return None, host_port
+
     def append_log_to_container(self, container_name: str, message: str) -> None:
         """Mirror log into PID 1 stdout (/proc/1/fd/1) and /var/log/agent.log so `docker logs` matches backend."""
         try:
@@ -397,11 +502,14 @@ class PlaygroundContainerManager:
         tail_thread = threading.Thread(target=_tail_events_ledger, daemon=True)
         tail_thread.start()
 
+        # Mirror command output to container PID 1 stdout (/proc/1/fd/1) so Docker Desktop logs reflect live activity
+        mirrored_cmd = f"({{ {command} ; }} 2>&1 | tee -a /proc/1/fd/1 2>/dev/null)"
+
         try:
             if self._docker_client:
                 exec_instance = self._docker_client.api.exec_create(
                     container_name,
-                    cmd=["sh", "-c", command],
+                    cmd=["sh", "-c", mirrored_cmd],
                     workdir=workdir,
                 )
                 exec_id = exec_instance["Id"]
@@ -434,7 +542,7 @@ class PlaygroundContainerManager:
                 exit_code = inspect_res.get("ExitCode")
                 return (0 if exit_code is None else exit_code), "".join(output_chunks)
             else:
-                cmd = ["docker", "exec", "-w", workdir, container_name, "sh", "-c", command]
+                cmd = ["docker", "exec", "-w", workdir, container_name, "sh", "-c", mirrored_cmd]
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,

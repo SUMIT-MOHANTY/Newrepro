@@ -99,21 +99,39 @@ You build, enhance, and migrate high-quality, production-ready software systems 
 # ---------------------------------------------------------------------------
 
 NEW_PROJECT_RULES = """\
-## New Project & Greenfield Implementation
+## Greenfield & Module Implementation Protocol (Tech-Stack Agnostic)
 
-### Workflow
-1. **Analyze Workspace & Requirements**: Review the project plan and check workspace structure using `list_directory`.
-2. **Establish Stack Foundation**:
-   - For Backend projects (Python, Java, Go, Node): Initialize project manifest (`requirements.txt`/`pyproject.toml`, `pom.xml`, `go.mod`, `package.json`), entry point (`main.py`, `Application.java`, `main.go`, `server.js`), and core data models/schemas.
-   - For Frontend / UI projects (React, Vue, Svelte, Next.js, HTML/JS): Initialize layout, routing, primary views, and styling.
-   - For Migration projects: Read legacy source files, map data contracts, modernize iteratively, and test functional parity.
-3. **Build Core Modules**: Write clean, modular, and well-typed implementations satisfying the BRD requirements.
-4. **Verification Gate**: Call `check_syntax`, `run_build`, or `install_and_build` to verify zero compilation or runtime errors.
-   - **Batch 1**: `src/data/mockData.js` (or `src/services/apiClient.js`) with rich, realistic domain data records and calculated statistics.
-   - **Batch 2**: `src/App.jsx` with `HashRouter` navigation — define ALL routes upfront, including `/:id` detail routes for every entity that has a list view. This MUST be written BEFORE any page components so routes exist when components use `useNavigate()`.
-   - **Batch 3**: Primary view component tailored to the domain (e.g. `src/components/FlightBoard.jsx`, `src/components/PatientQueue.jsx`, `src/components/InventoryGrid.jsx`, `src/components/PricingWorkbench.jsx` — NEVER a generic `DashboardView.jsx`). Navigation uses `useNavigate()` and `useParams()` — NEVER callback props.
-   - **Batch 4**: Secondary domain view components. Detail views use `const { id } = useParams()` to read their entity ID from the URL.
-   - **Batch 5**: Call `install_and_build` to verify.
+### Phased Workflow by Specialization
+1. **Analyze Workspace & Requirements**: Review the project plan, blueprint files (HLD/LLD), and existing directory structure with `list_directory`.
+2. **Execute Specialization Milestone**:
+   - **Backend & Data Layer**:
+     - Step 1: Initialize project manifests (`requirements.txt`, `pyproject.toml`, `package.json`, `pom.xml`, `go.mod`) and entry points (`main.py`, `app.py`, `server.js`).
+     - Step 2: Define data models, schemas, and database migrations (SQLAlchemy, Prisma, TypeORM, Pydantic).
+     - Step 3: Implement core business logic services, dependency injection, and security/auth layers.
+     - Step 4: Implement REST/GraphQL API controllers with defensive error handling (never 500 crashes).
+     - Step 5: Publish API route contracts to `.agent/contracts/api_contract.json` and verify syntax with `check_syntax`.
+   - **Frontend & UI Layer**:
+     - Step 1: Connect to backend API contracts or initialize centralized API adapter (`src/services/apiClient.js`) with realistic mock fallbacks.
+     - Step 2: Set up root navigation and routing (`App.jsx` with `HashRouter` — define all routes upfront including `/:id` detail routes).
+     - Step 3: Build primary domain view components tailored to the domain (e.g. `FlightBoard.jsx`, `PatientQueue.jsx` — never generic `DashboardView.jsx`).
+     - Step 4: Build secondary domain views, ensure all views are linked to the navigation layout, and verify with `install_and_build` or `check_syntax`.
+   - **DevOps & Infrastructure**:
+     - Step 1: Write production-ready, multi-stage `Dockerfile` configurations for application services.
+     - Step 2: Configure reverse proxy (`nginx.conf`) routing `/api/*` to backend and serving frontend SPA with client-side fallback.
+     - Step 3: Write multi-container orchestration (`docker-compose.yml`, `docker-compose.prod.yml`) with health checks, volumes, and ports.
+     - Step 4: Write `Makefile`, `.dockerignore`, `.gitignore`, and `.env.example` templates.
+     - Step 5: Validate configuration syntax.
+   - **QA & Verification**:
+     - Step 1: Inspect implementation files and verify test harness configurations.
+     - Step 2: Author unit tests for core utilities, validators, and data transformations.
+     - Step 3: Author integration tests for API endpoints, responses, and error status codes.
+     - Step 4: Run test suites and report quality verification gates.
+3. **Verification Gate**: Call `check_syntax`, `run_build`, or `install_and_build` to verify zero compilation or runtime errors.
+
+### General Engineering Principles
+- **API URLs**: Always relative — `fetch('api/...')` or `fetch('/api/...')` (never hardcode `http://localhost:...`).
+- **README.md (MANDATORY)**: EVERY project MUST include a `README.md` at the workspace root containing: project title, description, architecture overview, how to run locally (exact commands), and tech stack.
+- **Defensive Error Handling**: Zero unhandled exceptions or crashes. Ensure safe defaults and null safety.
 
 ### Architecture & Layout Freedom (Domain-Adaptive UI)
 - **Domain-Specific View Naming (CRITICAL)**: NEVER name components `DashboardView` or `DataTable` generically. Name components after the actual domain entity and workflow (e.g. `FlightStatusBoard`, `PatientQueue`, `InventoryGrid`, `OrderTracker`, `AlertTimeline`).

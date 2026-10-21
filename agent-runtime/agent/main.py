@@ -186,28 +186,84 @@ def main() -> None:
 
     has_active_prompt = bool(state.prompt and state.prompt.strip())
 
-    if state.task_type == "deploy" and is_existing_workspace:
-        print("[AgentRuntime] 🚀 Deploy task detected with existing workspace! Launching live preview directly without re-cloning...")
+    if state.task_type == "deploy":
+        print(f"[AgentRuntime] 🚀 Dedicated Deploy Agent starting deployment for project {state.project_id}...")
+        deploy_report_path = Path(state.workspace_path) / ".agent" / "deploy_status.json"
+        deploy_report_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 1. Sync latest merged code from 'main' branch if Git repo is configured or .git exists
+        try:
+            from mcp.git_tools import GitTools
+            gt = GitTools(state.workspace_path)
+            target_branch = os.environ.get("GIT_BRANCH", "main")
+            repo_url = os.environ.get("GIT_REPO_URL", "").strip()
+            git_token = os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN") or os.environ.get("GIT_TOKEN")
+            if repo_url:
+                print(f"[AgentRuntime] 📦 Syncing latest merged code from remote branch '{target_branch}' ({repo_url})...")
+                gt.clone(repo_url=repo_url, branch=target_branch, auth_token=git_token, workspace_path=state.workspace_path)
+            elif (Path(state.workspace_path) / ".git").exists():
+                print(f"[AgentRuntime] 🌿 Switching local repository to merged branch '{target_branch}'...")
+                gt.checkout_branch(target_branch, create=False)
+        except Exception as git_sync_err:
+            print(f"[AgentRuntime] ⚠️ Git branch sync note: {git_sync_err}")
+
+        # 2. Boot Nginx + Backend + Frontend inside this dedicated deploy container
         try:
             p_info = orchestrator._run_preview()
-            has_err = getattr(p_info, "frontend_error", None) or getattr(p_info, "backend_error", None)
+            fe_err = getattr(p_info, "frontend_error", None)
+            be_err = getattr(p_info, "backend_error", None)
+            api_ok, api_err = (True, None)
+            try:
+                from runtime.preview_manager import PreviewManager
+                pm = PreviewManager(workspace_path=state.workspace_path)
+                api_ok, api_err = pm.probe_api_health(p_info)
+            except Exception:
+                pass
+
+            has_err = bool(fe_err or be_err or (not api_ok and api_err))
+            deploy_report = {
+                "status": "failed" if has_err else "success",
+                "preview_url": getattr(p_info, "url", "http://localhost:80"),
+                "frontend_error": fe_err,
+                "backend_error": be_err or (api_err if not api_ok else None),
+                "backend_entrypoint": getattr(p_info, "backend_entrypoint", None),
+                "frontend_cwd": getattr(p_info, "frontend_cwd", None),
+                "backend_cwd": getattr(p_info, "backend_cwd", None),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            deploy_report_path.write_text(json.dumps(deploy_report, indent=2), encoding="utf-8")
+
             if not has_err:
                 orchestrator._post_event("preview_ready", {
                     "status": "success",
                     "preview_url": f"/app/{state.project_id}/",
-                    "message": "Live preview is ready on port 80",
+                    "message": "Live preview deployed and verified healthy on port 80",
                 })
-                print(f"[AgentRuntime] ✅ Live preview verified healthy on port 80: {state.preview_url or 'http://localhost:80'}")
+                print(f"[AgentRuntime] ✅ Dedicated Deploy Agent verified live application on port 80!")
+                init_marker.touch(exist_ok=True)
             else:
+                combined_err = fe_err or be_err or api_err or "Unknown deployment failure"
                 orchestrator._post_event("preview_failed", {
                     "status": "error",
                     "preview_url": f"/app/{state.project_id}/",
-                    "error": f"Preview error: {getattr(p_info, 'frontend_error', None) or getattr(p_info, 'backend_error', None)}",
+                    "error": combined_err[:1500],
                 })
-                print(f"[AgentRuntime] ⚠️ Live preview launched with unresolved errors.")
-        except Exception as pe:
-            print(f"[AgentRuntime] Preview initialization note: {pe}")
-        init_marker.touch(exist_ok=True)
+                print(f"[AgentRuntime] ❌ Deployment failed verification:\n{combined_err[:800]}")
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os._exit(1)
+        except Exception as deploy_exc:
+            import traceback
+            err_str = traceback.format_exc()
+            deploy_report_path.write_text(json.dumps({
+                "status": "failed",
+                "error": str(deploy_exc),
+                "traceback": err_str[-2000:],
+            }, indent=2), encoding="utf-8")
+            print(f"[AgentRuntime] ❌ Fatal deployment error: {deploy_exc}")
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(1)
     elif is_existing_workspace and (task_already_executed or not has_active_prompt):
         print("[AgentRuntime] 🌅 Container awakened from sleep state! Workspace & history preserved.")
         try:
@@ -267,8 +323,9 @@ def main() -> None:
                 print(f"[AgentRuntime] 🔧 LEGACY MODE: Single task — using Orchestrator")
                 orchestrator.run()
 
-            # Boot live preview dev server ONLY if not suppressed by worker batch mode
-            if os.environ.get("SKIP_IN_CONTAINER_PREVIEW", "").lower() not in ("1", "true", "yes"):
+            # Boot live preview dev server ONLY for explicit deploy tasks (never for regular developer tasks)
+            is_deploy_task = state.task_type == "deploy" or "deploy" in os.environ.get("AGENT_ID", "").lower()
+            if is_deploy_task and os.environ.get("SKIP_IN_CONTAINER_PREVIEW", "").lower() not in ("1", "true", "yes"):
                 try:
                     print("[AgentRuntime] 🚀 Booting live preview dev server on port 80...")
                     orchestrator._run_preview()
@@ -277,7 +334,7 @@ def main() -> None:
                     print(f"[AgentRuntime] Preview initialization note: {pe}")
 
             init_marker.touch(exist_ok=True)
-            print(f"[AgentRuntime] Task {state.task_id} complete. Preview is live.")
+            print(f"[AgentRuntime] Task {state.task_id} complete.")
             if int(os.environ.get("IDLE_TIMEOUT_SECONDS", "30")) <= 2:
                 print("[AgentRuntime] Container entering sleep. Exiting daemon process.")
                 sys.stdout.flush()

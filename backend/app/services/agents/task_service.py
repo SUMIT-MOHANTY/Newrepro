@@ -69,8 +69,20 @@ class TaskManagementService:
             self._sprints_cache.clear()
 
     async def _get_access_token(self) -> str:
-        """Fetch a new access token using client credentials."""
-        token_url = f"{self.base_url.rstrip('/')}/api/token/task/"
+        """Fetch a new access token using client credentials or return local fallback."""
+        base_url = (self.base_url or "").rstrip("/")
+        is_self_or_local = (
+            not base_url
+            or "localhost:8000" in base_url
+            or "127.0.0.1:8000" in base_url
+            or "0.0.0.0:8000" in base_url
+        )
+        if is_self_or_local:
+            self.access_token = f"local_token_{self.client_id or 'default'}"
+            self.token_expires_at = int(time.time()) + 86400
+            return self.access_token
+
+        token_url = f"{base_url}/token/task/" if base_url.endswith("/api") else f"{base_url}/api/token/task/"
 
         # Check if we should use fallback first or try configured credentials first
         use_fallback = False
@@ -169,7 +181,36 @@ class TaskManagementService:
 
     async def _make_request(self, method: str, endpoint: str, task_token: Optional[str] = None, **kwargs) -> Any:
         """Make an authenticated request, handling token expiration."""
-        url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        base_url = (self.base_url or "").rstrip("/")
+        is_self_or_local = (
+            not base_url
+            or "localhost:8000" in base_url
+            or "127.0.0.1:8000" in base_url
+            or "0.0.0.0:8000" in base_url
+        )
+        if is_self_or_local:
+            logger.info(f"TaskManagementService in local mode: mocking response for {method} {endpoint}")
+            clean_ep = endpoint.strip("/").lower()
+            if "project" in clean_ep:
+                return {
+                    "project": {"id": "local", "name": "Local Project", "status": "in_progress"},
+                    "project_application": {"client_id": "local_client", "client_secret": "local_secret"}
+                }
+            if "agent" in clean_ep:
+                return []
+            if "task" in clean_ep:
+                return {"results": [], "count": 0}
+            if "sprint" in clean_ep:
+                return []
+            if "milestone" in clean_ep:
+                return []
+            return {}
+
+        clean_ep = endpoint.lstrip('/')
+        if base_url.endswith("/api") and clean_ep.startswith("api/"):
+            url = f"{base_url}/{clean_ep[4:]}"
+        else:
+            url = f"{base_url}/{clean_ep}"
         timeout = kwargs.pop("timeout", 30.0)
         max_retries = 2
         base_delay = 1.0

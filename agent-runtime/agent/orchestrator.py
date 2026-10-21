@@ -92,26 +92,30 @@ class Orchestrator:
             s.files_changed = final_state.get("files_changed", [])
             self._last_final_text = final_state.get("final_text", "")
 
-            # Phase 5: Browser verification & console error check / auto-fix
-            # Runs BEFORE session_completed so the user never sees a broken preview!
+            # Phase 5: Browser verification & console error check ONLY runs in the dedicated Deploy Agent container
+            is_deploy_mode = (
+                str(s.task_type).lower() == "deploy"
+                or "deploy" in os.environ.get("AGENT_ID", "").lower()
+            )
             if final_state.get("status") != "failed":
-                try:
-                    console_errors = self._check_console_errors()
-                    if console_errors and console_errors.has_errors:
-                        print(f"[Orchestrator] Found {console_errors.error_count} console error(s) — fixing before completion...")
-                        self._fix_console_errors(console_errors)
-                    else:
-                        self._post_event("console_fix_completed", {
-                            "session_id": s.session_id,
-                            "task_id": s.task_id,
-                            "status": "clean",
-                            "message": "No console errors found.",
-                            "errors_remaining": 0,
-                        })
-                except NameError as ne:
-                    print(f"[Orchestrator] Console fix skipped (variable not in scope): {ne}")
-                except Exception as ce:
-                    print(f"[Orchestrator] Console checking/auto-fixing completed with note: {ce}")
+                if is_deploy_mode and os.environ.get("SKIP_IN_CONTAINER_PREVIEW", "").lower() not in ("1", "true", "yes"):
+                    try:
+                        console_errors = self._check_console_errors()
+                        if console_errors and console_errors.has_errors:
+                            print(f"[Orchestrator] Found {console_errors.error_count} console error(s) — fixing before completion...")
+                            self._fix_console_errors(console_errors)
+                        else:
+                            self._post_event("console_fix_completed", {
+                                "session_id": s.session_id,
+                                "task_id": s.task_id,
+                                "status": "clean",
+                                "message": "No console errors found.",
+                                "errors_remaining": 0,
+                            })
+                    except NameError as ne:
+                        print(f"[Orchestrator] Console fix skipped (variable not in scope): {ne}")
+                    except Exception as ce:
+                        print(f"[Orchestrator] Console checking/auto-fixing completed with note: {ce}")
 
                 # Emit session_completed only AFTER browser verification & auto-fix completes
                 # Gate C honesty: completion carries platform verification evidence.

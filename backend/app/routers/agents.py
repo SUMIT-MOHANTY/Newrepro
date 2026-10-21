@@ -1817,6 +1817,7 @@ async def _bg_run_agent(
                 "filesystem", "git", "terminal", "build_tool"
             ]
             skills_summary = agent_rec.skills_summary or (agent_rec.skills_content[:300] if agent_rec and agent_rec.skills_content else "")
+            skills_content = (agent_rec.skills_content or "") if agent_rec else ""
 
             # Resolve execution lanes
             agent_lanes = get_agent_lanes_from_skills(
@@ -2085,6 +2086,7 @@ async def _bg_run_agent(
                     workspace_analysis=workspace_analysis,
                     is_qa_agent=is_qa_agent,
                     workspace_dir=workspace_dir,
+                    skills_content=skills_content,
                 )
 
             # ── Inject Blackboard Active File Locks & Live Reasoning Context ──
@@ -2316,7 +2318,7 @@ async def _bg_run_agent(
                 safe_agent_role = (agent_role or 'Software Engineer').replace("'", "").replace('"', "")
                 safe_callback_url = (getattr(settings, "agent_callback_url", None) or "http://host.docker.internal:8000/api").rstrip("/")
                 safe_callback_secret = getattr(settings, "agent_callback_secret", "") or "dsuite-agent-callback-secret"
-                safe_task_api_url = getattr(settings, "task_api_base_url", "") or "https://stg-nxdune.bourntec.com/api"
+                safe_task_api_url = getattr(settings, "task_api_base_url", None) or safe_callback_url
                 safe_x_task_token = (x_task_token or "").replace("'", "")
                 exec_cmd = (
                     f"export AGENT_ID='{agent_id}' && "
@@ -2331,6 +2333,7 @@ async def _bg_run_agent(
                     f"export TASK_API_BASE_URL='{safe_task_api_url}' && "
                     f"export TASK_TOKEN='{safe_x_task_token}' && "
                     f"export TZ='UTC' && "
+                    f"export PYTHONPATH='/app:/workspace' && "
                     f"cd /workspace && python -u -m agent.main 2>&1"
                 )
                 exec_timeout = max(900, len(tasks_to_execute) * 450)
@@ -2928,16 +2931,34 @@ async def _run_phased_swarm_coordinator(
                 x_task_token=x_task_token,
             )
 
-    # ── Phase 3: Automated QA & Verification Gate ──
-    p3 = phased_plan.get("phase3_qa_gate", ["T_agent_01"])
+    # ── Phase 3: DevOps & Container Infrastructure ──
+    p3 = phased_plan.get("phase3_devops", [])
     if p3:
         agent_service.append_agent_log(
             "M_agent_01",
-            f"[Swarm Coordinator] 🛡️ Launching Phase 3: Automated QA & Verification Gate ({len(p3)} agent(s): {', '.join(p3)})...",
+            f"[Swarm Coordinator] 🐳 Launching Phase 3: DevOps & Container Infrastructure ({len(p3)} agent(s): {', '.join(p3)})...",
             "info",
             project_token,
         )
         for aid in p3:
+            await _bg_run_agent(
+                agent_id=aid,
+                git_repo_url=git_repo_url,
+                git_token=git_token,
+                project_token=project_token,
+                x_task_token=x_task_token,
+            )
+
+    # ── Phase 4: Automated QA & Verification Gate ──
+    p4 = phased_plan.get("phase4_qa_gate") or phased_plan.get("phase3_qa_gate", ["T_agent_01"])
+    if p4:
+        agent_service.append_agent_log(
+            "M_agent_01",
+            f"[Swarm Coordinator] 🛡️ Launching Phase 4: Automated QA & Verification Gate ({len(p4)} agent(s): {', '.join(p4)})...",
+            "info",
+            project_token,
+        )
+        for aid in p4:
             await _bg_run_agent(
                 agent_id=aid,
                 git_repo_url=git_repo_url,
@@ -2954,13 +2975,13 @@ async def _run_phased_swarm_coordinator(
 
     agent_service.append_agent_log(
         "M_agent_01",
-        "🔍 [Swarm Coordinator] Running Platform Convergence Battery (AST -> Bundler Build -> Live Smoke Test)...",
+        "🔍 [Swarm Coordinator] Running Platform Convergence Battery (AST -> Imports -> Bundler Build)...",
         "info",
         project_token,
     )
 
     conv_engine = ConvergenceEngine(project_token=project_token, workspace_dir=workspace_dir)
-    battery_result = await conv_engine.run_battery()
+    battery_result = await conv_engine.run_battery(include_live_smoke=False)
 
     runnable_success = battery_result.passed
     verification_failures = [s.detail for s in battery_result.stages if not s.passed]
@@ -2997,7 +3018,19 @@ async def _run_phased_swarm_coordinator(
         )
 
     async def _repair_runner(project_token: str, repair_instruction: str, cycle: int):
-        repair_agent_id = p1[0] if p1 else "M_agent_01"
+        # Dynamically determine the best repair agent from failed tasks or instruction content
+        repair_agent_id = None
+        if failed_tasks:
+            repair_agent_id = next((ft.get("agent") for ft in failed_tasks if ft.get("agent")), None)
+        if not repair_agent_id:
+            instr_lower = (repair_instruction or "").lower()
+            if any(k in instr_lower for k in ("vite", "react", "frontend", "npm", "package.json", "css", "tsx", "jsx", "stage 2")):
+                repair_agent_id = (p2[0] if p2 else None) or (p1[0] if p1 else "M_agent_01")
+            elif any(k in instr_lower for k in ("docker", "nginx", "k8s", "helm", "devops")):
+                repair_agent_id = (p3[0] if p3 else None) or (p1[0] if p1 else "M_agent_01")
+            else:
+                repair_agent_id = (p1[0] if p1 else None) or (p2[0] if p2 else "M_agent_01")
+
         agent_service.append_agent_log(
             "M_agent_01",
             f"[Self-Healing Repair] Dispatching repair agent '{repair_agent_id}' (Cycle {cycle})...",
@@ -3045,7 +3078,7 @@ async def _run_phased_swarm_coordinator(
                 repair_instruction=failed_task_context,
                 cycle=1,
             )
-            recheck = await conv_engine.run_battery()
+            recheck = await conv_engine.run_battery(include_live_smoke=False)
             runnable_success = recheck.passed
             if not runnable_success:
                 agent_service.append_agent_log(
@@ -3301,7 +3334,7 @@ async def run_all_agents(
     # ── Resolve Phased Execution Plan (Dependency DAG) ──
     phased_plan = master_result.get("phased_plan")
     if not phased_plan or not any(phased_plan.values()):
-        p1, p2, p3 = [], [], []
+        p1, p2, p3, p4 = [], [], [], []
         for aid in available_agents:
             a_info = agent_service.get_agent_status(aid, project_token) or {}
             role_str = (a_info.get("type") or a_info.get("name") or aid).lower()
@@ -3309,21 +3342,25 @@ async def run_all_agents(
                 p1.append(aid)
             elif any(k in role_str for k in ("frontend", "ui", "web", "01")):
                 p2.append(aid)
-            elif any(k in role_str for k in ("qa", "test", "03", "t_agent")):
+            elif any(k in role_str for k in ("devops", "infra", "infrastructure", "docker", "deploy", "ci")):
                 p3.append(aid)
+            elif any(k in role_str for k in ("qa", "test", "03", "t_agent")):
+                p4.append(aid)
             else:
                 p1.append(aid)
         phased_plan = {
             "phase1_backend": p1 or available_agents,
             "phase2_frontend": p2,
-            "phase3_qa_gate": p3 or ["T_agent_01"],
+            "phase3_devops": p3,
+            "phase4_qa_gate": p4 or ["T_agent_01"],
         }
 
     # Mark all involved agents as running in UI immediately
     all_target_agents = list(set(
         phased_plan.get("phase1_backend", []) +
         phased_plan.get("phase2_frontend", []) +
-        phased_plan.get("phase3_qa_gate", [])
+        phased_plan.get("phase3_devops", []) +
+        (phased_plan.get("phase4_qa_gate") or phased_plan.get("phase3_qa_gate", []))
     ))
     for aid in all_target_agents:
         a_mem = agent_service.get_agent_status(aid, project_token)
@@ -4136,6 +4173,126 @@ async def agent_tool_check(
     return result
 
 
+def _extract_json_array_from_llm(raw_text: str) -> List[Dict[str, Any]]:
+    """Robustly extract a JSON array from LLM output even if wrapped in prose or markdown fences."""
+    if not raw_text:
+        return []
+    cleaned = raw_text.strip()
+    # Strip <think>...</think> blocks if model emits reasoning tokens
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+    # Try direct parse after fence removal
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict) and isinstance(parsed.get("recommendations") or parsed.get("agents"), list):
+            return parsed.get("recommendations") or parsed.get("agents")
+    except Exception:
+        pass
+
+    # Fallback: locate outermost '[' ... ']'
+    start_idx = cleaned.find("[")
+    end_idx = cleaned.rfind("]")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        try:
+            parsed = json.loads(cleaned[start_idx : end_idx + 1])
+            if isinstance(parsed, list):
+                return [item for item in parsed if isinstance(item, dict)]
+        except Exception:
+            pass
+    return []
+
+
+def _build_data_driven_recommendations_from_project(
+    project_token: str,
+    lane_tasks: Dict[str, List[Dict[str, Any]]],
+    detected_stack: Dict[str, Any],
+    tech_summary: str,
+    default_model: str,
+) -> List[Dict[str, Any]]:
+    """Data-driven synthesizer (used only if LLM is unreachable) that derives roles,
+    tools, skills_tags, and system prompts dynamically from the project's actual
+    tasks, detected tech stack, and tool_adequacy_service — ZERO hardcoded tech assumptions.
+    """
+    from app.services.agents.tool_adequacy_service import analyse_tool_adequacy
+
+    primary_stack = detected_stack.get("primary") or "Application Stack"
+    required_skills = detected_stack.get("required_skills") or []
+    recommendations: List[Dict[str, Any]] = []
+
+    # Only synthesize agents for lanes that actually have tasks (plus QA if tasks exist)
+    active_lanes = [lane for lane, t_list in lane_tasks.items() if t_list]
+    if not active_lanes:
+        active_lanes = ["backend"]
+    if "qa" not in active_lanes and sum(len(v) for v in lane_tasks.values()) > 0:
+        active_lanes.append("qa")
+
+    for lane in active_lanes:
+        tasks_in_lane = lane_tasks.get(lane, [])
+        task_titles = [t.get("title", "") for t in tasks_in_lane if t.get("title")]
+
+        # 1. Dynamically compute required + recommended tools from tool_adequacy_service
+        adequacy = analyse_tool_adequacy(
+            agent_tools=[],
+            lanes=[lane],
+            tasks=tasks_in_lane,
+        )
+        dynamic_tools = list(dict.fromkeys(
+            (adequacy.get("missing_required") or [])
+            + (adequacy.get("missing_recommended") or [])
+            + ["filesystem", "git", "terminal", "build_tool"]
+        ))
+
+        # 2. Extract domain keywords directly from this lane's task titles & descriptions
+        corpus = " ".join(f"{t.get('title', '')} {t.get('description', '')}" for t in tasks_in_lane)
+        matched_skills = [s for s in required_skills if s.lower() in corpus.lower()]
+        lane_tags = list(dict.fromkeys([lane] + matched_skills + required_skills[:4]))
+
+        # 3. Derive role title & specialization from the actual lane + detected stack
+        stack_label = f" ({primary_stack})" if primary_stack and primary_stack != "unknown" else ""
+        role_title = f"{lane.capitalize()} Specialist{stack_label}"
+        specialization = "Testing" if lane == "qa" else f"{lane.capitalize()} Development"
+
+        task_bullet_list = "\n".join(
+            f"- **{t.get('id', f'TASK-{i+1}')}**: {t.get('title')} — {(t.get('description') or '')[:180]}"
+            for i, t in enumerate(tasks_in_lane[:12])
+        ) or "- Execute assigned project verification and quality checks."
+
+        skills_content = (
+            f"# {role_title} — Project-Specific Execution Blueprint\n\n"
+            f"## Detected Technology Stack & Architecture Context\n"
+            f"- **Primary Stack**: {primary_stack}\n"
+            f"- **Detected Skills/Frameworks**: {', '.join(lane_tags)}\n\n"
+            f"{tech_summary[:1200]}\n\n"
+            f"## Assigned Project Scope ({len(tasks_in_lane)} Task(s) in `{lane}` Lane)\n"
+            f"{task_bullet_list}\n"
+        )
+
+        recommendations.append({
+            "role": role_title,
+            "lane": lane,
+            "specialization": specialization,
+            "tools": dynamic_tools,
+            "task_count": len(tasks_in_lane),
+            "model_name": default_model,
+            "skills_tags": lane_tags,
+            "skills_summary": (
+                f"Executes {len(tasks_in_lane)} {lane} task(s) for {primary_stack}: "
+                + (", ".join(task_titles[:3]) if task_titles else "verification & testing")
+            )[:200],
+            "skills_content": skills_content,
+            "justification": (
+                f"Derived from {len(tasks_in_lane)} project task(s) in the '{lane}' lane "
+                f"({', '.join(task_titles[:2]) or 'quality gate'})."
+            ),
+        })
+
+    return recommendations
+
+
 @router.post("/agents/recommend")
 @router.post("/api/agents/recommend")
 async def recommend_agents(
@@ -4144,26 +4301,191 @@ async def recommend_agents(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Analyse a project's tasks and return recommended agent configurations."""
-    from app.services.agents.tool_adequacy_service import recommend_agents_for_project
-    from app.services.agents.master_orchestrator import _infer_task_lane
+    """Analyze a project's actual tasks, blueprints, and detected tech stack to synthesize
+    tailored agent configurations, tools, and system prompts via the LLM.
+    """
+    from app.services.agents.master_orchestrator import (
+        _infer_task_lane,
+        export_architecture_blueprints_to_workspace,
+        analyze_workspace,
+    )
+    from app.services.agents.tech_stack_helper import detect_required_tech_stack
+    from app.services.agents.tool_adequacy_service import analyse_tool_adequacy
+    from app.integrations.llm import llm_gateway
 
     target_token = (body.project_token if body and body.project_token else project_token) or None
     target_token = _normalize_project_token(target_token)
     if not target_token:
         raise HTTPException(status_code=400, detail="project_token is required.")
 
-    tasks = db.query(models.Task).filter(models.Task.project_token == target_token).all()
+    if current_user:
+        llm_gateway.current_user_id_var.set(current_user.id)
+        llm_gateway.current_user_org_var.set(getattr(current_user, "organization_name", None))
+        llm_gateway.current_project_token_var.set(target_token)
+        llm_gateway.current_purpose_var.set("Agent Recommendation Synthesis")
 
+    # 1. Group all project tasks by inferred lane
+    tasks = db.query(models.Task).filter(models.Task.project_token == target_token).all()
     lane_counts: Dict[str, int] = {}
+    lane_tasks: Dict[str, List[Dict[str, Any]]] = {}
+
     for t in tasks:
         title = getattr(t, "task_name", None) or getattr(t, "title", "") or ""
         desc = getattr(t, "description", "") or ""
+        tid = getattr(t, "task_id", None) or str(t.id)
         lane = _infer_task_lane(title, desc)
         lane_counts[lane] = lane_counts.get(lane, 0) + 1
+        lane_tasks.setdefault(lane, []).append({
+            "id": tid,
+            "title": title,
+            "description": desc,
+        })
 
-    recommendations = recommend_agents_for_project(lane_counts)
-    return {"project_token": target_token, "recommendations": recommendations}
+    # 2. Gather BRD analysis + Architecture Blueprints from both .agent/docs/ and workspace root
+    clean_token = target_token.replace("/", "_").replace("\\", "_")
+    workspace_dir = os.path.join(settings.project_storage_root, clean_token)
+    os.makedirs(workspace_dir, exist_ok=True)
+
+    try:
+        export_architecture_blueprints_to_workspace(workspace_dir, target_token, db)
+    except Exception:
+        pass
+
+    context_snippets: List[str] = []
+    gov = db.query(models.GovernanceResponse).filter(
+        models.GovernanceResponse.project_token == target_token
+    ).first()
+    if gov and getattr(gov, "recommendation", None):
+        context_snippets.append(f"Governance / BRD Recommendation:\n{str(gov.recommendation)[:2500]}")
+
+    doc = (
+        db.query(models.Document)
+        .filter(models.Document.project_token == target_token)
+        .order_by(models.Document.upload_date.desc())
+        .first()
+    )
+    if doc and doc.analysis_result:
+        if isinstance(doc.analysis_result, dict):
+            context_snippets.append(json.dumps(doc.analysis_result)[:2500])
+        elif isinstance(doc.analysis_result, str):
+            context_snippets.append(doc.analysis_result[:2500])
+
+    # Check both .agent/docs/ (where blueprints are exported) and root workspace_dir
+    for bp_name in ("EXECUTIVE_SUMMARY.md", "HLD.md", "LLD.md"):
+        for candidate_dir in (os.path.join(workspace_dir, ".agent", "docs"), workspace_dir):
+            bp_path = os.path.join(candidate_dir, bp_name)
+            if os.path.isfile(bp_path):
+                try:
+                    with open(bp_path, "r", encoding="utf-8", errors="replace") as f:
+                        context_snippets.append(f"Blueprint ({bp_name}):\n" + f.read()[:2000])
+                    break
+                except Exception:
+                    pass
+
+    ws_analysis = analyze_workspace(workspace_dir)
+    project_tech_context = "\n\n".join(context_snippets)
+    detected_stack = detect_required_tech_stack(
+        brd_text=project_tech_context,
+        repo_files=ws_analysis.get("files", []) if isinstance(ws_analysis, dict) else [],
+        repo_structure_text=str(ws_analysis),
+    )
+
+    configured_model = (getattr(settings, "ai_model", None) or "claude").lower().strip()
+    if "deepseek" in configured_model:
+        default_model = "deepseek"
+    elif "kimi" in configured_model:
+        default_model = "kimi"
+    else:
+        default_model = "claude"
+
+    # 3. Synthesize bespoke agent recommendations via LLM based on actual project lanes & stack
+    recommendations: List[Dict[str, Any]] = []
+    try:
+        tasks_breakdown = "\n\n".join(
+            f"### Lane '{lane}' ({len(t_list)} tasks):\n"
+            + "\n".join(f"- [{t['id']}] {t['title']}: {t['description'][:140]}" for t in t_list[:8])
+            for lane, t_list in lane_tasks.items()
+        )
+        ai_prompt = (
+            "You are a Principal Multi-Agent Architect.\n"
+            "Inspect the project's actual Architecture Blueprints, Detected Tech Stack, and Task Breakdown below.\n"
+            "Synthesize specialized autonomous agents ONLY for the lanes needed by this project.\n"
+            "Every agent's `skills_content` MUST be a rich, project-specific Markdown System Prompt that names the "
+            "exact frameworks, database schemas, API conventions, directory structure, and tasks from the blueprints below "
+            "— NEVER use generic boilerplate!\n\n"
+            f"--- Detected Tech Stack ---\n{json.dumps(detected_stack, indent=2)}\n\n"
+            f"--- Project Architecture & Blueprints ---\n{project_tech_context[:4500]}\n\n"
+            f"--- Project Task Breakdown by Lane ---\n{tasks_breakdown[:3500]}\n\n"
+            "Return ONLY a valid JSON array of agent objects:\n"
+            "[\n"
+            "  {\n"
+            "    \"role\": \"Specific Role Title matching the stack\",\n"
+            "    \"lane\": \"<lane name matching task breakdown>\",\n"
+            "    \"specialization\": \"Development or Testing\",\n"
+            "    \"tools\": [\"filesystem\", \"git\", \"terminal\", \"build_tool\"],\n"
+            f"    \"model_name\": \"{default_model}\",\n"
+            "    \"skills_tags\": [\"exact\", \"tech\", \"tags\"],\n"
+            "    \"skills_summary\": \"Concise 1-2 sentence summary of what this agent builds in this project\",\n"
+            "    \"skills_content\": \"# Full Project-Specific System Prompt...\",\n"
+            "    \"justification\": \"Why this agent is required based on the project's specific tasks\"\n"
+            "  }\n"
+            "]"
+        )
+        llm_resp = await llm_gateway.call_llm_and_extract(
+            messages=[{"role": "user", "content": ai_prompt}],
+            api_url=settings.ai_api_url,
+            api_key=settings.ai_api_key,
+            model=settings.ai_model,
+            timeout=30.0,
+            retries=1,
+            purpose="Agent Recommendation Synthesis",
+            project_token=target_token,
+            user_id=current_user.id if current_user else None,
+            organization_name=getattr(current_user, "organization_name", None) if current_user else None,
+        )
+        parsed_list = _extract_json_array_from_llm(llm_resp or "")
+        for rec in parsed_list:
+            if not rec.get("role"):
+                continue
+            lane = str(rec.get("lane") or "general").lower().strip()
+            l_tasks = lane_tasks.get(lane, [])
+            rec["task_count"] = len(l_tasks)
+
+            # Enrich tools using tool_adequacy_service so the agent never fails pre-flight tool checks!
+            adequacy = analyse_tool_adequacy(
+                agent_tools=rec.get("tools") or [],
+                lanes=[lane],
+                tasks=l_tasks,
+            )
+            rec["tools"] = list(dict.fromkeys(
+                (rec.get("tools") or [])
+                + (adequacy.get("missing_required") or [])
+                + (adequacy.get("missing_recommended") or [])
+                + ["filesystem", "git", "terminal", "build_tool"]
+            ))
+            rec["model_name"] = (rec.get("model_name") or default_model).lower().strip()
+            recommendations.append(rec)
+    except Exception as exc:
+        logger.warning(f"[recommend_agents] LLM synthesis failed, building data-driven recommendations from project tasks: {exc}")
+
+    if not recommendations:
+        recommendations = _build_data_driven_recommendations_from_project(
+            project_token=target_token,
+            lane_tasks=lane_tasks,
+            detected_stack=detected_stack,
+            tech_summary=project_tech_context,
+            default_model=default_model,
+        )
+
+    return {
+        "project_token": target_token,
+        "detected_tech_stack": detected_stack,
+        "lane_counts": lane_counts,
+        "recommendations": recommendations,
+    }
+
+
+
 
 
 @router.post("/agents/auto-create")
@@ -4189,10 +4511,14 @@ async def auto_create_agents(
 
     for spec in agent_specs:
         role = spec.get("role", "Agent")
-        tools = spec.get("tools") or ["filesystem", "git", "terminal"]
+        lane = spec.get("lane", "general")
+        tools = spec.get("tools") or ["filesystem", "git", "terminal", "build_tool"]
         spec_str = spec.get("specialization", "Development")
+        skills_content = spec.get("skills_content") or ""
+        skills_summary = spec.get("skills_summary") or f"{role} specializing in {spec_str}"
+        model_name = (spec.get("model_name") or "claude").lower().strip()
 
-        skills_tags = list({spec.get("lane", "general")} | set(tools))
+        skills_tags = spec.get("skills_tags") or list({lane} | set(tools))
 
         new_id = f"auto_{uuid.uuid4().hex[:8]}"
         new_agent = models.Agent(
@@ -4203,12 +4529,13 @@ async def auto_create_agents(
             specialization=spec_str,
             allowed_tools=tools,
             skills_tags=skills_tags,
-            skills_summary=f"Auto-created {role} with tools: {', '.join(tools)}",
-            model_name="claude",
+            skills_summary=skills_summary[:500],
+            skills_content=skills_content,
+            model_name=model_name,
         )
         db.add(new_agent)
 
-        sub_type = "test" if spec_str == "Testing" else "dev"
+        sub_type = "test" if (spec_str == "Testing" or lane == "qa") else "dev"
         mapping = models.OrganizationAgentMapping(
             organization_name=organization_name,
             agent_id=new_id,
@@ -4222,7 +4549,14 @@ async def auto_create_agents(
             is_virtual_shared=False,
         )
         db.add(mapping)
-        created_agents.append({"id": new_id, "name": role, "tools": tools})
+        created_agents.append({
+            "id": new_id,
+            "name": role,
+            "lane": lane,
+            "tools": tools,
+            "model_name": model_name,
+            "skills_content": skills_content[:200] + ("..." if len(skills_content) > 200 else ""),
+        })
 
     try:
         db.commit()
@@ -6402,8 +6736,28 @@ async def bootstrap_agent_project(
             "team": [24],
             "project_token": request.project_token,
         }
-        # Use x_task_token if provided; otherwise fall back to server-side task service credentials.
-        created_project = await task_service.create_project(create_payload, task_token=x_task_token)
+        # Use x_task_token if provided; otherwise fall back to server-side task service credentials or local fallback.
+        created_project = None
+        try:
+            created_project = await task_service.create_project(create_payload, task_token=x_task_token)
+        except Exception as task_err:
+            logger.warning(
+                f"[Bootstrap] External task service create_project failed ({task_err}). "
+                f"Proceeding with local project bootstrap fallback for '{request.project_token}'."
+            )
+            created_project = {
+                "project": {
+                    "id": request.project_token,
+                    "name": project_name,
+                    "status": "in_progress",
+                    "deadline": mode_deadline,
+                    "is_local": True,
+                },
+                "project_application": {
+                    "client_id": f"local_{request.project_token}",
+                    "client_secret": f"local_secret_{request.project_token}",
+                },
+            }
 
         # After creation, explicitly update the deadline using the same mode-based
         # value to guard against any upstream defaults overriding our payload.

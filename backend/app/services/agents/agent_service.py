@@ -577,35 +577,49 @@ class AgentService:
 
     def get_preview_status(self, project_token: str) -> Dict[str, Any]:
         from app.routers.helpers import _preview_log_store
-        clean_project_id = project_token.replace("/", "_").replace("\\", "_")[:16]
-        container_name = f"dsuite-agent-{clean_project_id}"
-        logs = _preview_log_store.get(project_token, [])[-30:]
-        if self.manager._client:
+        from app.infrastructure.containers.playground_manager import playground_manager
+
+        clean_proj = "".join(c for c in (project_token or "proj") if c.isalnum() or c == "_")[:16].lower()
+        deploy_container_name = f"dsuite_deploy_{clean_proj}"
+        logs = _preview_log_store.get(project_token, [])[-50:]
+
+        meta = playground_manager.containers.get(deploy_container_name, {})
+        host_port = meta.get("host_port", 8085)
+
+        if playground_manager._is_container_running(deploy_container_name):
+            import urllib.request
+            direct_url = f"http://localhost:{host_port}"
+            is_live = False
             try:
-                c = self.manager._client.containers.get(container_name)
-                host_port = self.manager.get_port(c.id, 80)
-                is_running = c.status == "running"
-                status_val = "running" if (is_running and host_port) else ("deploying" if is_running else c.status)
-                return {
-                    "status": status_val,
-                    "preview_url": f"/app/{project_token}/" if host_port else None,
-                    "direct_url": f"http://localhost:{host_port}" if host_port else None,
-                    "url": f"http://localhost:{host_port}" if host_port else "",
-                    "port": host_port,
-                    "stack": "Auto-detected",
-                    "server_log": self.manager.get_logs(c.id, tail=50),
-                    "logs": logs,
-                }
+                req = urllib.request.Request(direct_url, headers={"User-Agent": "DSuiteDeployProbe/1.0"})
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    if resp.getcode() in (200, 304):
+                        is_live = True
             except Exception:
-                pass
+                is_live = False
+
+            deploy_agent_state = self.get_agent_status("deploy_agent", project_token)
+            is_deploying = deploy_agent_state.get("status") == "running" and not is_live
+
+            return {
+                "status": "running" if is_live else ("deploying" if is_deploying else "error"),
+                "preview_url": direct_url if is_live else None,
+                "direct_url": direct_url if is_live else None,
+                "url": direct_url if is_live else "",
+                "port": host_port,
+                "container_name": deploy_container_name,
+                "stack": "Nginx + Fullstack Runtime",
+                "logs": logs,
+            }
+
         return {
             "status": "none",
             "preview_url": None,
             "direct_url": None,
             "url": None,
             "port": None,
+            "container_name": deploy_container_name,
             "stack": "auto",
-            "server_log": "",
             "logs": logs,
         }
 
@@ -637,49 +651,225 @@ class AgentService:
         *args,
         **kwargs,
     ) -> Dict[str, Any]:
-        """Dispatch deployment agent container to compile and serve preview."""
-        from app.core.database import SessionLocal
-        from app.routers.helpers import _preview_log_store, _preview_ws_connections
-        local_db = SessionLocal()
-        try:
-            prompt = (
-                "Deploy and verify the application into a live preview environment. "
-                "Detect tech stack, compile dependencies, verify assets, and start preview on port 80."
-            )
-            session, task = self.submit_task(
-                db=local_db,
-                project_id=project_token,
-                prompt=prompt,
-                task_type="deploy",
-                repo_url=git_repo_url,
-                git_token=git_token,
-                git_branch="main",
-                tools=["terminal", "build_tool", "filesystem", "visual_qa"],
-            )
-            init_log = {
-                "type": "deploy_log",
-                "content": f"Deployment sandbox container started for project {project_token}.",
-                "metadata": {"status": "deploying"},
-                "timestamp": _utc_now().isoformat(),
-            }
-            if project_token not in _preview_log_store:
-                _preview_log_store[project_token] = []
-            _preview_log_store[project_token].append(init_log)
+        """Dedicated Deploy Agent Pipeline:
+        1. Provisions an isolated deployment container (`dsuite_deploy_<project>`) bound to port 8085:80.
+        2. Checks out the merged `main` branch and boots Nginx + Backend + Frontend.
+        3. If deployment fails, escalates to Master Agent (`M_agent_01`), which assigns a Hot-Fix
+           to the responsible developer agent, merges the fix to `main`, and re-deploys.
+        """
+        import asyncio
+        from app.routers.helpers import broadcast_preview_log
 
-            for ws in _preview_ws_connections.get(project_token, []):
-                try:
-                    await ws.send_json(init_log)
-                except Exception:
-                    pass
+        clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
+        workspace_dir = os.path.join(self.settings.project_storage_root, clean_token)
+        os.makedirs(workspace_dir, exist_ok=True)
 
-            return {
-                "status": "deploying",
-                "preview_url": f"/app/{project_token}/",
-                "message": "Deployment initiated in container sandbox",
-                "logs": [init_log],
-            }
-        finally:
-            local_db.close()
+        deploy_agent_mem = self.get_agent_status("deploy_agent", project_token)
+        deploy_agent_mem["status"] = "running"
+        deploy_agent_mem["progress"] = 10
+        deploy_agent_mem["output_log"] = []
+        deploy_agent_mem["progress_message"] = "Provisioning dedicated deployment container with Nginx..."
+
+        await broadcast_preview_log(
+            project_token=project_token,
+            content="[Deploy Agent] 🚀 Provisioning isolated deployment container (Nginx + Runtime)...",
+            event_type="deploy_log",
+            payload={"status": "deploying", "agent": "deploy_agent"},
+        )
+
+        async def _run_dedicated_deployment_with_hotfix_loop():
+            from app.infrastructure.containers.playground_manager import playground_manager
+            from app.core.database import SessionLocal
+            from app.services.agents.master_orchestrator import triage_deployment_failure_for_hotfix
+            from app.routers.agents import _bg_run_agent
+
+            max_hotfix_rounds = 2
+            for attempt in range(1, max_hotfix_rounds + 2):
+                container_name, host_port = await asyncio.to_thread(
+                    playground_manager.provision_deploy_container,
+                    project_token=project_token,
+                    workspace_host_path=workspace_dir,
+                    preferred_host_port=8085,
+                )
+                if not container_name:
+                    deploy_agent_mem["status"] = "error"
+                    deploy_agent_mem["progress_message"] = "Failed to provision deployment container."
+                    await broadcast_preview_log(
+                        project_token=project_token,
+                        content="[Deploy Agent] ❌ Failed to provision dedicated deployment container.",
+                        event_type="deploy_log",
+                        payload={"status": "error"},
+                    )
+                    return
+
+                self.append_agent_log(
+                    "deploy_agent",
+                    f"[Deploy Agent] Provisioned dedicated container '{container_name}' (http://localhost:{host_port}). Syncing 'main' branch & starting Nginx...",
+                    "info",
+                    project_token,
+                )
+                deploy_agent_mem["progress"] = 40
+                deploy_agent_mem["progress_message"] = f"Deploying 'main' branch inside {container_name}..."
+
+                report_path = os.path.join(workspace_dir, ".agent", "deploy_status.json")
+                if os.path.exists(report_path):
+                    try:
+                        os.remove(report_path)
+                    except Exception:
+                        pass
+
+                safe_callback = (getattr(self.settings, "agent_callback_url", None) or "http://host.docker.internal:8000/api").rstrip("/")
+                safe_repo = (git_repo_url or "").replace("'", "")
+                safe_tok = (git_token or "").replace("'", "")
+
+                deploy_cmd = (
+                    f"export TZ='Asia/Kolkata' && "
+                    f"export AGENT_ID='deploy_agent' && "
+                    f"export AGENT_NAME='Deploy Agent' && "
+                    f"export AGENT_ROLE='Deployment' && "
+                    f"export PROJECT_ID='{project_token}' && "
+                    f"export SESSION_ID='deploy_{int(time.time())}' && "
+                    f"export TASK_ID='deploy_{attempt}' && "
+                    f"export TASK_TYPE='deploy' && "
+                    f"export PROMPT='Deploy merged main branch and verify Nginx + application health on port 80' && "
+                    f"export WORKSPACE_PATH='/workspace' && "
+                    f"export GIT_REPO_URL='{safe_repo}' && "
+                    f"export GIT_AUTH_TOKEN='{safe_tok}' && "
+                    f"export GIT_BRANCH='main' && "
+                    f"export SKIP_IN_CONTAINER_PREVIEW='false' && "
+                    f"export IDLE_TIMEOUT_SECONDS='7200' && "
+                    f"export CALLBACK_URL='{safe_callback}' && "
+                    f"export CALLBACK_SECRET='{self.settings.agent_callback_secret}' && "
+                    f"export PYTHONPATH='/app:/workspace' && "
+                    f"cd /workspace && python -u -m agent.main 2>&1"
+                )
+
+                def on_deploy_line(line: str) -> None:
+                    self.append_agent_log("deploy_agent", line[:500], "output", project_token, mirror_to_container=False)
+                    from app.routers.helpers import sync_broadcast_preview_log
+                    sync_broadcast_preview_log(
+                        project_token=project_token,
+                        content=line[:500],
+                        event_type="deploy_log",
+                        payload={"agent": "deploy_agent"},
+                    )
+
+                exec_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        playground_manager.exec_in_playground,
+                        container_name,
+                        deploy_cmd,
+                        timeout=300,
+                        line_callback=on_deploy_line,
+                    )
+                )
+
+                deploy_report = None
+                for _ in range(90):
+                    if os.path.exists(report_path):
+                        try:
+                            with open(report_path, "r", encoding="utf-8") as rf:
+                                deploy_report = json.load(rf)
+                            break
+                        except Exception:
+                            pass
+                    if exec_task.done():
+                        break
+                    await asyncio.sleep(1.0)
+
+                if deploy_report and deploy_report.get("status") == "success":
+                    preview_url = f"http://localhost:{host_port}"
+                    deploy_agent_mem["status"] = "completed"
+                    deploy_agent_mem["progress"] = 100
+                    deploy_agent_mem["progress_message"] = f"Live at {preview_url}"
+                    self.append_agent_log(
+                        "deploy_agent",
+                        f"✅ [Deploy Agent] Application deployed & verified live at {preview_url} (container: {container_name})",
+                        "info",
+                        project_token,
+                    )
+                    await broadcast_preview_log(
+                        project_token=project_token,
+                        content=f"✅ [Deploy Agent] Application is LIVE at {preview_url}",
+                        event_type="deploy_log",
+                        payload={"status": "success", "preview_url": preview_url, "port": host_port},
+                    )
+                    return
+
+                # Deployment failed: escalate to Master Agent
+                err_detail = (
+                    (deploy_report.get("frontend_error") or deploy_report.get("backend_error") or deploy_report.get("error"))
+                    if isinstance(deploy_report, dict)
+                    else "Deployment container failed health verification on port 80"
+                )
+                self.append_agent_log(
+                    "deploy_agent",
+                    f"❌ [Deploy Agent] Deployment attempt {attempt} failed: {str(err_detail)[:400]}. Escalating to Master Agent for Hot-Fix assignment...",
+                    "error",
+                    project_token,
+                )
+
+                if attempt > max_hotfix_rounds:
+                    deploy_agent_mem["status"] = "error"
+                    deploy_agent_mem["progress_message"] = f"Deployment failed after {max_hotfix_rounds} hot-fix cycles."
+                    await broadcast_preview_log(
+                        project_token=project_token,
+                        content=f"❌ [Deploy Agent] Deployment failed after {max_hotfix_rounds} hot-fix attempts: {str(err_detail)[:300]}",
+                        event_type="deploy_log",
+                        payload={"status": "error"},
+                    )
+                    return
+
+                with SessionLocal() as db_sess:
+                    triage = triage_deployment_failure_for_hotfix(
+                        db=db_sess,
+                        project_token=project_token,
+                        workspace_dir=workspace_dir,
+                        deploy_error=str(err_detail),
+                        deploy_report=deploy_report,
+                    )
+
+                target_aid = triage["responsible_agent_id"]
+                target_lane = triage["target_lane"]
+                self.append_agent_log(
+                    "M_agent_01",
+                    f"🚨 [Master Agent Hot-Fix Escalation] Deploy Agent reported {target_lane.upper()} deployment failure "
+                    f"(Files: {', '.join(triage['offending_files']) or 'runtime'}). "
+                    f"Assigning urgent Hot-Fix (Cycle {attempt}/{max_hotfix_rounds}) to agent '{target_aid}'...",
+                    "error",
+                    project_token,
+                )
+                await broadcast_preview_log(
+                    project_token=project_token,
+                    content=f"🚨 [Master Agent] Assigned Production Hot-Fix (Cycle {attempt}) to {target_aid} ({target_lane} lane)...",
+                    event_type="deploy_log",
+                    payload={"status": "deploying", "hotfix_agent": target_aid, "lane": target_lane},
+                )
+
+                await _bg_run_agent(
+                    agent_id=target_aid,
+                    git_repo_url=git_repo_url,
+                    git_token=git_token,
+                    project_token=project_token,
+                    x_task_token=None,
+                    custom_override_prompt=triage["hotfix_prompt"],
+                )
+
+                self.append_agent_log(
+                    "M_agent_01",
+                    f"✅ [Master Agent] Hot-Fix by '{target_aid}' completed. Re-triggering Deploy Agent (Attempt {attempt + 1})...",
+                    "info",
+                    project_token,
+                )
+
+        asyncio.create_task(_run_dedicated_deployment_with_hotfix_loop())
+
+        return {
+            "status": "deploying",
+            "preview_url": "http://localhost:8085",
+            "direct_url": "http://localhost:8085",
+            "message": "Dedicated Deploy Agent container provisioning and deployment initiated.",
+        }
 
     async def repair_preview(
         self,
