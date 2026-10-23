@@ -710,6 +710,12 @@ def escalate_project_request_to_superadmin(
 
 
 # --- Extracted Block (Lines 12185-12437) ---
+@router.post("/api")
+@router.get("/api")
+async def api_health_ping():
+    return {"status": "ok", "service": "dsuite-agent-api"}
+
+
 @router.get("/agents/tools/available")
 @router.get("/api/agent/available-tools")
 async def get_available_agent_tools():
@@ -4274,9 +4280,28 @@ def _build_data_driven_recommendations_from_project(
         lane_tags = list(dict.fromkeys([lane] + matched_skills + required_skills[:4]))
 
         # 3. Derive role title & specialization from the actual lane + detected stack
-        stack_label = f" ({primary_stack})" if primary_stack and primary_stack != "unknown" else ""
-        role_title = f"{lane.capitalize()} Specialist{stack_label}"
-        specialization = "Testing" if lane == "qa" else f"{lane.capitalize()} Development"
+        lane_lower = lane.lower().strip()
+        if lane_lower == "frontend":
+            frontend_tech = "React"
+            for sig in ("react", "vue", "angular", "next", "vite", "svelte"):
+                if sig in str(detected_stack).lower() or sig in corpus.lower():
+                    frontend_tech = sig.capitalize()
+                    break
+            role_title = f"Frontend Specialist ({frontend_tech})"
+            specialization = "Frontend Development"
+        elif lane_lower == "qa":
+            role_title = "QA Specialist (Testing & Automation)"
+            specialization = "Testing"
+        elif lane_lower == "devops":
+            role_title = "DevOps Specialist (Docker & CI/CD)"
+            specialization = "DevOps"
+        elif lane_lower == "backend":
+            stack_label = f" ({primary_stack.capitalize()})" if primary_stack and primary_stack != "unknown" else ""
+            role_title = f"Backend Specialist{stack_label}"
+            specialization = "Backend Development"
+        else:
+            role_title = f"{lane.capitalize()} Specialist"
+            specialization = f"{lane.capitalize()} Development"
 
         task_bullet_list = "\n".join(
             f"- **{t.get('id', f'TASK-{i+1}')}**: {t.get('title')} — {(t.get('description') or '')[:180]}"
@@ -4305,7 +4330,7 @@ def _build_data_driven_recommendations_from_project(
             "model_name": default_model,
             "skills_tags": lane_tags,
             "skills_summary": (
-                f"Executes {len(tasks_in_lane)} {lane} task(s) for {primary_stack}: "
+                f"Executes {len(tasks_in_lane)} {lane} task(s): "
                 + (", ".join(task_titles[:3]) if task_titles else "verification & testing")
             )[:200],
             "skills_content": skills_content,
@@ -4461,7 +4486,7 @@ async def recommend_agents(
             api_url=settings.ai_api_url,
             api_key=settings.ai_api_key,
             model=settings.ai_model,
-            timeout=30.0,
+            timeout=75.0,
             retries=1,
             purpose="Agent Recommendation Synthesis",
             project_token=target_token,
@@ -8087,6 +8112,9 @@ class UpdateTaskChecklistRequest(BaseModel):
 
 
 @router.patch("/api/agent/tasks/{task_id}/checklist/")
+@router.put("/api/agent/tasks/{task_id}/checklist/")
+@router.patch("/api/agent/tasks/{task_id}/checklist")
+@router.put("/api/agent/tasks/{task_id}/checklist")
 async def update_task_checklist(
     task_id: str,
     payload: UpdateTaskChecklistRequest,

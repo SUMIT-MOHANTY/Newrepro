@@ -591,6 +591,7 @@ def organize_tasks_into_phases(assignments: List[Dict[str, Any]]) -> Dict[str, L
         "phase2_frontend": phase2_frontend,
         "phase3_devops": phase3_devops,
         "phase4_qa_gate": phase4_qa,
+        "phase3_qa_gate": phase4_qa,
     }
 
 
@@ -1043,7 +1044,7 @@ async def orchestrate_project(
         f"[Master Agent] Phase 3: Constructed Phased Dependency DAG: "
         f"Phase 1 Backend: {len(phased_plan['phase1_backend'])} agents | "
         f"Phase 2 Frontend: {len(phased_plan['phase2_frontend'])} agents | "
-        f"Phase 3 QA Gate: {len(phased_plan['phase3_qa_gate'])} agents.",
+        f"Phase 3 QA Gate: {len(phased_plan.get('phase4_qa_gate', phased_plan.get('phase3_qa_gate', [])))} agents.",
         "info",
         project_token,
     )
