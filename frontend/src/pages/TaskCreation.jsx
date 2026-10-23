@@ -124,19 +124,19 @@ export default function TaskCreation({
     });
     const [showGenerationModal, setShowGenerationModal] = useState(true);
 
-    // Keep progress bar smoothly moving during AI generation
+    // Keep progress bar smoothly moving forward monotonically during AI generation
     useEffect(() => {
         let smoothTimer = null;
         if (isGenerating) {
             smoothTimer = setInterval(() => {
                 setGenerationStatus(prev => {
-                    if (!prev.is_generating || prev.progress_percent >= 94) return prev;
+                    if (!prev.is_generating || (prev.progress_percent || 0) >= 92) return prev;
                     return {
                         ...prev,
-                        progress_percent: Math.min(94, (prev.progress_percent || 15) + 1),
+                        progress_percent: Math.min(92, (prev.progress_percent || 15) + 1),
                     };
                 });
-            }, 850);
+            }, 1500);
         }
         return () => {
             if (smoothTimer) clearInterval(smoothTimer);
@@ -243,7 +243,10 @@ export default function TaskCreation({
                                 });
                                 if (pRes.ok) {
                                     const pData = await pRes.json();
-                                    setGenerationStatus(pData);
+                                    setGenerationStatus(prev => ({
+                                        ...pData,
+                                        progress_percent: Math.max(prev?.progress_percent || 0, pData?.progress_percent || 0),
+                                    }));
                                     if (Array.isArray(pData.released_tasks) && pData.released_tasks.length > 0) {
                                         setTasks(prev => {
                                             const existingIds = new Set(prev.map(t => t.task_id || t.id));
@@ -1811,11 +1814,19 @@ function TaskGenerationModal({
     const releasedSprints = Array.isArray(generationStatus?.released_sprints) ? generationStatus.released_sprints : [];
 
     const phases = [
-        { id: 1, name: 'BRD & Scope Analysis', desc: 'Parsing requirements, modules & constraints', threshold: 20 },
-        { id: 2, name: 'Architecture & Sprints', desc: 'Establishing sprint boundaries & tech milestones', threshold: 45 },
-        { id: 3, name: 'Atomic Task Decomposition', desc: 'Generating user stories, acceptance criteria & tags', threshold: 75 },
-        { id: 4, name: 'Dependency & Role Mapping', desc: 'Linking prerequisites & AI agent role assignments', threshold: 95 },
+        { id: 1, name: 'BRD & Scope Analysis', desc: 'Parsing requirements, modules & constraints' },
+        { id: 2, name: 'Architecture & Sprints', desc: 'Establishing sprint boundaries & tech milestones' },
+        { id: 3, name: 'Atomic Task Decomposition', desc: 'Generating user stories, acceptance criteria & tags' },
+        { id: 4, name: 'Dependency & Role Mapping', desc: 'Linking prerequisites & AI agent role assignments' },
     ];
+
+    const activePhaseIndex = useMemo(() => {
+        if (progress >= 100) return 4;
+        if (progress >= 85) return 3;
+        if (progress >= 45) return 2;
+        if (progress >= 20) return 1;
+        return 0;
+    }, [progress]);
 
     return (
         <div className="fixed inset-0 z-[500] flex items-center justify-center p-3 sm:p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200 select-none">
@@ -1876,9 +1887,9 @@ function TaskGenerationModal({
                     <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-0.5">
                         Generation Pipeline
                     </div>
-                    {phases.map((phase) => {
-                        const isDone = progress >= phase.threshold;
-                        const isCurrent = !isDone && (progress >= phase.threshold - 25 || phase.id === 1);
+                    {phases.map((phase, idx) => {
+                        const isDone = activePhaseIndex > idx;
+                        const isCurrent = activePhaseIndex === idx;
                         return (
                             <div
                                 key={phase.id}
