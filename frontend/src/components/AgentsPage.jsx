@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send, ChevronRight, ChevronDown, TrendingUp, PlusCircle, Wrench, Check, Sparkles, X, Lock } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from './RequestCapacityModal';
-import { getMandatoryToolsForAgent } from '../utils/agentToolsHelper';
+import { getMandatoryToolsForAgent, fetchMandatoryToolsMatrix } from '../utils/agentToolsHelper';
 
 import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
@@ -573,6 +573,7 @@ export default function AgentsPage({ projects = [] }) {
 
   useEffect(() => {
     fetchAvailableModels();
+    fetchMandatoryToolsMatrix();
   }, [fetchAvailableModels]);
 
   // Skill-gap detection state (brownfield projects)

@@ -153,6 +153,7 @@ export const API_ENDPOINTS = {
     // Tool Adequacy
     AGENT_TOOL_CHECK: (agentId, projectToken) =>
         `${API_BASE_URL}/api/agent/tool-check?agent_id=${encodeURIComponent(agentId)}${projectToken ? `&project_token=${encodeURIComponent(projectToken)}` : ''}`,
+    AGENT_MANDATORY_TOOLS: `${API_BASE_URL}/agents/mandatory-tools`,
     AGENT_RECOMMEND: `${API_BASE_URL}/agents/recommend`,
     AGENT_AUTO_CREATE: `${API_BASE_URL}/agents/auto-create`,
 

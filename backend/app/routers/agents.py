@@ -722,6 +722,28 @@ async def get_available_agent_tools():
     }
 
 
+@router.get("/agents/mandatory-tools")
+@router.get("/api/agent/mandatory-tools")
+@router.get("/api/agents/mandatory-tools")
+async def get_mandatory_tools():
+    """Return the dynamic tool adequacy matrix (required / mandatory tools and recommended tools per lane)
+    directly from tool_adequacy_service. Zero hardcoding on the frontend.
+    """
+    from app.services.agents.tool_adequacy_service import TOOL_REQUIREMENTS, ALL_KNOWN_TOOLS, _TOOL_LABELS
+    return {
+        "success": True,
+        "lane_requirements": TOOL_REQUIREMENTS,
+        "mandatory_by_lane": {
+            lane: req.get("required", ["filesystem"]) for lane, req in TOOL_REQUIREMENTS.items()
+        },
+        "recommended_by_lane": {
+            lane: req.get("recommended", []) for lane, req in TOOL_REQUIREMENTS.items()
+        },
+        "known_tools": ALL_KNOWN_TOOLS,
+        "tool_labels": _TOOL_LABELS,
+    }
+
+
 AVAILABLE_AGENT_MODELS = [
     {
         "id": "claude",
@@ -4276,6 +4298,9 @@ def _build_data_driven_recommendations_from_project(
             "lane": lane,
             "specialization": specialization,
             "tools": dynamic_tools,
+            "required_tools": list(adequacy.get("required_tools") or ["filesystem"]),
+            "mandatory_tools": list(adequacy.get("required_tools") or ["filesystem"]),
+            "recommended_tools": list(adequacy.get("recommended_tools") or []),
             "task_count": len(tasks_in_lane),
             "model_name": default_model,
             "skills_tags": lane_tags,
@@ -4457,12 +4482,17 @@ async def recommend_agents(
                 lanes=[lane],
                 tasks=l_tasks,
             )
+            req_tools = list(adequacy.get("required_tools") or ["filesystem"])
+            rec_tools = list(adequacy.get("recommended_tools") or [])
             rec["tools"] = list(dict.fromkeys(
                 (rec.get("tools") or [])
-                + (adequacy.get("missing_required") or [])
-                + (adequacy.get("missing_recommended") or [])
+                + req_tools
+                + rec_tools
                 + ["filesystem", "git", "terminal", "build_tool"]
             ))
+            rec["required_tools"] = req_tools
+            rec["mandatory_tools"] = req_tools
+            rec["recommended_tools"] = rec_tools
             rec["model_name"] = (rec.get("model_name") or default_model).lower().strip()
             recommendations.append(rec)
     except Exception as exc:

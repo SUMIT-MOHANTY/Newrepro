@@ -5,7 +5,7 @@ import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Inf
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from '../components/RequestCapacityModal';
 import AgentToolPicker, { ALL_TOOLS } from '../components/AgentToolPicker';
-import { getMandatoryToolsForAgent } from '../utils/agentToolsHelper';
+import { getMandatoryToolsForAgent, fetchMandatoryToolsMatrix } from '../utils/agentToolsHelper';
 
 
 function getLaneBadgeColor(lane) {
@@ -111,6 +111,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
 
   useEffect(() => {
     if (!token) return;
+    fetchMandatoryToolsMatrix(token);
     fetch(API_ENDPOINTS.ORG_RBAC_ME, {
       headers: { Authorization: `Bearer ${token}` }
     })
@@ -820,9 +821,9 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                             onChange={(e) => handleUpdateModel(idx, e.target.value)}
                             className="text-[10px] font-medium bg-app-bg-muted border border-app-border-light rounded px-1.5 py-0.5 text-app-text-main focus:outline-none"
                           >
-                            <option value="claude">Claude 3.5 Sonnet</option>
-                            <option value="deepseek">DeepSeek V3</option>
-                            <option value="kimi">Kimi K1.5</option>
+                            <option value="claude">Claude</option>
+                            <option value="kimi">Kimi</option>
+                            <option value="deepseek">DeepSeek</option>
                           </select>
                         </div>
                         <button

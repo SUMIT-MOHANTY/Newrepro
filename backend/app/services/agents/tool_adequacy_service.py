@@ -45,32 +45,32 @@ ALL_KNOWN_TOOLS: List[str] = [
 #   recommended  – missing any of these → status "warning" (if not already critical)
 TOOL_REQUIREMENTS: Dict[str, Dict[str, List[str]]] = {
     "frontend": {
-        "required":    ["filesystem", "git", "terminal"],
-        "recommended": ["build_tool"],
+        "required":    ["filesystem"],
+        "recommended": ["build_tool", "git", "terminal"],
     },
     "backend": {
-        "required":    ["filesystem", "git", "terminal"],
-        "recommended": ["build_tool"],
+        "required":    ["filesystem"],
+        "recommended": ["build_tool", "git", "terminal"],
     },
     "qa": {
-        "required":    ["filesystem", "terminal", "test_runner"],
-        "recommended": ["visual_qa"],
+        "required":    ["test_runner"],
+        "recommended": ["visual_qa", "filesystem", "terminal"],
     },
     "devops": {
-        "required":    ["filesystem", "git", "terminal"],
-        "recommended": ["docker"],
+        "required":    ["filesystem", "terminal"],
+        "recommended": ["docker", "git"],
     },
     "governance": {
-        "required":    ["filesystem", "terminal"],
-        "recommended": ["git"],
+        "required":    ["filesystem"],
+        "recommended": ["git", "terminal"],
     },
     "integration": {
-        "required":    ["filesystem", "git", "terminal"],
-        "recommended": ["build_tool"],
+        "required":    ["filesystem"],
+        "recommended": ["build_tool", "git", "terminal"],
     },
     "general": {
-        "required":    ["filesystem", "terminal"],
-        "recommended": ["git"],
+        "required":    ["filesystem"],
+        "recommended": ["git", "terminal"],
     },
 }
 
@@ -218,11 +218,14 @@ def recommend_agents_for_project(
         reqs = TOOL_REQUIREMENTS.get(lane, TOOL_REQUIREMENTS["general"])
         tools = list(dict.fromkeys(reqs["required"] + reqs["recommended"]))
         recommendations.append({
-            "role":           meta["role"],
-            "lane":           lane,
-            "task_count":     count,
-            "tools":          tools,
-            "specialization": meta["specialization"],
+            "role":              meta["role"],
+            "lane":              lane,
+            "task_count":        count,
+            "tools":             tools,
+            "required_tools":    list(reqs.get("required", ["filesystem"])),
+            "mandatory_tools":   list(reqs.get("required", ["filesystem"])),
+            "recommended_tools": list(reqs.get("recommended", [])),
+            "specialization":    meta["specialization"],
         })
 
     # Sort by task count descending so the busiest lane comes first

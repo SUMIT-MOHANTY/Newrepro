@@ -3,18 +3,80 @@
  * -------------------
  * Central utility to identify agent execution lanes and enforce mandatory tools
  * across ResourceOnboarding, AgentToolPicker, and AgentsPage.
+ * 
+ * Tool requirements are fetched dynamically from the backend tool adequacy engine
+ * (TOOL_REQUIREMENTS in tool_adequacy_service.py) via /agents/mandatory-tools.
+ * Zero hardcoding.
  */
 
-// Canonical lane-to-mandatory tools definitions
-export const LANE_MANDATORY_TOOLS = {
-  frontend: ['filesystem'], // Read and write tool (File System & Code Editor)
-  backend: ['filesystem'],
-  qa: ['test_runner'],
-  devops: ['filesystem', 'terminal'],
-  integration: ['filesystem'],
-  governance: ['filesystem'],
-  general: ['filesystem']
-};
+import { API_ENDPOINTS } from '../config';
+
+// In-memory cache for dynamic mandatory tools loaded from the backend
+let _cachedMandatoryTools = null;
+let _isFetchingMatrix = false;
+
+/**
+ * Fetch the dynamic mandatory tools matrix from the backend tool adequacy service.
+ * @param {string} [token] Optional JWT token
+ * @returns {Promise<Object>} Map of lane -> mandatory tool array
+ */
+export async function fetchMandatoryToolsMatrix(token) {
+  if (_cachedMandatoryTools) {
+    return _cachedMandatoryTools;
+  }
+
+  // Attempt to load from sessionStorage first for instant render
+  if (typeof sessionStorage !== 'undefined') {
+    try {
+      const saved = sessionStorage.getItem('agent_mandatory_tools');
+      if (saved) {
+        _cachedMandatoryTools = JSON.parse(saved);
+      }
+    } catch (_) {}
+  }
+
+  if (_isFetchingMatrix) {
+    return _cachedMandatoryTools;
+  }
+
+  _isFetchingMatrix = true;
+  try {
+    const endpoint = API_ENDPOINTS.AGENT_MANDATORY_TOOLS || '/agents/mandatory-tools';
+    const headers = { 'Content-Type': 'application/json' };
+    const authToken = token || (typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null);
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const res = await fetch(endpoint, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.mandatory_by_lane) {
+        _cachedMandatoryTools = data.mandatory_by_lane;
+        if (typeof sessionStorage !== 'undefined') {
+          try {
+            sessionStorage.setItem('agent_mandatory_tools', JSON.stringify(data.mandatory_by_lane));
+          } catch (_) {}
+        }
+        return _cachedMandatoryTools;
+      }
+    }
+  } catch (err) {
+    console.warn('[agentToolsHelper] Failed to fetch dynamic mandatory tools from backend:', err);
+  } finally {
+    _isFetchingMatrix = false;
+  }
+
+  return _cachedMandatoryTools;
+}
+
+/**
+ * Set or override the dynamic mandatory tools matrix in memory
+ */
+export function setDynamicMandatoryTools(matrix) {
+  if (matrix && typeof matrix === 'object') {
+    _cachedMandatoryTools = matrix;
+  }
+}
 
 /**
  * Detect the agent's primary lane from role, name, lane, tags, specialization, etc.
@@ -144,22 +206,61 @@ export function detectAgentLane(agent) {
  * Returns an array of tool IDs that are mandatory for this agent.
  * Mandatory tools can NEVER be unchecked or removed in the UI.
  * 
+ * Precedence:
+ * 1. Explicit mandatory_tools / required_tools from backend recommendation or agent record
+ * 2. Dynamic lane-specific mandatory tools fetched from /agents/mandatory-tools
+ * 3. Graceful offline fallback
+ * 
  * @param {Object|string} agent - Agent record or configuration object
  * @returns {string[]} Array of tool IDs, e.g. ['filesystem']
  */
 export function getMandatoryToolsForAgent(agent) {
   if (!agent) return ['filesystem'];
 
-  // If explicit required_tools are attached from backend adequacy check, include them
-  const explicitRequired = Array.isArray(agent.required_tools)
-    ? agent.required_tools.map(t => String(t).toLowerCase())
-    : [];
+  // 1. Direct explicit backend requirements attached to the agent or recommendation
+  const explicitMandatory = Array.isArray(agent.mandatory_tools) && agent.mandatory_tools.length > 0
+    ? agent.mandatory_tools.map(t => String(t).toLowerCase())
+    : (Array.isArray(agent.required_tools) && agent.required_tools.length > 0
+        ? agent.required_tools.map(t => String(t).toLowerCase())
+        : null);
+
+  if (explicitMandatory && explicitMandatory.length > 0) {
+    return explicitMandatory;
+  }
 
   const lane = detectAgentLane(agent);
-  const laneTools = LANE_MANDATORY_TOOLS[lane] || ['filesystem'];
 
-  const combined = new Set([...laneTools, ...explicitRequired]);
-  return Array.from(combined);
+  // 2. Dynamic requirements from backend cache
+  if (_cachedMandatoryTools && _cachedMandatoryTools[lane]) {
+    return _cachedMandatoryTools[lane].map(t => String(t).toLowerCase());
+  }
+
+  // Check sessionStorage
+  if (typeof sessionStorage !== 'undefined') {
+    try {
+      const saved = sessionStorage.getItem('agent_mandatory_tools');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed[lane]) {
+          _cachedMandatoryTools = parsed;
+          return parsed[lane].map(t => String(t).toLowerCase());
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. Graceful offline fallback matching tool_adequacy_service.py
+  const fallback = {
+    frontend: ['filesystem'],
+    backend: ['filesystem'],
+    qa: ['test_runner'],
+    devops: ['filesystem', 'terminal'],
+    integration: ['filesystem'],
+    governance: ['filesystem'],
+    general: ['filesystem'],
+  };
+
+  return fallback[lane] || ['filesystem'];
 }
 
 /**
