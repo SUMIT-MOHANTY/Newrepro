@@ -246,7 +246,7 @@ export default function SuperAdminCapacityRequests() {
 
         {/* Review Modal */}
         {selectedReq && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="fixed inset-0 z-[500] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-purple-500/30 rounded-xl p-5 max-w-md w-full shadow-2xl space-y-4">
               <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
                 <h3 className="font-bold text-slate-900 dark:text-white text-base">

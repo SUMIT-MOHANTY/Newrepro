@@ -10,8 +10,11 @@ This is the bridge between Claude's tool-use protocol and our MCP tool infrastru
 from __future__ import annotations
 
 import os
+import ast
+import re
 import json
 import time
+from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
 from agent.tools.tool_registry import ToolRegistry
@@ -46,6 +49,18 @@ class ToolExecutor:
         self._call_history: list[str] = []
         # Files blocked from patch tools after a rollback — require write_file only
         self._rollback_blocked_files: set[str] = set()
+        self._task_completed: bool = False
+        self._completion_summary: str = ""
+
+    @property
+    def is_task_completed(self) -> bool:
+        """True if the task has been marked complete via complete_task or finish_task."""
+        return self._task_completed
+
+    @property
+    def completion_summary(self) -> str:
+        """Summary provided when completing the task."""
+        return self._completion_summary
 
     @property
     def files_changed(self) -> list[str]:
@@ -72,6 +87,32 @@ class ToolExecutor:
         Returns a dict with 'content' suitable for an Anthropic tool_result message.
         """
         self._tool_call_count += 1
+
+        # Check for truncation flag from LLM client ceiling detection
+        if isinstance(tool_input, dict) and tool_input.get("__truncated__"):
+            return self._error_result(
+                "Error: Tool call arguments were truncated due to LLM output token ceiling. "
+                "The operation was aborted safely before modifying files. "
+                "Please retry with a smaller batch (e.g. 2-3 files at a time instead of all files together)."
+            )
+
+        # Handle task completion tools directly
+        if tool_name in ("complete_task", "finish_task"):
+            summary = tool_input.get("summary") if isinstance(tool_input, dict) else "Task completed by agent"
+            verified_files = tool_input.get("verified_files") if isinstance(tool_input, dict) else []
+            self._task_completed = True
+            self._completion_summary = str(summary or "Task completed by agent")
+            _safe_print(f"🏁 [ToolExecutor] Task completed: {self._completion_summary}")
+            return self._success_result({
+                "status": "completed",
+                "message": "Task completion recorded. Execution loop will now terminate cleanly.",
+                "summary": self._completion_summary,
+                "verified_files": verified_files or [],
+            })
+
+        # Repair malformed or stringified input for batch_replace_file_content
+        if tool_name == "batch_replace_file_content":
+            tool_input = self._repair_batch_replace_input(tool_input)
 
         # Loop detector: check for identical repeated tool calls
         call_key = f"{tool_name}:{json.dumps(tool_input, sort_keys=True)}"
@@ -793,7 +834,7 @@ class ToolExecutor:
                 if inferred:
                     files = inferred
 
-        # If files is a string, attempt multiple decoding strategies
+        # If files is a string, attempt resilient decoding strategies
         if isinstance(files, str):
             clean_str = files.strip()
             if clean_str.startswith("files=") or clean_str.startswith("files:"):
@@ -801,18 +842,11 @@ class ToolExecutor:
             elif clean_str.startswith("files ="):
                 clean_str = clean_str.split("=", 1)[1].strip()
 
-            try:
-                files = json.loads(clean_str)
-            except Exception:
-                try:
-                    import ast
-                    files = ast.literal_eval(clean_str)
-                except Exception:
-                    pass
-
-            # If still a string (e.g. malformed JSON or Python triple quotes """..."""), extract entries via regex
-            if isinstance(files, str):
-                import re
+            parsed = self._parse_json_resilient(clean_str)
+            if isinstance(parsed, (list, dict)):
+                files = parsed if isinstance(parsed, list) else [parsed]
+            else:
+                # If still a string, extract entries via regex
                 extracted = []
                 pattern = re.compile(
                     r'["\'](?:path|file|name)["\']\s*:\s*["\']([^"\']+)["\']\s*,\s*["\'](?:content|code|source|text)["\']\s*:\s*(?:"""(.*?)"""|\'\'\'(.*?)\'\'\'|"(.*?)"|\'(.*?)\')',
@@ -835,12 +869,21 @@ class ToolExecutor:
 
         results = []
         errors = []
+        written_rel_paths = []
+
+        workspace_path = getattr(self._mcp, "_workspace_path", None) or os.environ.get("WORKSPACE_PATH", "/workspace")
+        validator = None
+        try:
+            from runtime.syntax_validator import SyntaxValidator
+            validator = SyntaxValidator(workspace_path)
+        except Exception:
+            pass
 
         for file_entry in files:
             # Handle if file_entry is a stringified JSON object
             if isinstance(file_entry, str):
                 try:
-                    file_entry = json.loads(file_entry)
+                    file_entry = self._parse_json_resilient(file_entry)
                 except Exception:
                     errors.append(f"Invalid file entry: expected object with 'path' and 'content', got string '{file_entry[:50]}'")
                     continue
@@ -866,34 +909,44 @@ class ToolExecutor:
 
             if result.success:
                 self._track_changes("write_file", {"path": path}, result)
-                # Check for syntax error or truncation
-                try:
-                    from runtime.syntax_validator import SyntaxValidator
-                    workspace_path = getattr(self._mcp, "_workspace_path", None) or os.environ.get("WORKSPACE_PATH", "/workspace")
-                    validator = SyntaxValidator(workspace_path)
-                    rel_path = path.replace(str(workspace_path), "").lstrip("/\\")
-                    file_errs = validator.validate_files([rel_path])
-                    if file_errs:
-                        err_item = file_errs[0]
-                        err_msg = err_item.get("error", "Syntax or truncation error")
-                        line_num = err_item.get("line", 0)
-                        msg = f"⚠️ Syntax error/truncation detected in `{rel_path}` (line {line_num}). Asking the AI to fix or complete the file..."
-                        try:
-                            print(f"[ToolExecutor] {msg}")
-                        except UnicodeEncodeError:
-                            print(f"[ToolExecutor] {msg.encode('ascii', errors='replace').decode('ascii')}")
-                        errors.append(f"{msg}: {err_msg}")
-                        results.append({"path": path, "status": "truncated", "warning": msg})
-                    else:
-                        results.append({"path": path, "status": "written", "size": len(content)})
-                        try:
-                            print(f"   ✍️ Batch write: {path} ({len(content)} chars)")
-                        except UnicodeEncodeError:
-                            print(f"   Batch write: {path} ({len(content)} chars)")
-                except Exception as val_exc:
+                rel_path = path.replace(str(workspace_path), "").replace("\\", "/").lstrip("/")
+                written_rel_paths.append(rel_path)
+
+                # Fast in-memory single-file syntax check (< 5ms) without full workspace disk scan
+                has_syntax_err = False
+                if validator:
+                    try:
+                        err_item = validator.validate_content(rel_path, content)
+                        if err_item:
+                            has_syntax_err = True
+                            err_msg = err_item.get("error", "Syntax or truncation error")
+                            line_num = err_item.get("line", 0)
+                            msg = f"⚠️ Syntax error/truncation detected in `{rel_path}` (line {line_num}). Asking the AI to fix or complete the file..."
+                            _safe_print(f"[ToolExecutor] {msg}")
+                            errors.append(f"{msg}: {err_msg}")
+                            results.append({"path": path, "status": "truncated", "warning": msg})
+                    except Exception:
+                        pass
+                if not has_syntax_err:
                     results.append({"path": path, "status": "written", "size": len(content)})
+                    _safe_print(f"   ✍️ Batch write: {path} ({len(content)} chars)")
             else:
                 errors.append(f"{path}: {result.error}")
+
+        # Run cross-import validation ONCE at the end of the entire batch
+        if validator and written_rel_paths:
+            try:
+                cross_errs = validator.validate_workspace_cross_imports()
+                if cross_errs:
+                    written_set = {validator._norm_file(p) for p in written_rel_paths}
+                    batch_cross_errs = [ce for ce in cross_errs if validator._norm_file(ce.get("file", "")) in written_set]
+                    for ce in batch_cross_errs:
+                        err_line = ce.get("line", 0)
+                        err_file = ce.get("file", "")
+                        err_detail = ce.get("error", "Cross-import mismatch")
+                        errors.append(f"Cross-import error in `{err_file}`:{err_line} - {err_detail}")
+            except Exception:
+                pass
 
         # Build summary response with anti-loop directive
         has_truncation = any(r.get("status") == "truncated" for r in results)
@@ -911,6 +964,74 @@ class ToolExecutor:
             summary["notes"] = errors
 
         return self._success_result(summary)
+
+    @staticmethod
+    def _escape_newlines_in_json_strings(raw: str) -> str:
+        """Escape raw unescaped newlines and control chars inside JSON string literals.
+        Uses a character-level state machine so structure outside quotes is unaffected."""
+        if not raw or not isinstance(raw, str):
+            return raw
+        out: list[str] = []
+        in_string = False
+        escape = False
+        for ch in raw:
+            if escape:
+                out.append(ch)
+                escape = False
+                continue
+            if ch == '\\':
+                escape = True
+                out.append(ch)
+                continue
+            if ch == '"':
+                in_string = not in_string
+                out.append(ch)
+                continue
+            if in_string:
+                if ch == '\n':
+                    out.append('\\n')
+                    continue
+                elif ch == '\r':
+                    out.append('\\r')
+                    continue
+                elif ch == '\t':
+                    out.append('\\t')
+                    continue
+            out.append(ch)
+        return "".join(out)
+
+    def _repair_batch_replace_input(self, tool_input: Any) -> dict[str, Any]:
+        """Safely repair stringified or malformed batch_replace_file_content input."""
+        if isinstance(tool_input, str):
+            tool_input = self._parse_json_resilient(tool_input)
+        if isinstance(tool_input, list):
+            return {"edits": tool_input}
+        if isinstance(tool_input, dict):
+            edits = tool_input.get("edits")
+            if isinstance(edits, str):
+                parsed = self._parse_json_resilient(edits)
+                if isinstance(parsed, list):
+                    tool_input["edits"] = parsed
+                elif isinstance(parsed, dict):
+                    tool_input["edits"] = [parsed]
+            return tool_input
+        return {}
+
+    def _parse_json_resilient(self, raw: Any) -> Any:
+        """Attempt JSON decode with state-machine newlines escaping fallback."""
+        if not isinstance(raw, str):
+            return raw
+        try:
+            return json.loads(raw)
+        except Exception:
+            try:
+                escaped = self._escape_newlines_in_json_strings(raw)
+                return json.loads(escaped)
+            except Exception:
+                try:
+                    return ast.literal_eval(raw)
+                except Exception:
+                    return raw
 
     def _execute_get_conversation_history(self, tool_input: dict[str, Any] | str) -> dict[str, Any]:
         """Retrieve past user requirements and assistant responses from disk transcript."""

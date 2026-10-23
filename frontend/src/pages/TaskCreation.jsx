@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -389,20 +390,20 @@ export default function TaskCreation({
         }
     };
 
-    // Selection handlers
+    // Selection handlers - selects/deselects ALL tasks across all generated phases & sprints
     const handleSelectAll = () => {
-        const idsToSelect = (displayedTasks.length > 0 ? displayedTasks : tasks)
+        const idsToSelect = tasks
             .map(t => t.task_id || t.id)
             .filter(Boolean);
-        setTasks(prev => prev.map(t => idsToSelect.includes(t.task_id || t.id) ? { ...t, selected: true } : t));
+        setTasks(prev => prev.map(t => ({ ...t, selected: true })));
         syncTaskSelection(idsToSelect, true);
     };
 
     const handleDeselectAll = () => {
-        const idsToDeselect = (displayedTasks.length > 0 ? displayedTasks : tasks)
+        const idsToDeselect = tasks
             .map(t => t.task_id || t.id)
             .filter(Boolean);
-        setTasks(prev => prev.map(t => idsToDeselect.includes(t.task_id || t.id) ? { ...t, selected: false } : t));
+        setTasks(prev => prev.map(t => ({ ...t, selected: false })));
         syncTaskSelection(idsToDeselect, false);
     };
 
@@ -536,9 +537,9 @@ export default function TaskCreation({
     const handleStartSelectedTasks = async () => {
         let targetTasks = tasks.filter(t => t.selected);
         if (targetTasks.length === 0) {
-            // Auto select all in active sprint if none selected
-            targetTasks = displayedTasks.length > 0 ? displayedTasks : tasks;
-            setTasks(prev => prev.map(t => targetTasks.some(dt => (dt.task_id || dt.id) === (t.task_id || t.id)) ? { ...t, selected: true } : t));
+            // Auto select all tasks across all sprints if none explicitly selected
+            targetTasks = tasks.length > 0 ? tasks : displayedTasks;
+            setTasks(prev => prev.map(t => ({ ...t, selected: true })));
         }
 
         const taskIds = targetTasks.map(t => t.id || t.task_id).filter(Boolean);
@@ -807,7 +808,12 @@ export default function TaskCreation({
                     <label className="flex items-center space-x-1.5 text-xs font-semibold text-slate-700 cursor-pointer select-none">
                         <input
                             type="checkbox"
-                            checked={displayedTasks.length > 0 && displayedTasks.every(t => t.selected)}
+                            ref={el => {
+                                if (el) {
+                                    el.indeterminate = tasks.length > 0 && tasks.some(t => t.selected) && !tasks.every(t => t.selected);
+                                }
+                            }}
+                            checked={tasks.length > 0 && tasks.every(t => t.selected)}
                             onChange={(e) => e.target.checked ? handleSelectAll() : handleDeselectAll()}
                             className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer"
                         />
@@ -821,7 +827,7 @@ export default function TaskCreation({
                     </button>
                     {tasks.filter(t => t.selected).length > 0 && (
                         <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
-                            {tasks.filter(t => t.selected).length} selected
+                            {tasks.filter(t => t.selected).length} of {tasks.length} selected
                         </span>
                     )}
                 </div>
@@ -879,9 +885,15 @@ export default function TaskCreation({
                                     <th className="py-2.5 px-3 w-10 text-center">
                                         <input
                                             type="checkbox"
-                                            checked={displayedTasks.length > 0 && displayedTasks.every(t => t.selected)}
+                                            ref={el => {
+                                                if (el) {
+                                                    el.indeterminate = tasks.length > 0 && tasks.some(t => t.selected) && !tasks.every(t => t.selected);
+                                                }
+                                            }}
+                                            checked={tasks.length > 0 && tasks.every(t => t.selected)}
                                             onChange={(e) => e.target.checked ? handleSelectAll() : handleDeselectAll()}
                                             className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer"
+                                            title="Select all tasks across all sprints"
                                         />
                                     </th>
                                     <th className="py-2.5 px-3 w-28">Task ID</th>
@@ -1016,14 +1028,16 @@ export default function TaskCreation({
                                                     checked={columnsData.todo.length > 0 && columnsData.todo.every(t => t.selected)}
                                                     onChange={(e) => {
                                                         const sel = e.target.checked;
-                                                        setTasks(prev => prev.map(t => columnsData.todo.some(ct => ct.task_id === t.task_id) ? { ...t, selected: sel } : t));
+                                                        const colIds = columnsData.todo.map(ct => ct.task_id || ct.id).filter(Boolean);
+                                                        setTasks(prev => prev.map(t => colIds.includes(t.task_id || t.id) ? { ...t, selected: sel } : t));
+                                                        syncTaskSelection(colIds, sel);
                                                     }}
-                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer"
                                                 />
                                                 <span className="truncate text-[11px] max-w-[140px] sm:max-w-[180px]">{columnsData.todo[0]?.milestone || 'Project Foundation'}</span>
                                             </label>
                                             <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-1">
-                                                0/{columnsData.todo.length}
+                                                {columnsData.todo.filter(t => t.selected).length}/{columnsData.todo.length}
                                             </span>
                                         </div>
 
@@ -1096,15 +1110,17 @@ export default function TaskCreation({
                                                     checked={columnsData.inProgress.length > 0 && columnsData.inProgress.every(t => t.selected)}
                                                     onChange={(e) => {
                                                         const sel = e.target.checked;
-                                                        setTasks(prev => prev.map(t => columnsData.inProgress.some(ct => ct.task_id === t.task_id) ? { ...t, selected: sel } : t));
+                                                        const colIds = columnsData.inProgress.map(ct => ct.task_id || ct.id).filter(Boolean);
+                                                        setTasks(prev => prev.map(t => colIds.includes(t.task_id || t.id) ? { ...t, selected: sel } : t));
+                                                        syncTaskSelection(colIds, sel);
                                                     }}
-                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer"
                                                 />
                                                 <ChevronDown className="w-3 h-3 text-slate-500 shrink-0" />
                                                 <span className="truncate text-[11px] max-w-[140px] sm:max-w-[180px]">{columnsData.inProgress[0]?.milestone || 'Core Implementation'}</span>
                                             </label>
                                             <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-1">
-                                                0/{columnsData.inProgress.length}
+                                                {columnsData.inProgress.filter(t => t.selected).length}/{columnsData.inProgress.length}
                                             </span>
                                         </div>
 
@@ -1392,9 +1408,10 @@ function TaskCardItem({
 }) {
     const [showInfoPopover, setShowInfoPopover] = useState(false);
     const [popoverPos, setPopoverPos] = useState({
-        vertical: 'top',
-        horizontal: columnIndex >= 2 ? 'left' : 'right',
-        maxHeight: 420,
+        top: 0,
+        left: 0,
+        maxHeight: 440,
+        isLeft: false,
     });
     const infoBtnRef = useRef(null);
     const cardRef = useRef(null);
@@ -1402,42 +1419,49 @@ function TaskCardItem({
 
     const updatePopoverPosition = useCallback(() => {
         if (!cardRef.current) return;
-        const rect = cardRef.current.getBoundingClientRect();
-        const vh = window.innerHeight || document.documentElement.clientHeight || 800;
-        const vw = window.innerWidth || document.documentElement.clientWidth || 1200;
+        const cardRect = cardRef.current.getBoundingClientRect();
+        const vh = window.innerHeight || 800;
+        const vw = window.innerWidth || 1200;
+        const popoverWidth = 380;
+        const targetHeight = Math.min(480, vh - 32);
 
-        // Space available below vs above the card
-        const spaceBelow = vh - rect.bottom;
-        const spaceAbove = rect.top;
+        // Horizontal positioning: default to right of card if space permits, else left
+        let left;
+        let isLeft = false;
+        if (cardRect.right + 10 + popoverWidth <= vw - 16) {
+            left = cardRect.right + 10;
+        } else if (cardRect.left - 10 - popoverWidth >= 16) {
+            left = cardRect.left - 10 - popoverWidth;
+            isLeft = true;
+        } else {
+            left = Math.max(16, vw - popoverWidth - 16);
+        }
 
-        // Target height is ~380-420px
-        // If room below is less than 380px and there's more room above, open UPWARDS (bottom aligned)
-        const vertical = (spaceBelow < 380 && spaceAbove > spaceBelow) ? 'bottom' : 'top';
+        // Vertical positioning: align with card top, clamped within visible viewport bounds
+        let top = cardRect.top;
+        if (top + targetHeight > vh - 16) {
+            top = Math.max(16, vh - 16 - targetHeight);
+        }
+        if (top < 16) {
+            top = 16;
+        }
 
-        // Check horizontal clearance: if column 2/3 or space on right < 420px, open to the left
-        const spaceRight = vw - rect.right;
-        const spaceLeft = rect.left;
-        const horizontal = (columnIndex >= 2 || (spaceRight < 420 && spaceLeft > spaceRight)) ? 'left' : 'right';
-
-        // Clamped height to ensure popover NEVER gets cut off or hidden under headers:
-        // When vertical is 'bottom', card bottom to top of viewport (leave 70px for header bar)
-        // When vertical is 'top', card top to bottom of viewport (leave 20px)
-        const maxAvailable = vertical === 'bottom'
-            ? Math.max(260, Math.min(420, rect.bottom - 70))
-            : Math.max(260, Math.min(420, spaceBelow - 20));
+        const maxHeight = Math.max(260, Math.min(targetHeight, vh - top - 16));
 
         setPopoverPos({
-            vertical,
-            horizontal,
-            maxHeight: maxAvailable,
+            top,
+            left,
+            maxHeight,
+            isLeft,
         });
-    }, [columnIndex]);
+    }, []);
 
     const handleInfoMouseEnter = () => {
         if (isDragging) return;
         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
         updatePopoverPosition();
         hoverTimeoutRef.current = setTimeout(() => {
+            updatePopoverPosition();
             setShowInfoPopover(true);
         }, 120);
     };
@@ -1456,13 +1480,14 @@ function TaskCardItem({
         }
     }, [isDragging]);
 
+    // Close on any scroll event (window or scrollable column/container)
     useEffect(() => {
         if (!showInfoPopover) return;
         const handleScroll = () => {
             setShowInfoPopover(false);
         };
-        window.addEventListener('scroll', handleScroll, { passive: true });
-        return () => window.removeEventListener('scroll', handleScroll);
+        window.addEventListener('scroll', handleScroll, { passive: true, capture: true });
+        return () => window.removeEventListener('scroll', handleScroll, { capture: true });
     }, [showInfoPopover]);
 
     const type = (task.task_type || task.type || 'FEATURE').toUpperCase();
@@ -1561,7 +1586,7 @@ function TaskCardItem({
                             </h5>
                         </div>
 
-                        {/* (i) Info Button with hover trigger */}
+                        {/* (i) Info Button with hover & click trigger */}
                         <div
                             ref={infoBtnRef}
                             onMouseEnter={handleInfoMouseEnter}
@@ -1570,8 +1595,13 @@ function TaskCardItem({
                         >
                             <button
                                 type="button"
-                                className="p-1 -mr-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors focus:outline-none"
-                                title="Hover to view details"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    updatePopoverPosition();
+                                    setShowInfoPopover(prev => !prev);
+                                }}
+                                className="p-1 -mr-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors focus:outline-none cursor-pointer"
+                                title="Click or hover to view details"
                             >
                                 <Info className="w-3.5 h-3.5" />
                             </button>
@@ -1607,19 +1637,20 @@ function TaskCardItem({
                 </div>
             </div>
 
-            {/* ── MEDIUM-SIZED HOVER CARD PREVIEW (PERFECT WIDTH & HEIGHT, INVISIBLE SCROLLBARS) ── */}
-            {showInfoPopover && !isDragging && (
+            {/* ── HOVER CARD PREVIEW VIA PORTAL (NEVER CLIPPED, PERFECT VIEWPORT POSITIONING) ── */}
+            {showInfoPopover && !isDragging && createPortal(
                 <div
                     style={{
+                        position: 'fixed',
+                        top: `${popoverPos.top}px`,
+                        left: `${popoverPos.left}px`,
+                        width: '380px',
                         maxHeight: `${popoverPos.maxHeight}px`,
                         scrollbarWidth: 'none',
-                        msOverflowStyle: 'none'
+                        msOverflowStyle: 'none',
+                        zIndex: 9999,
                     }}
-                    className={`absolute w-[390px] bg-white rounded-xl border border-slate-200/90 shadow-2xl p-4 text-xs z-50 animate-in fade-in zoom-in-95 duration-150 pointer-events-auto select-text overflow-y-auto overflow-x-hidden no-scrollbar [&::-webkit-scrollbar]:hidden flex flex-col ${
-                        popoverPos.vertical === 'bottom' ? 'bottom-0' : 'top-0'
-                    } ${
-                        popoverPos.horizontal === 'left' ? 'right-[calc(100%+8px)]' : 'left-[calc(100%+8px)]'
-                    }`}
+                    className="bg-white rounded-xl border border-slate-200/90 shadow-2xl p-4 text-xs animate-in fade-in zoom-in-95 duration-150 pointer-events-auto select-text overflow-y-auto overflow-x-hidden no-scrollbar [&::-webkit-scrollbar]:hidden flex flex-col"
                     onMouseEnter={() => {
                         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
                         setShowInfoPopover(true);
@@ -1629,7 +1660,7 @@ function TaskCardItem({
                     {/* Invisible hover bridge across gap to avoid mouseleave jitter */}
                     <div
                         className={`absolute top-0 bottom-0 w-3 pointer-events-auto ${
-                            popoverPos.horizontal === 'left' ? '-right-3' : '-left-3'
+                            popoverPos.isLeft ? '-right-3' : '-left-3'
                         }`}
                     />
 
@@ -1663,7 +1694,7 @@ function TaskCardItem({
                         {task.taskName || task.task_name || task.title || 'Task'}
                     </h4>
 
-                    {/* Description - clean text container with invisible scroll */}
+                    {/* Description */}
                     <div className="mt-2 bg-slate-50/80 p-2.5 rounded-lg border border-slate-100 shrink-0">
                         <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1 flex items-center gap-1">
                             <FileText className="w-3 h-3 text-slate-400" />
@@ -1758,7 +1789,8 @@ function TaskCardItem({
                             </p>
                         )}
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
         </div>
     );
@@ -1786,23 +1818,23 @@ function TaskGenerationModal({
     ];
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200 select-none">
-            <div className="relative w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 sm:p-7 overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-3 sm:p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200 select-none">
+            <div className="relative w-full max-w-md bg-white rounded-xl border border-slate-200 shadow-2xl p-4 sm:p-5 overflow-hidden animate-in zoom-in-95 duration-200">
                 {/* Top ambient color bar */}
-                <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500" />
+                <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500" />
 
                 {/* Header */}
-                <div className="flex items-start justify-between gap-3 mb-5">
-                    <div className="flex items-center gap-3">
-                        <div className="relative flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-lg shadow-blue-500/25 shrink-0">
-                            <Sparkles className="w-6 h-6 text-white animate-pulse" />
-                            <span className="absolute -inset-1 rounded-xl bg-blue-500/20 animate-ping -z-10" />
+                <div className="flex items-start justify-between gap-2.5 mb-3.5">
+                    <div className="flex items-center gap-2.5">
+                        <div className="relative flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/20 shrink-0">
+                            <Sparkles className="w-4.5 h-4.5 text-white animate-pulse" />
+                            <span className="absolute -inset-0.5 rounded-lg bg-blue-500/20 animate-ping -z-10" />
                         </div>
                         <div>
-                            <h3 className="text-base font-bold text-slate-900 leading-snug">
+                            <h3 className="text-sm font-bold text-slate-900 leading-tight">
                                 AI Task Orchestrator
                             </h3>
-                            <p className="text-xs text-slate-500">
+                            <p className="text-[11px] text-slate-500">
                                 Generating sprints and work items for <span className="font-semibold text-slate-700">{projectName}</span>
                             </p>
                         </div>
@@ -1811,27 +1843,27 @@ function TaskGenerationModal({
                         <button
                             type="button"
                             onClick={onMinimize}
-                            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+                            className="text-slate-400 hover:text-slate-600 p-1 rounded-md hover:bg-slate-100 transition-colors"
                             title="Run in background"
                         >
-                            <X className="w-4 h-4" />
+                            <X className="w-3.5 h-3.5" />
                         </button>
                     )}
                 </div>
 
                 {/* Progress bar & Percent */}
-                <div className="mb-5 bg-slate-50 p-3.5 rounded-xl border border-slate-100">
-                    <div className="flex items-center justify-between text-xs mb-2">
-                        <span className="font-semibold text-slate-700 flex items-center gap-1.5">
-                            <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
-                            <span className="truncate max-w-[280px] sm:max-w-[340px]">{statusMsg}</span>
+                <div className="mb-3 bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                    <div className="flex items-center justify-between text-xs mb-1.5">
+                        <span className="font-medium text-slate-700 flex items-center gap-1.5 text-[11px]">
+                            <Loader2 className="w-3 h-3 text-blue-600 animate-spin shrink-0" />
+                            <span className="truncate max-w-[220px] sm:max-w-[280px]">{statusMsg}</span>
                         </span>
-                        <span className="font-mono font-bold text-blue-600 text-sm">
+                        <span className="font-mono font-bold text-blue-600 text-xs">
                             {progress}%
                         </span>
                     </div>
 
-                    <div className="w-full bg-slate-200/80 rounded-full h-2.5 overflow-hidden p-0.5">
+                    <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden p-0.5">
                         <div
                             className="h-full bg-gradient-to-r from-blue-600 via-indigo-600 to-emerald-500 rounded-full transition-all duration-500 ease-out shadow-xs"
                             style={{ width: `${progress}%` }}
@@ -1840,7 +1872,7 @@ function TaskGenerationModal({
                 </div>
 
                 {/* 4-Stage AI Pipeline Tracker */}
-                <div className="space-y-2.5 mb-5">
+                <div className="space-y-1.5 mb-3">
                     <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-0.5">
                         Generation Pipeline
                     </div>
@@ -1850,7 +1882,7 @@ function TaskGenerationModal({
                         return (
                             <div
                                 key={phase.id}
-                                className={`flex items-center justify-between p-2.5 rounded-lg border transition-all ${
+                                className={`flex items-center justify-between p-2 rounded-lg border transition-all ${
                                     isDone
                                         ? 'bg-emerald-50/50 border-emerald-200/70 text-slate-700'
                                         : isCurrent
@@ -1858,14 +1890,14 @@ function TaskGenerationModal({
                                         : 'bg-white border-slate-100 text-slate-400 opacity-60'
                                 }`}
                             >
-                                <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="flex items-center gap-2 min-w-0">
                                     <div className="shrink-0">
                                         {isDone ? (
-                                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                                         ) : isCurrent ? (
-                                            <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                                            <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />
                                         ) : (
-                                            <div className="w-4 h-4 rounded-full border-2 border-slate-300" />
+                                            <div className="w-3.5 h-3.5 rounded-full border-2 border-slate-300" />
                                         )}
                                     </div>
                                     <div className="min-w-0">
@@ -1878,7 +1910,7 @@ function TaskGenerationModal({
                                     </div>
                                 </div>
 
-                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ml-2 ${
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ml-2 ${
                                     isDone
                                         ? 'bg-emerald-100 text-emerald-700'
                                         : isCurrent
@@ -1894,22 +1926,22 @@ function TaskGenerationModal({
 
                 {/* Released Sprints pills (if any released yet) */}
                 {releasedSprints.length > 0 && (
-                    <div className="mb-4 pt-3 border-t border-slate-100">
-                        <div className="flex items-center justify-between text-xs mb-2">
-                            <span className="font-bold text-slate-700">Released Sprints</span>
-                            <span className="text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                    <div className="mb-3 pt-2.5 border-t border-slate-100">
+                        <div className="flex items-center justify-between text-xs mb-1.5">
+                            <span className="font-bold text-slate-700 text-[11px]">Released Sprints</span>
+                            <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full border border-blue-100">
                                 {tasksCount} work items ready
                             </span>
                         </div>
-                        <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                        <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto no-scrollbar">
                             {releasedSprints.map((rs, idx) => (
                                 <span
                                     key={idx}
-                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-medium"
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-[10px] font-medium"
                                 >
-                                    <Check className="w-3 h-3 text-emerald-600" />
+                                    <Check className="w-2.5 h-2.5 text-emerald-600" />
                                     <span>{rs.sprint_name || `Sprint ${rs.sprint_number || idx + 1}`}</span>
-                                    <span className="text-emerald-600/70 font-mono text-[10px]">({rs.task_count || 0})</span>
+                                    <span className="text-emerald-600/70 font-mono text-[9px]">({rs.task_count || 0})</span>
                                 </span>
                             ))}
                         </div>
@@ -1917,15 +1949,15 @@ function TaskGenerationModal({
                 )}
 
                 {/* Footer action */}
-                <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
-                    <span className="text-[11px] text-slate-400">
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[11px]">
+                    <span className="text-[10px] text-slate-400">
                         Live AI streaming &bull; Auto-updating board
                     </span>
                     {onMinimize && (
                         <button
                             type="button"
                             onClick={onMinimize}
-                            className="text-xs font-semibold text-slate-600 hover:text-blue-600 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                            className="text-[11px] font-semibold text-slate-600 hover:text-blue-600 hover:bg-slate-100 px-2.5 py-1 rounded-md transition-colors cursor-pointer"
                         >
                             Run in Background
                         </button>

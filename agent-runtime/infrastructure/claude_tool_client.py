@@ -12,12 +12,14 @@ Smart Context Management (v2):
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from agent.tools.tool_executor import ToolExecutor
 from infrastructure.llm_client import LLMClient, LLMResponse, log
@@ -397,11 +399,13 @@ class TaskChecklistTracker:
         objective: str = "",
         current_state: str = "",
         changes_required: str = "",
+        workspace_path: Optional[str] = None,
     ):
         self.tasks = list(tasks)
         self.objective = objective
         self.current_state = current_state
         self.changes_required = changes_required
+        self.workspace_path = workspace_path or os.environ.get("WORKSPACE_PATH", "/workspace")
         self.completed_task_ids: set[int] = set()
         self.active_task_index: int = 0
         self.files_completed: set[str] = set()
@@ -410,6 +414,83 @@ class TaskChecklistTracker:
         self.build_failed: bool = False
         self.build_error_summary: str = ""
         self.build_error_files: list[str] = []
+        self._disk_files_cache: list[str] = []
+        self._refresh_disk_files()
+
+    def _refresh_disk_files(self) -> None:
+        """Scan physical disk to find actual file paths in the workspace."""
+        if not self.workspace_path:
+            return
+        try:
+            ws = Path(self.workspace_path)
+            if ws.is_dir():
+                found = []
+                for p in ws.rglob("*"):
+                    if p.is_file():
+                        if not any(part.startswith(".") or part in ("node_modules", "__pycache__", "venv") for part in p.parts):
+                            rel = p.relative_to(ws).as_posix()
+                            found.append(rel)
+                self._disk_files_cache = found
+        except Exception:
+            pass
+
+    @staticmethod
+    def _normalize_stem_tokens(stem: str) -> set[str]:
+        """Normalize stem by stripping common plural suffixes (s, es, ies) and delimiters."""
+        stem = stem.lower().replace("-", "_")
+        tokens = set(stem.split("_"))
+        norm = set(tokens)
+        for t in tokens:
+            if t.endswith("ies") and len(t) > 3:
+                norm.add(t[:-3] + "y")
+            elif t.endswith("es") and len(t) > 2:
+                norm.add(t[:-2])
+            elif t.endswith("s") and len(t) > 1:
+                norm.add(t[:-1])
+        return norm
+
+    def resolve_matching_task_file(self, target_file: str) -> Optional[str]:
+        """Dynamic Stem & Fuzzy Path Resolver:
+        Matches target_file against checklist tasks using:
+        1. Exact or suffix match
+        2. Normalized stem token similarity
+        3. difflib similarity matching (> 0.75) across checklist task files.
+        """
+        if not target_file:
+            return None
+        norm_target = target_file.replace("\\", "/").lstrip("/")
+        target_stem = Path(norm_target).stem
+        target_tokens = self._normalize_stem_tokens(target_stem)
+
+        task_files = [t.get("file", "").replace("\\", "/").lstrip("/") for t in self.tasks if t.get("file")]
+
+        # 1. Exact or suffix match
+        for tf in task_files:
+            if tf == norm_target or norm_target.endswith(tf) or tf.endswith(norm_target):
+                return tf
+
+        # 2. Normalized stem token overlap
+        for tf in task_files:
+            tf_stem = Path(tf).stem
+            tf_tokens = self._normalize_stem_tokens(tf_stem)
+            if target_tokens & tf_tokens:
+                return tf
+
+        # 3. difflib close match
+        matches = difflib.get_close_matches(norm_target, task_files, n=1, cutoff=0.75)
+        if matches:
+            return matches[0]
+
+        # Stem-level difflib match
+        stem_matches = difflib.get_close_matches(target_stem, [Path(tf).stem for tf in task_files], n=1, cutoff=0.75)
+        if stem_matches:
+            match_stem = stem_matches[0]
+            for tf in task_files:
+                if Path(tf).stem == match_stem:
+                    return tf
+
+        return None
+
     def record_build_failure(self, error_summary: str, affected_files: list[str] | None = None) -> None:
         """Record that the build failed so the banner demands edits instead of re-builds."""
         self.build_failed = True
@@ -428,18 +509,24 @@ class TaskChecklistTracker:
         """Mark task associated with file_path as completed and advance to next."""
         norm_path = file_path.replace("\\", "/").lstrip("/")
         prev_index = self.active_task_index
+        matched_task_file = self.resolve_matching_task_file(norm_path)
 
         for idx, t in enumerate(self.tasks):
             action = str(t.get("action", "")).lower()
             if action in ("install", "verify"):
                 continue
             t_file = t.get("file", "").replace("\\", "/").lstrip("/")
-            if t_file and (t_file == norm_path or norm_path.endswith(t_file) or t_file.endswith(norm_path)):
+            if t_file and (
+                t_file == norm_path
+                or norm_path.endswith(t_file)
+                or t_file.endswith(norm_path)
+                or (matched_task_file and t_file == matched_task_file)
+            ):
                 tid = t.get("task_id", idx + 1)
                 if tid not in self.completed_task_ids:
                     self.completed_task_ids.add(tid)
                     self.files_completed.add(t_file)
-                    log(f"✅ [Task Tracker] Task {tid} COMPLETED: `{t_file}`")
+                    log(f"✅ [Task Tracker] Task {tid} COMPLETED: `{t_file}` (matched by `{norm_path}`)")
 
         # Advance active_task_index to first incomplete task
         while (
@@ -453,6 +540,40 @@ class TaskChecklistTracker:
         # The LRU token-budget manager in run_tool_loop automatically trims old files if >35% window.
         if self.active_task_index != prev_index:
             log(f"➡️ [Task Tracker] Advanced task pointer ({prev_index} -> {self.active_task_index}) while preserving LRU read cache.")
+
+    def mark_command_or_diagnostic_completed(self, command: str, output: str) -> list[int]:
+        """Mark diagnostic, test, or verification tasks in checklist as completed
+        when a run_command / diagnostic succeeds."""
+        completed = []
+        cmd_lower = command.lower()
+        out_lower = output.lower()
+        is_success = "ok" in out_lower or "passed" in out_lower or "success" in out_lower
+        if not is_success and "error" not in out_lower and "failed" not in out_lower and "exception" not in out_lower:
+            is_success = True
+
+        if is_success:
+            for idx, t in enumerate(self.tasks):
+                action = str(t.get("action", "")).lower()
+                desc = str(t.get("description", "")).lower()
+                tid = t.get("task_id", idx + 1)
+                if tid in self.completed_task_ids:
+                    continue
+                if action in ("test", "verify", "run", "diagnostic") or any(k in desc for k in ("verify", "test", "import", "diagnose")):
+                    t_file = str(t.get("file", "")).lower()
+                    if (t_file and Path(t_file).stem in cmd_lower) or any(k in cmd_lower for k in ("pytest", "python -c", "py_compile", "import")):
+                        self.completed_task_ids.add(tid)
+                        completed.append(tid)
+                        log(f"✅ [Task Tracker] Diagnostic/Command Task {tid} COMPLETED via command: `{command[:60]}`")
+
+            prev_index = self.active_task_index
+            while (
+                self.active_task_index < len(self.tasks)
+                and self.tasks[self.active_task_index].get("task_id", self.active_task_index + 1) in self.completed_task_ids
+            ):
+                self.active_task_index += 1
+            if self.active_task_index != prev_index:
+                log(f"➡️ [Task Tracker] Advanced task pointer on command success ({prev_index} -> {self.active_task_index})")
+        return completed
 
     def mark_verification_completed(self, clear_cache_callback: "Callable[[], None] | None" = None) -> None:
         """Mark build verification task as completed."""
@@ -722,6 +843,24 @@ class ClaudeToolClient:
         self._last_build_error_summary = ""
         self._last_build_error_files = []
 
+    def _compute_dynamic_read_limit(self) -> int:
+        """Workspace-proportional read budget: dynamically scale consecutive read limits
+        based on actual source file count in the workspace (min(max(10, total_files // 2), 25))."""
+        total_files = 0
+        try:
+            if hasattr(self, "_file_manifest") and self._file_manifest:
+                total_files = self._file_manifest.get_file_count()
+        except Exception:
+            pass
+        if total_files <= 0:
+            try:
+                ws = Path(getattr(self, "_workspace_path", "/workspace"))
+                if ws.is_dir():
+                    total_files = len([p for p in ws.rglob("*") if p.is_file() and not any(part.startswith(".") or part in ("node_modules", "__pycache__", "venv") for part in p.parts)])
+            except Exception:
+                total_files = 20
+        return min(max(10, total_files // 2), 25)
+
     def run_tool_loop(
         self,
         *,
@@ -930,7 +1069,7 @@ class ClaudeToolClient:
                 )
 
             # 6. Progress Guard Guidance on Consecutive Reads (suppress when files are blocked — only write_file matters)
-            elif self._consecutive_reads >= 3:
+            elif self._consecutive_reads >= max(4, self._compute_dynamic_read_limit() // 2):
                 inspected_list = ", ".join(self._inspected_files.keys()) if self._inspected_files else "workspace files"
                 parts.append(
                     f"User:\n[Notice: You have inspected {inspected_list}. "
@@ -995,9 +1134,9 @@ class ClaudeToolClient:
                         f"Restricting model to write_file ONLY.")
 
 
-            # In Editing / Follow-Up phase: Progress Guard on runaway reads (circuit breaker: >= 6 reads with 0 writes)
+            # In Editing / Follow-Up phase: Progress Guard on runaway reads (dynamic circuit breaker based on workspace size)
             # Normal exploration is supported. Runaway reading loops are funneled directly to write/build tools.
-            elif self._consecutive_reads >= 6:
+            elif self._consecutive_reads >= self._compute_dynamic_read_limit():
                 write_action_tools = [
                     t for t in effective_tools
                     if (t.get("name") or t.get("function", {}).get("name")) in (
@@ -1663,6 +1802,11 @@ class ClaudeToolClient:
                                 self._inspected_files[norm_wp] = fresh_content
                                 self._inspected_files_iter[norm_wp] = iteration + 1
 
+                    if tool_name in ("run_command", "run_bash") and task_tracker and not exec_result.get("is_error"):
+                        cmd_str = str(tool_input.get("command") or tool_input.get("cmd") or "") if isinstance(tool_input, dict) else ""
+                        out_str = str(exec_result.get("content") or "")
+                        task_tracker.mark_command_or_diagnostic_completed(cmd_str, out_str)
+
                     # When write_file successfully resolves a rollback-blocked file,
                     # inject a "done â€” now build" directive so the AI doesn't wander off reading more files.
                     write_unblocked = exec_result.get("write_unblocked", [])
@@ -1733,6 +1877,23 @@ class ClaudeToolClient:
                 "content": tool_results,
             })
             self._log_to_transcript("tool_results", tool_results, metadata={"iteration": iteration + 1})
+
+            # Early exit if complete_task or finish_task was called, or if executor recorded completion
+            if getattr(tool_executor, "is_task_completed", False):
+                log(f"🏁 [Tool Loop] Clean early exit at step {iteration + 1} — task marked complete!")
+                summary_text = getattr(tool_executor, "completion_summary", "") or "Task completed successfully."
+                result.final_text = summary_text
+                result.files_changed = tool_executor.files_changed
+                result.conversation = conversation
+                return result
+
+            # Early exit if all checklist tasks are satisfied and build succeeded
+            if task_tracker and task_tracker.is_all_file_tasks_completed() and getattr(tool_executor, "built_successfully", False):
+                log(f"🏁 [Tool Loop] All checklist items satisfied and build succeeded at step {iteration + 1}. Exiting cleanly.")
+                result.final_text = "All checklist tasks satisfied and build verified successfully."
+                result.files_changed = tool_executor.files_changed
+                result.conversation = conversation
+                return result
 
         changed_files_list = list(tool_executor.files_changed) if tool_executor else []
         if changed_files_list:
@@ -2188,12 +2349,13 @@ class ClaudeToolClient:
                         "is_error": True,
                     }
 
-        # Consecutive Read Circuit Breaker: Block runaway read loops (>= 8 consecutive reads with 0 writes)
+        # Consecutive Read Circuit Breaker: Block runaway read loops (dynamically scaled by workspace size)
+        dynamic_limit = self._compute_dynamic_read_limit()
         if (
-            self._consecutive_reads >= 8
+            self._consecutive_reads >= dynamic_limit
             and tool_name in ("read_file", "list_directory", "grep_search", "get_generated_file")
         ):
-            log(f"🛑 [Read Circuit Breaker] Intercepted read/search tool '{tool_name}' ({self._consecutive_reads} consecutive reads). Forcing write/edit.")
+            log(f"🛑 [Read Circuit Breaker] Intercepted read/search tool '{tool_name}' ({self._consecutive_reads} consecutive reads >= {dynamic_limit}). Forcing write/edit.")
             return {
                 "type": "tool_result",
                 "content": (
@@ -2222,7 +2384,7 @@ class ClaudeToolClient:
         write_tools = (
             "write_file", "write_files", "replace_file_content", "batch_replace_file_content",
             "run_command", "install_and_build", "run_build",
-            "git_commit", "git_push", "git_add_all", "submit_plan", "verify_and_summarize", "finish_task"
+            "git_commit", "git_push", "git_add_all", "submit_plan", "verify_and_summarize", "finish_task", "complete_task"
         )
 
         # ── P4 Guard: repeated follow-up task submissions ────────────────────
@@ -2292,8 +2454,8 @@ class ClaudeToolClient:
                     "is_error": False,
                 }
 
-        if tool_name in inspection_tools and getattr(self, "_consecutive_inspection_count", 0) >= 5:
-            log(f"🛑 [Progress Guard] Intercepted runaway inspection sequence ({self._consecutive_inspection_count} turns)")
+        if tool_name in inspection_tools and getattr(self, "_consecutive_inspection_count", 0) >= dynamic_limit:
+            log(f"🛑 [Progress Guard] Intercepted runaway inspection sequence ({self._consecutive_inspection_count} turns >= {dynamic_limit})")
             return {
                 "type": "tool_result",
                 "content": (

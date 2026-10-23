@@ -196,7 +196,7 @@ function VisualQASnapshotCard({ step }) {
       {/* Fullscreen Lightbox Modal */}
       {isModalOpen && fullUrl && (
         <div
-          className="fixed inset-0 z-50 bg-slate-950/80 flex items-center justify-center p-4 animate-fade-in"
+          className="fixed inset-0 z-[500] bg-slate-950/80 flex items-center justify-center p-4 animate-fade-in"
           onClick={() => setIsModalOpen(false)}
         >
           <div

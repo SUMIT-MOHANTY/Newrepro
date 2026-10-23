@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send, ChevronRight, ChevronDown, TrendingUp, PlusCircle, Wrench, Check, Sparkles, X } from 'lucide-react';
+import { Users, Trash2, Edit, Activity, Clock, CheckCircle, AlertCircle, RefreshCw, Filter, Server, Database, GitBranch, Bot, Globe, Plus, Upload, Code, Coffee, Zap, Triangle, Hash, Link2, Terminal, Cpu, Workflow, Shield, ShieldCheck, Layers, Building2, Send, ChevronRight, ChevronDown, TrendingUp, PlusCircle, Wrench, Check, Sparkles, X, Lock } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from './RequestCapacityModal';
+import { getMandatoryToolsForAgent } from '../utils/agentToolsHelper';
 
 import { getNeutralAgentName, getNeutralAgentLabel } from '../utils/agentNames';
 import kaktoxLogo from '../assets/Kaktox.png';
@@ -499,6 +500,29 @@ export default function AgentsPage({ projects = [] }) {
     'filesystem', 'git', 'terminal', 'build_tool'
   ]);
 
+  // Mandatory tools for the agent currently being configured/edited
+  const currentMandatoryTools = useMemo(() => {
+    return getMandatoryToolsForAgent({
+      name: newAgentName,
+      role: newAgentName,
+      tags: newAgentTags,
+      specialization: PREDEFINED_TEMPLATES.find(t => t.name === newAgentName)?.specialization
+    });
+  }, [newAgentName, newAgentTags]);
+
+  // Ensure mandatory tools are always retained in selectedTools
+  useEffect(() => {
+    if (currentMandatoryTools.length > 0) {
+      setSelectedTools(prev => {
+        const missing = currentMandatoryTools.filter(t => !prev.includes(t));
+        if (missing.length > 0) {
+          return Array.from(new Set([...prev, ...missing]));
+        }
+        return prev;
+      });
+    }
+  }, [currentMandatoryTools]);
+
   // Attached AI Engine model state
   const [availableModelsList, setAvailableModelsList] = useState(DEFAULT_MODELS_CATALOG);
   const [selectedModel, setSelectedModel] = useState('claude');
@@ -652,7 +676,7 @@ export default function AgentsPage({ projects = [] }) {
           skills_content: skillsContent,
           face: newAgentFace || null,
           tags: newAgentTags.trim() || (newAgentName.trim() ? newAgentName.trim().split(/[\s/\\_-]+/).filter(Boolean).slice(0, 4).join(', ') : 'Custom Agent'),
-          tools: selectedTools,
+          tools: Array.from(new Set([...selectedTools, ...currentMandatoryTools])),
           model_name: selectedModel || 'claude',
           project_token: projects && projects[0] ? projects[0].project_token : null
         })
@@ -708,7 +732,7 @@ export default function AgentsPage({ projects = [] }) {
           skills_content: tmpl.skills,
           face: null,
           tags: tmpl.tags,
-          tools: tmpl.defaultTools || ['filesystem', 'git', 'terminal', 'build_tool'],
+          tools: Array.from(new Set([...(tmpl.defaultTools || ['filesystem', 'git', 'terminal', 'build_tool']), ...getMandatoryToolsForAgent(tmpl)])),
           model_name: tmpl.defaultModel || 'claude',
           project_token: projects && projects[0] ? projects[0].project_token : null
         })
@@ -1470,7 +1494,7 @@ export default function AgentsPage({ projects = [] }) {
                             setNewAgentTags(tmpl.tags);
                             setSkillsContent(tmpl.skills);
                             setSkillsFileName(`${tmpl.name.toLowerCase().replace(/ & /g, '_').replace(/ /g, '_')}_skills.md`);
-                            setSelectedTools(tmpl.defaultTools || ['filesystem', 'build_tool', 'visual_qa', 'web_search']);
+                            setSelectedTools(Array.from(new Set([...(tmpl.defaultTools || ['filesystem', 'build_tool', 'visual_qa', 'web_search']), ...getMandatoryToolsForAgent(tmpl)])));
                             setSelectedModel(tmpl.defaultModel || 'claude');
                             setIsConfiguringTemplate(true);
                             setShowAddAgentModal(true);
@@ -2078,25 +2102,35 @@ export default function AgentsPage({ projects = [] }) {
                         Configure which container runtime tools and APIs this agent is authorized to leverage.
                       </p>
 
+                      {/* Mandatory notice */}
+                      {currentMandatoryTools.length > 0 && (
+                        <div className="mb-2.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[10.5px] text-amber-300 flex items-center gap-1.5 shadow-2xs">
+                          <Lock className="w-3 h-3 text-amber-400 shrink-0" />
+                          <span>
+                            <strong>Mandatory Tools:</strong> Core tools for {newAgentName ? `"${newAgentName}"` : 'this role'} are locked and cannot be disabled.
+                          </span>
+                        </div>
+                      )}
+
                       {/* Tool Presets */}
                       <div className="flex flex-wrap gap-1.5 mb-3">
                         <button
                           type="button"
-                          onClick={() => setSelectedTools(['filesystem', 'git', 'terminal', 'build_tool', 'database_tools'])}
+                          onClick={() => setSelectedTools(Array.from(new Set([...currentMandatoryTools, 'filesystem', 'git', 'terminal', 'build_tool', 'database_tools'])))}
                           className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-app-bg-page hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-all cursor-pointer"
                         >
                           Dev Preset
                         </button>
                         <button
                           type="button"
-                          onClick={() => setSelectedTools(['code_inspector', 'test_runner', 'terminal', 'visual_qa'])}
+                          onClick={() => setSelectedTools(Array.from(new Set([...currentMandatoryTools, 'code_inspector', 'test_runner', 'terminal', 'visual_qa'])))}
                           className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 transition-all cursor-pointer"
                         >
                           QA Preset (Safe Read-Only)
                         </button>
                         <button
                           type="button"
-                          onClick={() => setSelectedTools(['code_inspector', 'git', 'web_search', 'build_tool'])}
+                          onClick={() => setSelectedTools(Array.from(new Set([...currentMandatoryTools, 'code_inspector', 'git', 'web_search', 'build_tool'])))}
                           className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-app-bg-page hover:bg-app-bg-hover text-app-text-main border border-app-border-light transition-all cursor-pointer"
                         >
                           Architect Preset
@@ -2110,40 +2144,54 @@ export default function AgentsPage({ projects = [] }) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setSelectedTools([])}
+                          onClick={() => setSelectedTools([...currentMandatoryTools])}
                           className="px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-app-bg-page hover:bg-red-500/10 text-app-text-muted hover:text-red-400 border border-app-border-light transition-all cursor-pointer"
+                          title={currentMandatoryTools.length > 0 ? "Reset to mandatory tools" : "Clear all tools"}
                         >
-                          Clear
+                          {currentMandatoryTools.length > 0 ? 'Reset to Mandatory' : 'Clear'}
                         </button>
                       </div>
 
                       {/* Tool Cards Scroll Grid with hidden scrollbar */}
                       <div className="space-y-2.5 overflow-y-auto max-h-[460px] pr-1 no-scrollbar">
                         {(availableToolsList || DEFAULT_TOOLS_CATALOG).map((tool) => {
-                          const isSelected = selectedTools.includes(tool.id);
+                          const isMandatory = currentMandatoryTools.includes(tool.id);
+                          const isSelected = isMandatory || selectedTools.includes(tool.id);
                           return (
                             <div
                               key={tool.id}
                               onClick={() => {
+                                if (isMandatory) {
+                                  showToast(`${tool.name} is mandatory for ${newAgentName ? `"${newAgentName}"` : 'this role'}.`, 'info');
+                                  return;
+                                }
                                 if (isSelected) {
                                   setSelectedTools(selectedTools.filter(id => id !== tool.id));
                                 } else {
                                   setSelectedTools([...selectedTools, tool.id]);
                                 }
                               }}
-                              className={`p-3 rounded-xl border transition-all duration-150 cursor-pointer flex items-start gap-3 select-none ${
-                                isSelected
-                                  ? 'bg-blue-500/5 dark:bg-blue-500/10 border-blue-500/60 shadow-2xs ring-1 ring-blue-500/20'
-                                  : 'bg-app-bg-page/70 border-app-border-light/70 hover:border-app-border hover:bg-app-bg-muted/40'
+                              className={`p-3 rounded-xl border transition-all duration-150 flex items-start gap-3 select-none ${
+                                isMandatory
+                                  ? 'bg-amber-500/5 dark:bg-amber-500/10 border-amber-500/40 shadow-2xs ring-1 ring-amber-500/20 cursor-not-allowed'
+                                  : isSelected
+                                  ? 'bg-blue-500/5 dark:bg-blue-500/10 border-blue-500/60 shadow-2xs ring-1 ring-blue-500/20 cursor-pointer'
+                                  : 'bg-app-bg-page/70 border-app-border-light/70 hover:border-app-border hover:bg-app-bg-muted/40 cursor-pointer'
                               }`}
                             >
                               {/* Custom Styled Checkbox */}
                               <div className={`w-4 h-4 rounded-md flex items-center justify-center mt-0.5 transition-all shrink-0 ${
-                                isSelected
+                                isMandatory
+                                  ? 'bg-amber-500 text-white shadow-2xs cursor-not-allowed'
+                                  : isSelected
                                   ? 'bg-blue-500 text-white shadow-2xs'
                                   : 'border border-app-border-light bg-app-bg-page'
                               }`}>
-                                {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                                {isMandatory ? (
+                                  <Lock className="w-2.5 h-2.5 stroke-[2.5]" />
+                                ) : isSelected ? (
+                                  <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                ) : null}
                               </div>
 
                               <div className="flex-1 min-w-0">
@@ -2154,12 +2202,25 @@ export default function AgentsPage({ projects = [] }) {
                                     </span>
                                     <span>{tool.name}</span>
                                   </span>
-                                  <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-app-bg-muted text-app-text-muted border border-app-border-light/60 shrink-0">
-                                    {tool.category}
-                                  </span>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    {isMandatory && (
+                                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-0.5 shadow-2xs">
+                                        <Lock className="w-2.5 h-2.5" />
+                                        Mandatory
+                                      </span>
+                                    )}
+                                    <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-app-bg-muted text-app-text-muted border border-app-border-light/60">
+                                      {tool.category}
+                                    </span>
+                                  </div>
                                 </div>
                                 <p className="text-[11px] text-app-text-muted leading-relaxed mb-2">
                                   {tool.description}
+                                  {isMandatory && (
+                                    <span className="text-amber-400/90 font-medium ml-1">
+                                      (Mandatory for this agent role)
+                                    </span>
+                                  )}
                                 </p>
                                 {tool.capabilities && tool.capabilities.length > 0 && (
                                   <div className="pt-2 border-t border-app-border-light/40">

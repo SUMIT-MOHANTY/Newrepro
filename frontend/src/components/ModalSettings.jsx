@@ -28,7 +28,7 @@ const ModalSettings = ({ isOpen, onClose }) => {
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
+        <div className="fixed inset-0 z-[500] overflow-y-auto">
             <div 
                 className="fixed inset-0 bg-black/60 backdrop-blur-sm transition-all duration-300"
                 onClick={onClose}

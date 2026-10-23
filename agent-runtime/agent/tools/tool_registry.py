@@ -892,7 +892,58 @@ _SUBMIT_FOLLOWUP_TASKS_TOOL = {
 # Tool name → MCP module.method mapping
 # ---------------------------------------------------------------------------
 
+_COMPLETION_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "complete_task",
+        "description": (
+            "Formally finish and complete the active task or repair turn. Call this tool IMMEDIATELY "
+            "once required code edits are verified (e.g. test or import commands succeed), "
+            "or when all checklist items have been satisfied. Halts the execution loop cleanly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Concise summary of changes made, bugs fixed, and tests verified.",
+                },
+                "verified_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of files touched or verified during this task.",
+                },
+            },
+            "required": ["summary"],
+        },
+    },
+    {
+        "name": "finish_task",
+        "description": (
+            "Alias for complete_task. Formally finish and complete the active task or repair turn once code and tests are verified."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Concise summary of changes made, bugs fixed, and tests verified.",
+                },
+                "verified_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of files touched or verified during this task.",
+                },
+            },
+            "required": ["summary"],
+        },
+    },
+]
+
+
 _TOOL_TO_MCP_MAP: dict[str, tuple[str, str]] = {
+    # Task completion
+    "complete_task": ("task", "complete_task"),
+    "finish_task": ("task", "complete_task"),
     # Planning
     "submit_plan": ("plan", "submit_plan"),
     "submit_followup_tasks": ("plan", "submit_followup_tasks"),
@@ -1071,6 +1122,7 @@ class ToolRegistry:
             _SEARCH_TOOLS[4],      # get_conversation_history
             _BUILD_TOOLS[1],       # install_dependencies (run npm install after package.json changes)
             _BUILD_TOOLS[0],       # install_and_build (terminal test & verification gate)
+            *_COMPLETION_TOOLS,    # complete_task / finish_task
         ]
 
     def _analysis_tools(self) -> list[dict[str, Any]]:
@@ -1092,6 +1144,7 @@ class ToolRegistry:
             *_GIT_TOOLS,
             *_ARCHITECTURE_TOOLS,
             *_BUILD_TOOLS,
+            *_COMPLETION_TOOLS,
             *_EXECUTION_TOOLS,
             _SUBMIT_FOLLOWUP_TASKS_TOOL,  # dynamic swarm task creation (scheduled after current task)
         ]
@@ -1121,6 +1174,7 @@ class ToolRegistry:
             _SEARCH_TOOLS[0],      # grep_search
             _BUILD_TOOLS[3],       # check_syntax
             _EXECUTION_TOOLS[0],   # run_command
+            *_COMPLETION_TOOLS,
         ]
         if self._dynamic_tools:
             tools.extend(self._dynamic_tools)
@@ -1134,6 +1188,7 @@ class ToolRegistry:
             _FILESYSTEM_TOOLS[4],  # write_file
             _SEARCH_TOOLS[1],      # replace_file_content
             *_BUILD_TOOLS,
+            *_COMPLETION_TOOLS,
         ]
 
     def _migration_tools(self) -> list[dict[str, Any]]:
@@ -1161,6 +1216,7 @@ class ToolRegistry:
             _BUILD_TOOLS[2],       # run_build
             _BUILD_TOOLS[0],       # install_and_build
             _EXECUTION_TOOLS[0],   # run_command
+            *_COMPLETION_TOOLS,
         ]
         if self._dynamic_tools:
             tools.extend(self._dynamic_tools)
@@ -1175,6 +1231,7 @@ class ToolRegistry:
             *_GIT_TOOLS,
             *_ARCHITECTURE_TOOLS,
             *_BUILD_TOOLS,
+            *_COMPLETION_TOOLS,
             *_EXECUTION_TOOLS,
             *_PREVIEW_QA_TOOLS,
         ]

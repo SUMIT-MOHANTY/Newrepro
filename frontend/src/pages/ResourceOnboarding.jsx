@@ -4,7 +4,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock, Shield, Wand2, Sparkles, Wrench, FileText, Edit3, X, Cpu } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from '../components/RequestCapacityModal';
-import AgentToolPicker from '../components/AgentToolPicker';
+import AgentToolPicker, { ALL_TOOLS } from '../components/AgentToolPicker';
+import { getMandatoryToolsForAgent } from '../utils/agentToolsHelper';
 
 
 function getLaneBadgeColor(lane) {
@@ -120,6 +121,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
 
   const [selectedPromptAgentIndex, setSelectedPromptAgentIndex] = useState(null);
   const [editingPromptText, setEditingPromptText] = useState('');
+  const [addingToolRecIndex, setAddingToolRecIndex] = useState(null);
 
   // ─── Quota helpers ──────────────────────────────────────────────────────────
   const maxAgentCap = quota?.max_agent_capacity ?? 0;
@@ -404,7 +406,14 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       });
       if (!res.ok) return;
       const data = await res.json();
-      setRecommendations(data.recommendations || []);
+      const recs = (data.recommendations || []).map(r => {
+        const mandatory = getMandatoryToolsForAgent(r);
+        return {
+          ...r,
+          tools: Array.from(new Set([...(r.tools || []), ...mandatory]))
+        };
+      });
+      setRecommendations(recs);
     } catch (_) {
       setRecommendations([]);
     } finally {
@@ -418,6 +427,14 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
     setAutoCreateLoading(true);
     setAutoCreateError('');
     try {
+      // Ensure mandatory tools (such as filesystem for frontend) are guaranteed before auto-create
+      const sanitizedRecommendations = recommendations.map(rec => {
+        const mandatory = getMandatoryToolsForAgent(rec);
+        return {
+          ...rec,
+          tools: Array.from(new Set([...(rec.tools || []), ...mandatory]))
+        };
+      });
       const res = await fetch(API_ENDPOINTS.AGENT_AUTO_CREATE, {
         method: 'POST',
         headers: {
@@ -426,7 +443,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         },
         body: JSON.stringify({
           project_token: currentProjectToken,
-          agents: recommendations,
+          agents: sanitizedRecommendations,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -434,12 +451,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       // Refresh agent list so the new agents appear
       adequacyFetchedRef.current = {};
       setAllocations({});
-      // Re-trigger the fetchCustomAgents useEffect by bumping a counter wouldn't
-      // work cleanly; instead, we navigate away and back is not ideal — just reload agents inline.
-      // We'll dispatch a synthetic re-fetch by toggling a dummy state.
-      setAgents([]); // triggers the useEffect that depends on token + currentProjectToken indirectly
-      // Actually setAgents([]) alone won't re-trigger. We need to call the fetch again.
-      // Use a small trick: set a state flag that useEffect watches.
+      setAgents([]);
       setAutoCreateDone(prev => prev + 1);
     } catch (err) {
       setAutoCreateError(err.message || 'Auto-create failed');
@@ -447,6 +459,34 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       setAutoCreateLoading(false);
     }
   }, [token, currentProjectToken, recommendations]);
+
+  const handleRemoveRecTool = useCallback((idx, toolId) => {
+    if (!recommendations || !recommendations[idx]) return;
+    const rec = recommendations[idx];
+    const mandatory = getMandatoryToolsForAgent(rec);
+    if (mandatory.includes(toolId.toLowerCase())) {
+      // Mandatory tool cannot be removed!
+      return;
+    }
+    const updated = [...recommendations];
+    updated[idx] = {
+      ...rec,
+      tools: (rec.tools || []).filter(t => t.toLowerCase() !== toolId.toLowerCase()),
+    };
+    setRecommendations(updated);
+  }, [recommendations]);
+
+  const handleAddRecTool = useCallback((idx, toolId) => {
+    if (!recommendations || !recommendations[idx]) return;
+    const rec = recommendations[idx];
+    const updated = [...recommendations];
+    updated[idx] = {
+      ...rec,
+      tools: Array.from(new Set([...(rec.tools || []), toolId])),
+    };
+    setRecommendations(updated);
+    setAddingToolRecIndex(null);
+  }, [recommendations]);
 
   const handleOpenPromptModal = useCallback((idx) => {
     setSelectedPromptAgentIndex(idx);
@@ -683,14 +723,93 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                         </p>
                       </div>
 
-                      {/* Tool tags */}
-                      <div className="flex flex-wrap gap-1">
-                        {(rec.tools || []).map((t, ti) => (
-                          <span key={ti} className="px-1.5 py-0.5 text-[8.5px] font-mono rounded bg-app-bg-muted/60 text-app-text-muted border border-app-border-light">
-                            {t}
-                          </span>
-                        ))}
-                      </div>
+                      {/* Tool tags with mandatory enforcement & optional controls */}
+                      {(() => {
+                        const recMandatoryTools = getMandatoryToolsForAgent(rec);
+                        return (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[9px] text-app-text-muted">
+                              <span className="font-semibold uppercase tracking-wider">Authorized Tools:</span>
+                              <span className="text-[8px] text-amber-400 font-medium flex items-center gap-0.5">
+                                <Lock className="w-2.5 h-2.5" />
+                                {recMandatoryTools.length} mandatory
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1">
+                              {(rec.tools || []).map((t, ti) => {
+                                const isMandatory = recMandatoryTools.includes(t.toLowerCase());
+                                return isMandatory ? (
+                                  <span
+                                    key={ti}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8.5px] font-mono rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 font-semibold cursor-default select-none shadow-2xs"
+                                    title={`${t} is mandatory for ${rec.role} and cannot be removed.`}
+                                  >
+                                    <Lock className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                                    <span>{t}</span>
+                                    <span className="text-[7px] uppercase tracking-wide opacity-80 font-sans font-bold">(Mandatory)</span>
+                                  </span>
+                                ) : (
+                                  <span
+                                    key={ti}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[8.5px] font-mono rounded bg-app-bg-muted/70 text-app-text-main border border-app-border-light group hover:border-red-500/30 transition-colors"
+                                  >
+                                    <span>{t}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveRecTool(idx, t)}
+                                      className="text-app-text-muted hover:text-red-400 p-0.5 rounded transition-colors"
+                                      title={`Remove optional tool ${t}`}
+                                    >
+                                      <X className="w-2.5 h-2.5" />
+                                    </button>
+                                  </span>
+                                );
+                              })}
+
+                              {/* Add optional tool dropdown */}
+                              <div className="relative inline-block">
+                                <button
+                                  type="button"
+                                  onClick={() => setAddingToolRecIndex(addingToolRecIndex === idx ? null : idx)}
+                                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[8.5px] font-semibold rounded border border-dashed border-app-border-light text-app-text-muted hover:text-app-primary hover:border-app-primary/40 transition-colors"
+                                  title="Add an optional tool"
+                                >
+                                  <Plus className="w-2.5 h-2.5" />
+                                  <span>Tool</span>
+                                </button>
+
+                                {addingToolRecIndex === idx && (
+                                  <div className="absolute left-0 bottom-full mb-1 z-30 w-48 bg-app-bg-card border border-app-border-light rounded-lg shadow-xl p-1.5 space-y-1 animate-in fade-in duration-150">
+                                    <div className="text-[9px] font-bold text-app-text-muted uppercase px-1 pb-1 border-b border-app-border-light flex items-center justify-between">
+                                      <span>Add Tool</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => setAddingToolRecIndex(null)}
+                                        className="p-0.5 hover:text-app-text-main"
+                                      >
+                                        <X className="w-2.5 h-2.5" />
+                                      </button>
+                                    </div>
+                                    <div className="max-h-36 overflow-y-auto space-y-0.5">
+                                      {ALL_TOOLS.filter(tool => !(rec.tools || []).map(x => x.toLowerCase()).includes(tool.id.toLowerCase())).map(tool => (
+                                        <button
+                                          key={tool.id}
+                                          type="button"
+                                          onClick={() => handleAddRecTool(idx, tool.id)}
+                                          className="w-full text-left px-1.5 py-1 text-[10px] rounded hover:bg-app-bg-muted text-app-text-main flex items-center justify-between transition-colors"
+                                        >
+                                          <span>{tool.label}</span>
+                                          <Plus className="w-2.5 h-2.5 text-app-primary" />
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Model Selector & System Prompt Button */}
                       <div className="flex items-center justify-between pt-1 border-t border-app-border-light gap-2">
@@ -871,11 +990,17 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                                 <AgentToolPicker
                                   agentId={agent.id}
                                   agentName={agent.name}
+                                  agentLane={agent.lane || (agent.skills_tags && agent.skills_tags[0])}
+                                  agentRole={agent.name || agent.role}
                                   currentTools={agent.allowed_tools || []}
                                   missingTools={
                                     adequacy?.status === 'critical'
                                       ? (adequacy.missing_required || [])
                                       : (adequacy?.missing_recommended || [])
+                                  }
+                                  mandatoryTools={
+                                    adequacy?.required_tools ||
+                                    getMandatoryToolsForAgent(agent)
                                   }
                                   token={token}
                                   onClose={() => setToolPickerOpen(null)}
@@ -1020,7 +1145,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
       />
       {/* System Prompt Inspection & Editing Modal */}
       {selectedPromptAgentIndex !== null && recommendations && recommendations[selectedPromptAgentIndex] && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[500] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-app-bg-card border border-app-border-light rounded-xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[85vh] overflow-hidden">
             {/* Header */}
             <div className="flex items-center justify-between p-4 border-b border-app-border-light">

@@ -4624,11 +4624,29 @@ async def update_agent(
         if tools_provided:
             agent_rec = db.query(models.Agent).filter(models.Agent.id == base_agent_id).first()
             if agent_rec:
-                agent_rec.allowed_tools = request.tools
+                from app.services.agents.local_state_manager import get_agent_lanes_from_skills
+                from app.services.agents.tool_adequacy_service import TOOL_REQUIREMENTS
+
+                # Ensure mandatory required tools for this agent's lanes are preserved
+                lanes = get_agent_lanes_from_skills(
+                    agent_id=base_agent_id,
+                    skills_tags=agent_rec.skills_tags,
+                    specialization=agent_rec.specialization,
+                )
+                mandatory_tools = set()
+                for ln in (lanes or {"general"}):
+                    for req in TOOL_REQUIREMENTS.get(ln, TOOL_REQUIREMENTS["general"]).get("required", []):
+                        mandatory_tools.add(req)
+
+                final_tools = list(dict.fromkeys((request.tools or []) + list(mandatory_tools)))
+                agent_rec.allowed_tools = final_tools
                 db.add(agent_rec)
                 db.commit()
-            if isinstance(agent, dict):
-                agent["allowed_tools"] = request.tools
+                if isinstance(agent, dict):
+                    agent["allowed_tools"] = final_tools
+            else:
+                if isinstance(agent, dict):
+                    agent["allowed_tools"] = request.tools
         global_cred = _resolve_project_global_credential(db, current_user, project_token)
         sanitized_agent = await _sanitize_agent_for_user_with_public_check(agent, global_cred)
         if sanitized_agent:
@@ -8105,7 +8123,8 @@ async def update_task_selection(
     if int_ids:
         conds.append(models.Task.id.in_(int_ids))
     if str_ids:
-        conds.append(models.Task.task_id.in_(str_ids))
+        prefixed_ids = [f"{request.project_token}_{s}" for s in str_ids if not s.startswith(f"{request.project_token}_")]
+        conds.append(models.Task.task_id.in_(str_ids + prefixed_ids))
 
     query = db.query(models.Task).filter(
         models.Task.project_token == request.project_token,

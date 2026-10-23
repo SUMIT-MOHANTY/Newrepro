@@ -117,14 +117,18 @@ def analyse_tool_adequacy(
     missing_required: Set[str] = set()
     missing_recommended: Set[str] = set()
     critical_lanes: Set[str] = set()
+    all_required: Set[str] = set()
+    all_recommended: Set[str] = set()
 
     for lane in active_lanes:
         reqs = TOOL_REQUIREMENTS.get(lane, TOOL_REQUIREMENTS["general"])
         for t in reqs.get("required", []):
+            all_required.add(t)
             if t not in tool_set:
                 missing_required.add(t)
                 critical_lanes.add(lane)
         for t in reqs.get("recommended", []):
+            all_recommended.add(t)
             if t not in tool_set:
                 missing_recommended.add(t)
 
@@ -169,6 +173,8 @@ def analyse_tool_adequacy(
         "status": status,
         "missing_required": sorted(missing_required),
         "missing_recommended": sorted(missing_recommended),
+        "required_tools": sorted(all_required),
+        "recommended_tools": sorted(all_recommended),
         "verdict": verdict,
         "blocked_tasks": blocked_tasks,
         "suggested_tools": suggested_tools,
