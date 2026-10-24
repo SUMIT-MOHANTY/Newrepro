@@ -52,6 +52,10 @@ TOOL_REQUIREMENTS: Dict[str, Dict[str, List[str]]] = {
         "required":    ["filesystem"],
         "recommended": ["build_tool", "git", "terminal"],
     },
+    "database": {
+        "required":    ["filesystem"],
+        "recommended": ["database", "terminal", "git"],
+    },
     "qa": {
         "required":    ["test_runner"],
         "recommended": ["visual_qa", "filesystem", "terminal"],

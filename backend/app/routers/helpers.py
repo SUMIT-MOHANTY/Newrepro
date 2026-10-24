@@ -1073,7 +1073,9 @@ def _upsert_agent_record(
 def _delete_agent_record(db: Session, agent_id: str, project_token: Optional[str]) -> None:
     project_token = _normalize_project_token(project_token)
     stored_id = _stored_agent_id(agent_id, project_token)
-    db.query(models.Agent).filter(models.Agent.id == stored_id).delete()
+    db.query(models.Agent).filter(
+        or_(models.Agent.id == agent_id, models.Agent.id == stored_id)
+    ).delete()
     db.commit()
 
 

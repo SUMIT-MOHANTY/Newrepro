@@ -1,7 +1,7 @@
 // Resource Onboarding page
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock, Shield, Wand2, Sparkles, Wrench, FileText, Edit3, X, Cpu } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Loader2, Bot, AlertTriangle, Minus, Plus, Info, Zap, Lock, Shield, Wand2, Sparkles, Wrench, FileText, Edit3, X, Cpu, Trash2 } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import RequestCapacityModal from '../components/RequestCapacityModal';
 import AgentToolPicker, { ALL_TOOLS } from '../components/AgentToolPicker';
@@ -19,6 +19,8 @@ function getLaneBadgeColor(lane) {
     case 'qa':
     case 'test':
       return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+    case 'database':
+      return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
     default:
       return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
   }
@@ -173,6 +175,27 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
   const sharedRemaining = Math.max(0, sharedAllowed - totalSharedRequested);
   const dedicatedRemaining = Math.max(0, freePhysicalSlots);
 
+  // ─── Fetch quota (reusable callback) ──────────────────────────────────────
+  const fetchQuota = useCallback(async () => {
+    if (!token) return;
+    setQuotaLoading(true);
+    try {
+      const res = await fetch(API_ENDPOINTS.ORG_AGENT_QUOTA, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) setQuota(json);
+    } catch (_) {
+      // ignore
+    } finally {
+      setQuotaLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    fetchQuota();
+  }, [fetchQuota]);
+
   // ─── Fetch agents ───────────────────────────────────────────────────────────
   useEffect(() => {
     let isMounted = true;
@@ -186,6 +209,9 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         const headers = { Authorization: `Bearer ${token}` };
         const url = new URL(API_ENDPOINTS.AGENTS);
         url.searchParams.set('include_defaults', 'false');
+        if (currentProjectToken) {
+          url.searchParams.set('project_token', currentProjectToken);
+        }
 
         const res = await fetch(url.toString(), { headers, signal: controller.signal });
         const json = await res.json();
@@ -196,13 +222,19 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
 
         setAgents(combined);
 
-        // Initialize allocations: check if agent was already allocated to this project
+        // Initialize allocations: load persisted counts from database
         const initial = {};
         combined.forEach(agent => {
-          const isThisProject = agent.project_token === currentProjectToken;
+          const isThisProject = !agent.project_token || agent.project_token === currentProjectToken;
+          const sCount = typeof agent.shared_count === 'number'
+            ? agent.shared_count
+            : (isThisProject && (agent.agent_kind === 'shared' || !agent.agent_kind) ? 1 : 0);
+          const dCount = typeof agent.dedicated_count === 'number'
+            ? agent.dedicated_count
+            : (isThisProject && agent.agent_kind === 'dedicated' ? 1 : 0);
           initial[agent.id] = {
-            shared: isThisProject && (agent.agent_kind === 'shared' || !agent.agent_kind) ? 1 : 0,
-            dedicated: isThisProject && agent.agent_kind === 'dedicated' ? 1 : 0,
+            shared: Math.max(0, sCount),
+            dedicated: Math.max(0, dCount),
           };
         });
         setAllocations(initial);
@@ -226,30 +258,45 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
     };
   }, [token, currentProjectToken, autoCreateDone]);
 
-
-  // ─── Fetch quota ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    let isMounted = true;
-    const controller = new AbortController();
-    const fetchQuota = async () => {
-      if (!token) return;
-      setQuotaLoading(true);
+  // ─── Auto-persist allocation changes ──────────────────────────────────────
+  const persistTimeoutRef = useRef(null);
+  const persistAllocations = useCallback((updatedAllocations) => {
+    if (!token || !currentProjectToken) return;
+    if (persistTimeoutRef.current) {
+      clearTimeout(persistTimeoutRef.current);
+    }
+    persistTimeoutRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(API_ENDPOINTS.ORG_AGENT_QUOTA, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: controller.signal,
+        const assignments = Object.entries(updatedAllocations).map(([agentId, alloc]) => ({
+          agent_id: agentId,
+          shared_count: alloc?.shared || 0,
+          dedicated_count: alloc?.dedicated || 0,
+        }));
+        await fetch(`${API_ENDPOINTS.AGENTS}/onboard`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            project_token: currentProjectToken,
+            assignments,
+          }),
         });
-        const json = await res.json().catch(() => ({}));
-        if (isMounted && res.ok) setQuota(json);
-      } catch (e) {
-        if (!isMounted || e?.name === 'AbortError') return;
-      } finally {
-        if (isMounted) setQuotaLoading(false);
+        fetchQuota();
+      } catch (err) {
+        console.warn('Failed to auto-persist allocations:', err);
+      }
+    }, 600);
+  }, [token, currentProjectToken, fetchQuota]);
+
+  useEffect(() => {
+    return () => {
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current);
       }
     };
-    fetchQuota();
-    return () => { isMounted = false; controller.abort(); };
-  }, [token]);
+  }, []);
 
   // ─── Allocation change handlers ─────────────────────────────────────────────
   const handleSharedChange = (agentId, delta) => {
@@ -261,7 +308,9 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         const projectedTotal = otherProjectsSharedUsage + thisProjectUiSharedTotal - current.shared + newShared;
         if (projectedTotal > sharedAllowed) return prev;
       }
-      return { ...prev, [agentId]: { ...current, shared: newShared } };
+      const updated = { ...prev, [agentId]: { ...current, shared: newShared } };
+      persistAllocations(updated);
+      return updated;
     });
   };
 
@@ -274,7 +323,59 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         const projectedTotal = otherProjectsDedicatedUsage + thisProjectUiDedicatedTotal - current.dedicated + newDedicated;
         if (projectedTotal > dedicatedAllowed) return prev;
       }
-      return { ...prev, [agentId]: { ...current, dedicated: newDedicated } };
+      const updated = { ...prev, [agentId]: { ...current, dedicated: newDedicated } };
+      persistAllocations(updated);
+      return updated;
+    });
+  };
+
+  // ─── Delete agent state & handler ───────────────────────────────────────────
+  const [deletingAgentId, setDeletingAgentId] = useState(null);
+
+  const handleDeleteAgent = async (agentId, agentName) => {
+    if (!window.confirm(`Are you sure you want to delete ${agentName || 'this agent'}? This will remove the agent from this project.`)) {
+      return;
+    }
+    setDeletingAgentId(agentId);
+    try {
+      const url = new URL(`${API_ENDPOINTS.AGENTS}/${encodeURIComponent(agentId)}`);
+      if (currentProjectToken) {
+        url.searchParams.set('project_token', currentProjectToken);
+      }
+      const res = await fetch(url.toString(), {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.detail || 'Failed to delete agent');
+      }
+      setAgents(prev => prev.filter(a => a.id !== agentId));
+      setAllocations(prev => {
+        const updated = { ...prev };
+        delete updated[agentId];
+        return updated;
+      });
+      setToolAdequacy(prev => {
+        const updated = { ...prev };
+        delete updated[agentId];
+        return updated;
+      });
+      fetchQuota();
+    } catch (err) {
+      alert(err.message || 'Failed to delete agent');
+    } finally {
+      setDeletingAgentId(null);
+    }
+  };
+
+  const handleDismissRecAgent = (idx) => {
+    setRecommendations(prev => {
+      if (!prev) return null;
+      const filtered = prev.filter((_, i) => i !== idx);
+      return filtered.length > 0 ? filtered : null;
     });
   };
 
@@ -715,9 +816,19 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                             </span>
                             <h5 className="text-xs font-bold text-app-text-main leading-tight">{rec.role}</h5>
                           </div>
-                          <span className="text-[9px] font-semibold text-app-text-muted shrink-0">
-                            {rec.task_count || 0} task{rec.task_count !== 1 ? 's' : ''}
-                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-[9px] font-semibold text-app-text-muted">
+                              {rec.task_count || 0} task{rec.task_count !== 1 ? 's' : ''}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleDismissRecAgent(idx)}
+                              className="p-1 rounded text-app-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                              title={`Discard recommendation for ${rec.role}`}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
                         <p className="text-[10px] text-app-text-muted line-clamp-2">
                           {rec.skills_summary || rec.justification || rec.specialization}
@@ -1031,8 +1142,8 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                         </div>
                       </div>
 
-                      {/* Right: Counters */}
-                      <div className="flex items-center gap-3 justify-between sm:justify-end shrink-0">
+                      {/* Right: Counters & Delete Action */}
+                      <div className="flex items-center gap-2 justify-between sm:justify-end shrink-0">
                         {/* Shared Counter */}
                         <AllocationCounter
                           label="Shared:"
@@ -1057,6 +1168,21 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
                           disabled={!canAddDedicated}
                           exceeded={dedicatedExceeded && dedicatedVal > 0}
                         />
+
+                        {/* Delete agent from project pool */}
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAgent(agent.id, agent.name)}
+                          disabled={deletingAgentId === agent.id}
+                          className="p-1.5 rounded-md text-app-text-muted hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-all ml-0.5 shrink-0"
+                          title={`Delete ${agent.name} from project`}
+                        >
+                          {deletingAgentId === agent.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-red-400" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
                       </div>
                     </div>
                   );

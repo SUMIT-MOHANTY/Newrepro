@@ -4295,10 +4295,24 @@ def _build_data_driven_recommendations_from_project(
         elif lane_lower == "devops":
             role_title = "DevOps Specialist (Docker & CI/CD)"
             specialization = "DevOps"
+        elif lane_lower == "database":
+            db_tech = "PostgreSQL"
+            for sig in ("postgres", "postgresql", "mysql", "mssql", "sql server", "sqlite", "oracle", "mongodb"):
+                if sig in str(detected_stack).lower() or sig in corpus.lower():
+                    db_tech = "SQL Server" if ("sql server" in sig or "mssql" in sig) else sig.title()
+                    break
+            is_mig = any(k in corpus.lower() for k in ("migration", "migrate", "etl", "conversion"))
+            role_title = f"Database {'Migration ' if is_mig else ''}Specialist ({db_tech})"
+            specialization = "Database & Migration"
         elif lane_lower == "backend":
-            stack_label = f" ({primary_stack.capitalize()})" if primary_stack and primary_stack != "unknown" else ""
-            role_title = f"Backend Specialist{stack_label}"
-            specialization = "Backend Development"
+            is_mig = any(k in corpus.lower() for k in ("migration", "migrate", "etl", "postgres", "sql")) and not any(k in corpus.lower() for k in ("router", "controller", "auth", "jwt", "fastapi", "flask", "express"))
+            if is_mig:
+                role_title = "Database Migration Specialist (PostgreSQL)"
+                specialization = "Database & Migration"
+            else:
+                stack_label = f" ({primary_stack.capitalize()})" if primary_stack and primary_stack != "unknown" else ""
+                role_title = f"Backend Specialist{stack_label}"
+                specialization = "Backend Development"
         else:
             role_title = f"{lane.capitalize()} Specialist"
             specialization = f"{lane.capitalize()} Development"
@@ -4615,6 +4629,10 @@ async def auto_create_agents(
 
     try:
         db.commit()
+        all_project_agents = db.query(models.Agent).filter(
+            or_(models.Agent.project_token == target_token, models.Agent.id.in_([a["id"] for a in created_agents]))
+        ).all()
+        agent_service.ensure_project_initialized(target_token, _runtime_agent_records(all_project_agents, target_token))
     except Exception as exc:
         db.rollback()
         logger.error("[auto_create_agents] DB commit failed: %s", exc)
@@ -4782,11 +4800,14 @@ async def remove_agent(
             agent_service.remove_agent(k, project_token)
         _delete_agent_record(db, base_agent_id, project_token)
         
-        # Also remove the mapping
+        # Also remove the mapping (matching either raw ID or stored_id with project prefix)
         stored_id = _stored_agent_id(base_agent_id, project_token)
         db.query(models.OrganizationAgentMapping).filter(
             func.lower(models.OrganizationAgentMapping.organization_name) == organization_name.lower(),
-            models.OrganizationAgentMapping.agent_id == stored_id,
+            or_(
+                models.OrganizationAgentMapping.agent_id == base_agent_id,
+                models.OrganizationAgentMapping.agent_id == stored_id,
+            )
         ).delete()
         db.commit()
         

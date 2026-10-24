@@ -875,6 +875,10 @@ def _infer_task_lane(title: str, description: str) -> str:
         return "qa"
     if any(w in title_lower for w in ("screen", "screens", "ui", "view", "page", "dashboard", "component", "components", "frontend", "form", "loading", "spinner", "toast", "skeleton", "theme")):
         return "frontend"
+    if any(w in title_lower for w in ("database", "sql", "migration", "migrate", "postgres", "postgresql", "mysql", "mssql", "schema", "table", "ddl", "etl", "stored procedure")):
+        if not any(w in title_lower for w in ("api", "endpoint", "router", "controller", "rest")):
+            return "database"
+        return "backend"
     if any(w in title_lower for w in ("backend", "api", "database", "model", "schema", "controller", "server", "auth", "jwt", "migration")):
         return "backend"
     if re.search(r"\b(test suite|e2e|testing|unit test|quality assurance|audit|lint)\b", title_lower):
