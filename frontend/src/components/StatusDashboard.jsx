@@ -2722,7 +2722,8 @@ export default function StatusDashboard({
                                                     {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
                                                     {runningAll ? 'Starting...' : 'Run All'}
                                                 </button>
-                                                <button
+                                                {/* VS Code View button - temporarily hidden */}
+                                                {/* <button
                                                     onClick={() => setShowVSCodeWorkspace(true)}
                                                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide bg-[#1e1e1e] hover:bg-[#2c2d30] text-cyan-400 border border-cyan-800/80 shadow hover:shadow-cyan-950 transition-all duration-200"
                                                     title="Open VS Code Workspace live view (files created, edited & agent attribution in real-time)"
@@ -2732,7 +2733,7 @@ export default function StatusDashboard({
                                                     {agents.some(a => a.status === 'running') && (
                                                         <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" />
                                                     )}
-                                                </button>
+                                                </button> */}
                                                 <button
                                                     onClick={() => handleAddAgent()}
                                                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-app-primary bg-app-primary-light hover:bg-app-primary-light transition-colors"

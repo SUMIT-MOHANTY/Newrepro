@@ -799,7 +799,7 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=180.0,
+            timeout=240.0,
             retries=3,
             retry_delay=5.0,
             purpose="BRD Analysis & Architecture",
@@ -843,7 +843,7 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=180.0,
+            timeout=240.0,
             retries=3,
             retry_delay=5.0,
             purpose="BRD Analysis & Architecture",
@@ -873,7 +873,7 @@ async def analyze_document_chunked(
             "api_endpoints": stage3_data.get("api_endpoints", [])
         }
         if repo_context_text:
-            stage4_context["existing_repository_structure"] = repo_context_text.replace("--- REPOSITORY CONTEXT ---", "").strip()
+            stage4_context["existing_repository_structure"] = repo_context_text.replace("--- REPOSITORY CONTEXT ---", "").strip()[:8000]
         
         stage4_messages = [
             {"role": "system", "content": STAGE_4_IMPLEMENTATION_PROMPT},
@@ -885,7 +885,7 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=180.0,
+            timeout=360.0,
             retries=3,
             retry_delay=5.0,
             purpose="BRD Analysis & Architecture",
@@ -921,7 +921,7 @@ async def analyze_document_chunked(
             api_url=api_url,
             api_key=api_key,
             model=model,
-            timeout=240.0,
+            timeout=360.0,
             retries=3,
             retry_delay=5.0,
             purpose="BRD Analysis & Architecture",

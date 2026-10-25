@@ -606,6 +606,12 @@ class LLMClient:
             or (input_tokens + output_tokens)
         )
 
+        # Model-Profile Dynamic Ceiling Detection
+        is_length_truncated = (
+            stop_reason in ("length", "max_tokens")
+            or (max_tokens is not None and max_tokens > 0 and output_tokens >= int(max_tokens * 0.95))
+        )
+
         # Extract latency
         metrics = data.get("metrics") or {}
         latency_ms = metrics.get("latencyMs") or elapsed_ms
