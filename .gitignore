@@ -104,6 +104,7 @@ test*
 *.db*
 *.txt
 *.sh
+!agent-runtime/scripts/*.sh
 *.bat
 *copy*
 sql_app.db

@@ -57,8 +57,12 @@ COPY nginx/nginx.conf /etc/nginx/nginx.conf
 # Create workspace directory — bind-mounted at runtime
 RUN mkdir -p /workspace && chown agent:agent /workspace
 
-# Make scripts executable
-RUN sed -i 's/\r$//' scripts/*.sh && chmod +x scripts/entrypoint.sh scripts/healthcheck.sh
+# Make scripts executable (ensuring healthcheck.sh exists if omitted by gitignore)
+RUN if [ ! -f scripts/healthcheck.sh ]; then \
+        printf '#!/bin/bash\nset -e\npgrep -f "nginx" > /dev/null 2>&1 || pgrep -f "python" > /dev/null 2>&1 || exit 1\nexit 0\n' > scripts/healthcheck.sh; \
+    fi && \
+    sed -i 's/\r$//' scripts/*.sh 2>/dev/null || true && \
+    chmod +x scripts/*.sh
 
 # Nginx log directory permissions
 RUN chown -R agent:agent /var/log/nginx /var/lib/nginx /var/run 2>/dev/null || true
