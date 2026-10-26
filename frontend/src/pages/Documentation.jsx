@@ -1197,25 +1197,27 @@ export default function Documentation() {
                     
                     <div 
                         onClick={() => navigate('/')}
-                        style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}
+                        style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}
                     >
                         <img 
                             src={dsuiteLogo} 
-                            alt="DSuite Logo" 
-                            style={{ height: '30px', width: 'auto', display: 'block', marginRight: '6px' }} 
+                            alt="DSuite.Pro Logo" 
+                            style={{ height: '30px', width: 'auto', display: 'block' }} 
                         />
                         <span style={{ 
                             fontWeight: '800', 
-                            letterSpacing: '0.05em', 
-                            fontSize: '15px', 
-                            background: 'linear-gradient(to right, #8b5cf6, #ec4899)',
+                            fontSize: '18px', 
+                            letterSpacing: '-0.02em',
+                            marginLeft: '-2px',
+                            background: isLight 
+                                ? 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)' 
+                                : 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)',
                             WebkitBackgroundClip: 'text',
                             WebkitTextFillColor: 'transparent',
                             lineHeight: '1', 
-                            transform: 'translateY(1px)', 
                             display: 'inline-block' 
                         }}>
-                            DSuite
+                            .Pro
                         </span>
                     </div>
                 </div>
@@ -1308,6 +1310,17 @@ export default function Documentation() {
                                 ))}
                             </div>
                         )}
+                    </div>
+
+                    {/* Bourntec Logo on Right */}
+                    <div style={{ display: 'flex', alignItems: 'center', paddingLeft: '16px', borderLeft: `1px solid ${borderCol}` }}>
+                        <a href="https://www.bourntec.com/" target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center' }}>
+                            <img 
+                                src={isLight ? "/assets/docs/bourntec_logo_l.png" : "/assets/docs/bourntec_logo.png"} 
+                                alt="Bourntec Solutions" 
+                                style={{ height: '22px', width: 'auto', display: 'block', opacity: 0.9 }} 
+                            />
+                        </a>
                     </div>
                 </div>
             </header>

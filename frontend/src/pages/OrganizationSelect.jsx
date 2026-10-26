@@ -46,14 +46,26 @@ const OrganizationSelect = ({ organizations, tempToken, onSelectComplete }) => {
     return (
         <div className="min-h-screen bg-gradient-to-br from-app-bg-page to-app-bg-muted flex items-center justify-center p-4 relative font-sans">
             {/* Top Left Logo Header */}
-            <div className="absolute top-6 left-6 flex items-center space-x-4 z-10">
+            <div className="absolute top-6 left-6 flex items-center z-10">
                 <img
                     src={dsuiteLogo}
-                    alt="DSuite Logo"
-                    className="h-10 w-auto object-contain"
+                    alt="DSuite.Pro Logo"
+                    className="h-8 w-auto object-contain"
                 />
-                <div className="h-8 w-px bg-app-border"></div>
-                <span className="text-xl font-bold text-app-text-main tracking-tight">DSuite</span>
+                <span className="text-xl font-extrabold tracking-tight -ml-1 text-transparent bg-clip-text bg-gradient-to-r from-sky-500 to-cyan-400 select-none">
+                    .Pro
+                </span>
+            </div>
+
+            {/* Top Right Bourntec Logo */}
+            <div className="absolute top-6 right-6 flex items-center z-10">
+                <a href="https://www.bourntec.com/" target="_blank" rel="noopener noreferrer" className="opacity-90 hover:opacity-100 transition-opacity">
+                    <img 
+                        src="/assets/docs/bourntec_logo.png" 
+                        alt="Bourntec Solutions Logo" 
+                        className="h-6 w-auto block" 
+                    />
+                </a>
             </div>
 
             {/* Selection Card with Glassmorphic design */}

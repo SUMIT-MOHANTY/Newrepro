@@ -156,11 +156,12 @@ export default function Sidebar({
                         <div className="flex items-center min-w-0">
                             <img
                                 src={dsuiteLogo}
-                                alt="DSuite Logo"
-                                className="h-8 w-auto object-contain shrink-0"
+                                alt="DSuite.Pro Logo"
+                                className="h-7 w-auto object-contain shrink-0"
                             />
-                            <div className="h-5 w-0.5 bg-white/20 mx-3 shrink-0 rounded-full"></div>
-                            <span className="text-sm font-bold text-white tracking-tight whitespace-nowrap truncate">DSuite</span>
+                            <span className="text-base font-extrabold tracking-tight -ml-1 text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-cyan-300 select-none">
+                                .Pro
+                            </span>
                         </div>
                         <button
                             type="button"

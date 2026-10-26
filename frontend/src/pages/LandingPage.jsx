@@ -177,12 +177,14 @@ export default function LandingPage() {
                         // Broadcast change to other pages
                         window.dispatchEvent(new Event('theme-changed'));
  
-                        // Update Bourntec logo for new theme
+                        // Update branding and logos for new theme
                         setTimeout(() => {
                             const logo = document.getElementById('bourntec-landing-logo');
                             if (logo) {
                                 logo.src = '/assets/docs/dsuite_logo.png';
                             }
+                            rebrandLandingLogos();
+                            injectBourntecNavLogo();
                             updateFooter();
                         }, 50);
                     };
@@ -196,15 +198,71 @@ export default function LandingPage() {
             }
         };
 
-        // 3b. Replace DSuite branding with Bourntec logo
+        // 3b. Inject Bourntec logo on the right side of desktop navbar
+        const injectBourntecNavLogo = () => {
+            const currentTheme = localStorage.getItem('theme') || 'dark';
+            const isDark = currentTheme === 'dark';
+            const bourntecLogoSrc = isDark ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+            
+            let bourntecContainer = document.getElementById('bourntec-nav-right-container');
+            if (bourntecContainer) {
+                const img = bourntecContainer.querySelector('img');
+                if (img) img.src = bourntecLogoSrc;
+                bourntecContainer.style.borderLeft = isDark ? '1px solid rgba(255, 255, 255, 0.15)' : '1px solid rgba(0, 0, 0, 0.12)';
+                return;
+            }
+
+            const desktopMenu = document.querySelector('.desktop-menu');
+            if (desktopMenu) {
+                bourntecContainer = document.createElement('div');
+                bourntecContainer.id = 'bourntec-nav-right-container';
+                bourntecContainer.style.display = 'inline-flex';
+                bourntecContainer.style.alignItems = 'center';
+                bourntecContainer.style.marginLeft = '12px';
+                bourntecContainer.style.paddingLeft = '16px';
+                bourntecContainer.style.borderLeft = isDark ? '1px solid rgba(255, 255, 255, 0.15)' : '1px solid rgba(0, 0, 0, 0.12)';
+
+                const link = document.createElement('a');
+                link.href = 'https://www.bourntec.com/';
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.title = 'Bourntec Solutions';
+                link.style.display = 'inline-flex';
+                link.style.alignItems = 'center';
+                link.style.textDecoration = 'none';
+
+                const img = document.createElement('img');
+                img.id = 'bourntec-nav-right-logo';
+                img.src = bourntecLogoSrc;
+                img.alt = 'Bourntec Solutions';
+                img.style.height = '24px';
+                img.style.width = 'auto';
+                img.style.display = 'block';
+                img.style.opacity = '0.9';
+                img.style.transition = 'opacity 0.2s';
+                img.onmouseenter = () => { img.style.opacity = '1'; };
+                img.onmouseleave = () => { img.style.opacity = '0.9'; };
+
+                link.appendChild(img);
+                bourntecContainer.appendChild(link);
+                desktopMenu.appendChild(bourntecContainer);
+            }
+        };
+
+        // 3c. Replace DSuite branding with Ribbon Logo + tight .Pro text in electric sky-cyan
         const rebrandLandingLogos = () => {
             const logoSrc = '/assets/docs/dsuite_logo.png';
+            const currentTheme = localStorage.getItem('theme') || 'dark';
+            const isDark = currentTheme === 'dark';
+            const proGradient = isDark 
+                ? 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)' 
+                : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)';
 
             // Replace sparkles icon + "DSuite" gradient text in desktop-menu navbar
             const gradientTextEls = document.querySelectorAll('.gradient-text');
             gradientTextEls.forEach(el => {
-                if (el.textContent.trim() === 'DSuite') {
-                    // Skip if this is the label we already created or is inside our wrapper
+                if (el.textContent.trim() === 'DSuite' || el.textContent.trim() === '.Pro') {
+                    // Skip if this is inside our wrapper or footer
                     if (el.id === 'bourntec-landing-label' || el.closest('#bourntec-landing-logo-wrapper') || el.closest('footer')) {
                         return;
                     }
@@ -214,31 +272,37 @@ export default function LandingPage() {
                     if (iconBox && iconBox !== el) {
                         iconBox.remove();
                     }
-                    // Create wrapper with logo image + text
+                    // Create wrapper with logo image + .Pro text
                     const wrapper = document.createElement('div');
                     wrapper.style.display = 'flex';
                     wrapper.style.alignItems = 'center';
-                    wrapper.style.gap = '8px';
+                    wrapper.style.gap = '0px';
                     wrapper.id = 'bourntec-landing-logo-wrapper';
+                    wrapper.style.cursor = 'pointer';
+                    wrapper.onclick = () => { window.location.href = '/'; };
 
                     const img = document.createElement('img');
                     img.src = logoSrc;
-                    img.alt = 'DSuite';
+                    img.alt = 'DSuite.Pro';
                     img.style.height = '32px';
                     img.style.width = 'auto';
                     img.style.display = 'block';
                     img.id = 'bourntec-landing-logo';
-                    img.style.transform = 'translateY(-2px)';
+                    img.style.transform = 'translateY(-1px)';
 
                     const label = document.createElement('span');
-                    label.textContent = 'DSuite';
-                    label.className = 'gradient-text';
+                    label.textContent = '.Pro';
+                    label.className = 'dsuite-pro-brand-label';
                     label.id = 'bourntec-landing-label';
                     label.style.lineHeight = '1';
                     label.style.alignSelf = 'center';
                     label.style.transform = 'translateY(1px)';
                     label.style.display = 'inline-block';
-                    label.style.background = 'linear-gradient(to right, #8b5cf6, #ec4899)';
+                    label.style.fontSize = '20px';
+                    label.style.fontWeight = '800';
+                    label.style.letterSpacing = '-0.02em';
+                    label.style.marginLeft = '-2px';
+                    label.style.background = proGradient;
                     label.style.webkitBackgroundClip = 'text';
                     label.style.webkitTextFillColor = 'transparent';
 
@@ -248,10 +312,18 @@ export default function LandingPage() {
                 }
             });
 
-            // Also update existing logo if theme changed
+            // Also update existing logo and label if theme changed
             const existingLogo = document.getElementById('bourntec-landing-logo');
             if (existingLogo) {
                 existingLogo.src = logoSrc;
+            }
+            const existingLabel = document.getElementById('bourntec-landing-label');
+            if (existingLabel) {
+                existingLabel.textContent = '.Pro';
+                existingLabel.style.marginLeft = '-2px';
+                existingLabel.style.background = proGradient;
+                existingLabel.style.webkitBackgroundClip = 'text';
+                existingLabel.style.webkitTextFillColor = 'transparent';
             }
         };
 
@@ -349,10 +421,26 @@ export default function LandingPage() {
                 }
             });
 
-            // 3. Rebrand DSuite logo in footer with Bourntec logo
+            // 3. Rebrand DSuite logo in footer with Ribbon Logo + .Pro
+            const currentTheme = localStorage.getItem('theme') || 'dark';
+            const isDark = currentTheme === 'dark';
+            const proGradient = isDark 
+                ? 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)' 
+                : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)';
+
             const spans = Array.from(footer.querySelectorAll('span'));
-            const brandSpan = spans.find(span => span.textContent.trim() === 'DSuite' && span.className.includes('gradient-text'));
+            const brandSpan = spans.find(span => (span.textContent.trim() === 'DSuite' || span.textContent.trim() === '.Pro') && (span.className.includes('gradient-text') || span.id === 'bourntec-footer-label'));
             if (brandSpan) {
+                brandSpan.textContent = '.Pro';
+                brandSpan.id = 'bourntec-footer-label';
+                brandSpan.style.marginLeft = '-2px';
+                brandSpan.style.fontSize = '20px';
+                brandSpan.style.fontWeight = '800';
+                brandSpan.style.letterSpacing = '-0.02em';
+                brandSpan.style.background = proGradient;
+                brandSpan.style.webkitBackgroundClip = 'text';
+                brandSpan.style.webkitTextFillColor = 'transparent';
+
                 if (!document.getElementById('bourntec-footer-logo')) {
                     const parent = brandSpan.parentNode;
                     const iconDiv = parent.querySelector('div[style*="width: 40px"]');
@@ -364,11 +452,11 @@ export default function LandingPage() {
 
                     const img = document.createElement('img');
                     img.src = logoSrc;
-                    img.alt = 'DSuite Logo';
+                    img.alt = 'DSuite.Pro Logo';
                     img.id = 'bourntec-footer-logo';
                     img.style.height = '36px';
                     img.style.width = 'auto';
-                    img.style.marginRight = '8px';
+                    img.style.marginRight = '0px';
                     img.style.display = 'block';
 
                     parent.insertBefore(img, brandSpan);
@@ -384,6 +472,7 @@ export default function LandingPage() {
         const delays = [100, 300, 500, 1000, 1500, 2000, 3000];
         const timeouts = delays.map(delay => setTimeout(() => {
             injectNavbarButtons();
+            injectBourntecNavLogo();
             rebrandLandingLogos();
             updateVibeCodingButton();
             updateFooter();

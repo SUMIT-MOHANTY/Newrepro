@@ -243,14 +243,21 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                         </svg>
                     </button>
                 )}
-                <div className="flex justify-center items-center gap-2 mb-4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div className="flex justify-center items-center mb-4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <img 
                         src={dsuiteLogo} 
                         alt="DSuite Logo" 
                         style={{ height: '32px', width: 'auto', display: 'block' }} 
                     />
-                    <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-[#8b5cf6] to-[#ec4899] bg-clip-text text-transparent" style={{ alignSelf: 'center', display: 'inline-block', transform: 'translateY(1px)' }}>
-                        DSuite
+                    <span 
+                        className={`text-xl font-extrabold tracking-tight -ml-1 ${
+                            isLight 
+                                ? 'bg-gradient-to-r from-sky-600 to-cyan-600' 
+                                : 'bg-gradient-to-r from-sky-400 to-cyan-300'
+                        } bg-clip-text text-transparent`} 
+                        style={{ alignSelf: 'center', display: 'inline-block', transform: 'translateY(1px)', lineHeight: '1' }}
+                    >
+                        .Pro
                     </span>
                 </div>
                 <h2 className="text-3xl font-extrabold tracking-tight mb-2 bg-gradient-to-r from-[#8b5cf6] to-[#ec4899] bg-clip-text text-transparent">
@@ -435,15 +442,33 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
             }`}></div>
 
             {/* Top Left Logo Header */}
-            <div className="absolute top-6 left-6 flex items-center space-x-2 z-10" style={{ display: 'flex', alignItems: 'center' }}>
+            <div className="absolute top-6 left-6 flex items-center z-10" style={{ display: 'flex', alignItems: 'center' }}>
                 <img 
                     src={dsuiteLogo} 
                     alt="DSuite Logo" 
                     style={{ height: '32px', width: 'auto', display: 'block' }} 
                 />
-                <span className="text-lg font-extrabold tracking-tight bg-gradient-to-r from-[#8b5cf6] to-[#ec4899] bg-clip-text text-transparent" style={{ alignSelf: 'center', display: 'inline-block', transform: 'translateY(1px)', lineHeight: '1' }}>
-                    DSuite
+                <span 
+                    className={`text-lg font-extrabold tracking-tight -ml-1 ${
+                        isLight 
+                            ? 'bg-gradient-to-r from-sky-600 to-cyan-600' 
+                            : 'bg-gradient-to-r from-sky-400 to-cyan-300'
+                    } bg-clip-text text-transparent`} 
+                    style={{ alignSelf: 'center', display: 'inline-block', transform: 'translateY(1px)', lineHeight: '1' }}
+                >
+                    .Pro
                 </span>
+            </div>
+
+            {/* Top Right Bourntec Logo */}
+            <div className="absolute top-6 right-6 flex items-center z-10" style={{ display: 'flex', alignItems: 'center' }}>
+                <a href="https://www.bourntec.com/" target="_blank" rel="noopener noreferrer" className="opacity-90 hover:opacity-100 transition-opacity">
+                    <img 
+                        src={isLight ? "/assets/docs/bourntec_logo_l.png" : "/assets/docs/bourntec_logo.png"} 
+                        alt="Bourntec Solutions Logo" 
+                        style={{ height: '24px', width: 'auto', display: 'block' }} 
+                    />
+                </a>
             </div>
 
 
