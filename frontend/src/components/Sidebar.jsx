@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe, Check, Share2, CreditCard, Coins, LifeBuoy } from 'lucide-react';
-import bourntecLogo from '../assets/bourntec_logo.png';
+import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 import { API_ENDPOINTS } from '../config';
 import NewProjectModal from './NewProjectModal';
 import ShareDocumentModal from './ShareDocumentModal';
@@ -155,9 +155,9 @@ export default function Sidebar({
                     <div className="flex items-center justify-between w-full">
                         <div className="flex items-center min-w-0">
                             <img
-                                src={bourntecLogo}
-                                alt="App Logo"
-                                className="h-5 w-auto object-contain shrink-0"
+                                src={dsuiteLogo}
+                                alt="DSuite Logo"
+                                className="h-8 w-auto object-contain shrink-0"
                             />
                             <div className="h-5 w-0.5 bg-white/20 mx-3 shrink-0 rounded-full"></div>
                             <span className="text-sm font-bold text-white tracking-tight whitespace-nowrap truncate">DSuite</span>

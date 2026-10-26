@@ -11,7 +11,6 @@ import { Settings, FileText, History, User, LogOut, Plus, Zap, Server, Users, Ac
 import { jsPDF } from 'jspdf';
 import { generateRobustPDF } from './robustPdfGenerator';
 
-// import bourntecLogo from '../assets/bourntec_logo.png';
 import StatusDashboard from '../components/StatusDashboard';
 import Sidebar from '../components/Sidebar';
 import GitHubIntegration from '../components/GitHubIntegration';

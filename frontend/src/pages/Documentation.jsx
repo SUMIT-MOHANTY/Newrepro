@@ -7,6 +7,7 @@ import {
     Home, Layers, FileUp, ShieldCheck, Database, ListTodo, UserPlus, Workflow, Cpu, Terminal, RefreshCw, Eye, GitPullRequest, Cable, Plug, DownloadCloud, HelpCircle
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 
 export default function Documentation() {
     const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
@@ -1199,9 +1200,9 @@ export default function Documentation() {
                         style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}
                     >
                         <img 
-                            src={isLight ? "/assets/docs/bourntec_logo_l.png" : "/assets/docs/bourntec_logo.png"} 
-                            alt="Bourntec Logo" 
-                            style={{ height: '24px', width: 'auto', display: 'block', marginRight: '4px' }} 
+                            src={dsuiteLogo} 
+                            alt="DSuite Logo" 
+                            style={{ height: '30px', width: 'auto', display: 'block', marginRight: '6px' }} 
                         />
                         <span style={{ 
                             fontWeight: '800', 

@@ -5,7 +5,7 @@ import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { FileText, Download, Server, Users, Activity, Clock, Loader2, KeyRound, Plus, Circle, CheckCircle2, Info, Layers, Database, Code, Copy, Check, Sparkles, ZoomIn, ZoomOut, RotateCcw, Maximize2, AlertCircle } from 'lucide-react';
-import bourntecLogo from '../assets/bourntec_logo.png';
+import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 import ReactFlow, { Background, Controls } from 'reactflow';
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
@@ -3490,7 +3490,7 @@ Explicitly list what was modified/overridden, what is newly added, and if the pr
         // Load logo as base64 for embedding in PDF
         let logoBase64 = null;
         try {
-            const logoResponse = await fetch(bourntecLogo);
+            const logoResponse = await fetch(dsuiteLogo);
             const logoBlob = await logoResponse.blob();
             logoBase64 = await new Promise((resolve) => {
                 const reader = new FileReader();

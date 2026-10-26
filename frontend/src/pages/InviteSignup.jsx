@@ -3,8 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Mail, User, Loader2, ArrowRight, Lock, AlertCircle, CheckCircle2, ShieldCheck } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import { clearTenantScopedState } from '../utils/auth';
-import logo from '../assets/logo.png';
-import bourntecLogo from '../assets/bourntec_logo.png';
+import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 
 const getTokenFromUrl = () => {
     try {
@@ -139,7 +138,7 @@ export default function InviteSignup() {
         <div className="min-h-screen bg-gradient-to-br from-app-bg-page to-app-bg-muted relative">
             <div className="absolute top-6 left-6 flex items-center space-x-4 z-10">
                 <img
-                    src={typeof document !== 'undefined' && document.documentElement.classList.contains('dark') ? bourntecLogo : logo}
+                    src={dsuiteLogo}
                     alt="DSuite Logo"
                     className="h-10 w-auto object-contain"
                 />

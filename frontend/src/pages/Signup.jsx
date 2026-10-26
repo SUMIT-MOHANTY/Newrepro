@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Mail, User, Building2, Loader2, ArrowRight, Lock, Eye, EyeOff, Sparkles, Sun, Moon } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
 import { sanitizeErrorMessage } from '../utils/errorHandling';
+import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 
 const Signup = ({ isModal = false, onClose, onSwitch }) => {
     const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
@@ -110,9 +111,9 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                 )}
                 <div className="flex justify-center items-center gap-2 mb-4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <img 
-                        src={isLight ? "/assets/docs/bourntec_logo_l.png" : "/assets/docs/bourntec_logo.png"} 
-                        alt="Bourntec Logo" 
-                        style={{ height: '24px', width: 'auto', display: 'block' }} 
+                        src={dsuiteLogo} 
+                        alt="DSuite Logo" 
+                        style={{ height: '32px', width: 'auto', display: 'block' }} 
                     />
                     <span className="text-xl font-bold tracking-tight bg-gradient-to-r from-[#8b5cf6] to-[#ec4899] bg-clip-text text-transparent" style={{ alignSelf: 'center', display: 'inline-block', transform: 'translateY(1px)' }}>
                         DSuite
@@ -338,9 +339,9 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
             {/* Top Left Logo Header */}
             <div className="absolute top-6 left-6 flex items-center space-x-2 z-10" style={{ display: 'flex', alignItems: 'center' }}>
                 <img 
-                    src={isLight ? "/assets/docs/bourntec_logo_l.png" : "/assets/docs/bourntec_logo.png"} 
-                    alt="Bourntec Logo" 
-                    style={{ height: '22px', width: 'auto', display: 'block' }} 
+                    src={dsuiteLogo} 
+                    alt="DSuite Logo" 
+                    style={{ height: '32px', width: 'auto', display: 'block' }} 
                 />
                 <span className="text-lg font-extrabold tracking-tight bg-gradient-to-r from-[#8b5cf6] to-[#ec4899] bg-clip-text text-transparent" style={{ alignSelf: 'center', display: 'inline-block', transform: 'translateY(1px)', lineHeight: '1' }}>
                     DSuite

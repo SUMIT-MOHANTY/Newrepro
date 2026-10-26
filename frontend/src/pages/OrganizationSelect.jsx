@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowRight, ShieldCheck, Loader2, Building } from 'lucide-react';
 import { API_BASE_URL } from '../config';
-import logo from '../assets/logo.png';
-import bourntecLogo from '../assets/bourntec_logo.png';
+import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 
 const OrganizationSelect = ({ organizations, tempToken, onSelectComplete }) => {
     const [selectedOrg, setSelectedOrg] = useState('');
@@ -49,7 +48,7 @@ const OrganizationSelect = ({ organizations, tempToken, onSelectComplete }) => {
             {/* Top Left Logo Header */}
             <div className="absolute top-6 left-6 flex items-center space-x-4 z-10">
                 <img
-                    src={typeof document !== 'undefined' && document.documentElement.classList.contains('dark') ? bourntecLogo : logo}
+                    src={dsuiteLogo}
                     alt="DSuite Logo"
                     className="h-10 w-auto object-contain"
                 />

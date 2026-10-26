@@ -181,7 +181,7 @@ export default function LandingPage() {
                         setTimeout(() => {
                             const logo = document.getElementById('bourntec-landing-logo');
                             if (logo) {
-                                logo.src = newTheme === 'dark' ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+                                logo.src = '/assets/docs/dsuite_logo.png';
                             }
                             updateFooter();
                         }, 50);
@@ -198,9 +198,7 @@ export default function LandingPage() {
 
         // 3b. Replace DSuite branding with Bourntec logo
         const rebrandLandingLogos = () => {
-            const currentTheme = localStorage.getItem('theme') || 'dark';
-            const isDark = currentTheme === 'dark';
-            const logoSrc = isDark ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+            const logoSrc = '/assets/docs/dsuite_logo.png';
 
             // Replace sparkles icon + "DSuite" gradient text in desktop-menu navbar
             const gradientTextEls = document.querySelectorAll('.gradient-text');
@@ -226,7 +224,7 @@ export default function LandingPage() {
                     const img = document.createElement('img');
                     img.src = logoSrc;
                     img.alt = 'DSuite';
-                    img.style.height = '24px';
+                    img.style.height = '32px';
                     img.style.width = 'auto';
                     img.style.display = 'block';
                     img.id = 'bourntec-landing-logo';
@@ -362,24 +360,20 @@ export default function LandingPage() {
                         iconDiv.remove();
                     }
                     
-                    const currentTheme = localStorage.getItem('theme') || 'dark';
-                    const isDark = currentTheme === 'dark';
-                    const logoSrc = isDark ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+                    const logoSrc = '/assets/docs/dsuite_logo.png';
 
                     const img = document.createElement('img');
                     img.src = logoSrc;
-                    img.alt = 'Bourntec Logo';
+                    img.alt = 'DSuite Logo';
                     img.id = 'bourntec-footer-logo';
-                    img.style.height = '32px';
+                    img.style.height = '36px';
                     img.style.width = 'auto';
                     img.style.marginRight = '8px';
                     img.style.display = 'block';
 
                     parent.insertBefore(img, brandSpan);
                 } else {
-                    const currentTheme = localStorage.getItem('theme') || 'dark';
-                    const isDark = currentTheme === 'dark';
-                    const logoSrc = isDark ? '/assets/docs/bourntec_logo.png' : '/assets/docs/bourntec_logo_l.png';
+                    const logoSrc = '/assets/docs/dsuite_logo.png';
                     const img = document.getElementById('bourntec-footer-logo');
                     if (img) img.src = logoSrc;
                 }
