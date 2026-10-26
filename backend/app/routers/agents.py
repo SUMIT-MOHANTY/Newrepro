@@ -2393,6 +2393,7 @@ async def _bg_run_agent(
                 safe_callback_url = (getattr(settings, "agent_callback_url", None) or "http://host.docker.internal:8000/api").rstrip("/")
                 safe_callback_secret = getattr(settings, "agent_callback_secret", "") or "dsuite-agent-callback-secret"
                 safe_task_api_url = getattr(settings, "task_api_base_url", None) or safe_callback_url
+                safe_x_task_token = (x_task_token or "").replace("'", "").replace('"', "")
                 safe_project_mode = (project_mode or "greenfield").replace("'", "").replace('"', "").strip()
                 if safe_project_mode in ("brownfield", "migration", "modernization"):
                     safe_gf_action = ""
