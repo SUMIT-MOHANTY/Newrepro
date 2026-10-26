@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import { X, Plus, FileCheck, History, Activity, Settings, User, LogOut, Trash2, Users, ShieldCheck, Globe, Check, Share2, CreditCard, Coins, LifeBuoy } from 'lucide-react';
 import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
+import dsuiteLogoWhite from '../assets/DSuite Gradient Ribbon Logo White.png';
 import { API_ENDPOINTS } from '../config';
 import NewProjectModal from './NewProjectModal';
 import ShareDocumentModal from './ShareDocumentModal';
@@ -153,13 +153,16 @@ export default function Sidebar({
             >
                 <div className="h-16 flex items-center px-2 border-b border-app-sidebar-bg bg-app-sidebar-bg shrink-0">
                     <div className="flex items-center justify-between w-full">
-                        <div className="flex items-center min-w-0">
+                        <div 
+                            className="flex items-center min-w-0 cursor-pointer select-none"
+                            onClick={() => navigate('/dashboard')}
+                        >
                             <img
-                                src={dsuiteLogo}
+                                src={dsuiteLogoWhite}
                                 alt="DSuite.Pro Logo"
                                 className="h-7 w-auto object-contain shrink-0"
                             />
-                            <span className="text-base font-extrabold tracking-tight -ml-1 text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-cyan-300 select-none">
+                            <span className="text-[15px] font-extrabold tracking-tight -ml-1 text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-cyan-300 select-none">
                                 .Pro
                             </span>
                         </div>

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
+import dsuiteLogoWhite from '../assets/DSuite Gradient Ribbon Logo White.png';
 
 export default function Documentation() {
     const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
@@ -1200,7 +1201,7 @@ export default function Documentation() {
                         style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}
                     >
                         <img 
-                            src={dsuiteLogo} 
+                            src={isLight ? dsuiteLogo : dsuiteLogoWhite} 
                             alt="DSuite.Pro Logo" 
                             style={{ height: '30px', width: 'auto', display: 'block' }} 
                         />

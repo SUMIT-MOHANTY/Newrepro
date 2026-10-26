@@ -3,8 +3,8 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck, Eye, EyeOff, Sparkles, Sun, Moon } from 'lucide-react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { sanitizeErrorMessage } from '../utils/errorHandling';
-import { clearTenantScopedState } from '../utils/auth';
 import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
+import dsuiteLogoWhite from '../assets/DSuite Gradient Ribbon Logo White.png';
 import OrganizationSelect from './OrganizationSelect';
 
 const isAllowedNextUrl = (nextUrl) => {
@@ -245,8 +245,8 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 )}
                 <div className="flex justify-center items-center mb-4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <img 
-                        src={dsuiteLogo} 
-                        alt="DSuite Logo" 
+                        src={isLight ? dsuiteLogo : dsuiteLogoWhite} 
+                        alt="DSuite.Pro Logo" 
                         style={{ height: '32px', width: 'auto', display: 'block' }} 
                     />
                     <span 
@@ -444,8 +444,8 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
             {/* Top Left Logo Header */}
             <div className="absolute top-6 left-6 flex items-center z-10" style={{ display: 'flex', alignItems: 'center' }}>
                 <img 
-                    src={dsuiteLogo} 
-                    alt="DSuite Logo" 
+                    src={isLight ? dsuiteLogo : dsuiteLogoWhite} 
+                    alt="DSuite.Pro Logo" 
                     style={{ height: '32px', width: 'auto', display: 'block' }} 
                 />
                 <span 

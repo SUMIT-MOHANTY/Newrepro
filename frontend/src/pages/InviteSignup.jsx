@@ -4,6 +4,7 @@ import { Mail, User, Loader2, ArrowRight, Lock, AlertCircle, CheckCircle2, Shiel
 import { API_ENDPOINTS } from '../config';
 import { clearTenantScopedState } from '../utils/auth';
 import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
+import dsuiteLogoWhite from '../assets/DSuite Gradient Ribbon Logo White.png';
 
 const getTokenFromUrl = () => {
     try {
@@ -138,7 +139,7 @@ export default function InviteSignup() {
         <div className="min-h-screen bg-gradient-to-br from-app-bg-page to-app-bg-muted relative">
             <div className="absolute top-6 left-6 flex items-center z-10">
                 <img
-                    src={dsuiteLogo}
+                    src={dsuiteLogoWhite}
                     alt="DSuite.Pro Logo"
                     className="h-8 w-auto object-contain"
                 />

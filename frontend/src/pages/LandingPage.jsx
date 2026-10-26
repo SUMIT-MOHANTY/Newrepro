@@ -251,9 +251,9 @@ export default function LandingPage() {
 
         // 3c. Replace DSuite branding with Ribbon Logo + tight .Pro text in electric sky-cyan
         const rebrandLandingLogos = () => {
-            const logoSrc = '/assets/docs/dsuite_logo.png';
             const currentTheme = localStorage.getItem('theme') || 'dark';
             const isDark = currentTheme === 'dark';
+            const logoSrc = isDark ? '/assets/docs/dsuite_logo_white.png' : '/assets/docs/dsuite_logo.png';
             const proGradient = isDark 
                 ? 'linear-gradient(135deg, #38bdf8 0%, #22d3ee 100%)' 
                 : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)';
@@ -448,7 +448,7 @@ export default function LandingPage() {
                         iconDiv.remove();
                     }
                     
-                    const logoSrc = '/assets/docs/dsuite_logo.png';
+                    const logoSrc = isDark ? '/assets/docs/dsuite_logo_white.png' : '/assets/docs/dsuite_logo.png';
 
                     const img = document.createElement('img');
                     img.src = logoSrc;
@@ -461,7 +461,7 @@ export default function LandingPage() {
 
                     parent.insertBefore(img, brandSpan);
                 } else {
-                    const logoSrc = '/assets/docs/dsuite_logo.png';
+                    const logoSrc = isDark ? '/assets/docs/dsuite_logo_white.png' : '/assets/docs/dsuite_logo.png';
                     const img = document.getElementById('bourntec-footer-logo');
                     if (img) img.src = logoSrc;
                 }

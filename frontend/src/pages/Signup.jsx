@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Mail, User, Building2, Loader2, ArrowRight, Lock, Eye, EyeOff, Sparkles, Sun, Moon } from 'lucide-react';
 import { API_ENDPOINTS } from '../config';
-import { sanitizeErrorMessage } from '../utils/errorHandling';
 import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
+import dsuiteLogoWhite from '../assets/DSuite Gradient Ribbon Logo White.png';
 
 const Signup = ({ isModal = false, onClose, onSwitch }) => {
     const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
@@ -111,8 +111,8 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
                 )}
                 <div className="flex justify-center items-center mb-4" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <img 
-                        src={dsuiteLogo} 
-                        alt="DSuite Logo" 
+                        src={isLight ? dsuiteLogo : dsuiteLogoWhite} 
+                        alt="DSuite.Pro Logo" 
                         style={{ height: '32px', width: 'auto', display: 'block' }} 
                     />
                     <span 
@@ -346,8 +346,8 @@ const Signup = ({ isModal = false, onClose, onSwitch }) => {
             {/* Top Left Logo Header */}
             <div className="absolute top-6 left-6 flex items-center z-10" style={{ display: 'flex', alignItems: 'center' }}>
                 <img 
-                    src={dsuiteLogo} 
-                    alt="DSuite Logo" 
+                    src={isLight ? dsuiteLogo : dsuiteLogoWhite} 
+                    alt="DSuite.Pro Logo" 
                     style={{ height: '32px', width: 'auto', display: 'block' }} 
                 />
                 <span 
