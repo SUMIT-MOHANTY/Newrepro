@@ -26,7 +26,7 @@ def get_engine():
     """Get active database engine."""
     if default_engine is not None:
         return default_engine
-    from database import SQLALCHEMY_DATABASE_URL
+    from app.core.database import SQLALCHEMY_DATABASE_URL
     return create_engine(SQLALCHEMY_DATABASE_URL)
 
 
