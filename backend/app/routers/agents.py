@@ -2191,16 +2191,21 @@ async def _bg_run_agent(
                         git_token = git_token or cred.git_token
 
             # Resolve greenfield directives from governance record if not explicitly passed
-            if not greenfield_repo_action or not greenfield_custom_instructions:
-                try:
-                    gov_rec = db.query(models.GovernanceResponse).filter(
-                        models.GovernanceResponse.project_token == project_token
-                    ).first()
-                    if gov_rec:
+            project_mode = "greenfield"
+            try:
+                gov_rec = db.query(models.GovernanceResponse).filter(
+                    models.GovernanceResponse.project_token == project_token
+                ).first()
+                if gov_rec:
+                    if getattr(gov_rec, "project_type", None):
+                        project_mode = str(gov_rec.project_type).strip().lower()
+                    if project_mode in ("brownfield", "migration", "modernization"):
+                        greenfield_repo_action = ""
+                    else:
                         greenfield_repo_action = greenfield_repo_action or getattr(gov_rec, "repo_action", None)
                         greenfield_custom_instructions = greenfield_custom_instructions or getattr(gov_rec, "repo_custom_instructions", None)
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
             # Embed structured tasks and Git credentials for the Supervisor DAG scheduler & runtime
             if git_repo_url:
@@ -2212,6 +2217,7 @@ async def _bg_run_agent(
                 task_config["git_pat_token"] = git_token
                 task_config["has_git_token"] = True
 
+            task_config["project_mode"] = project_mode
             task_config["greenfield_repo_action"] = greenfield_repo_action or ""
             task_config["greenfield_custom_instructions"] = greenfield_custom_instructions or ""
 
@@ -2387,14 +2393,18 @@ async def _bg_run_agent(
                 safe_callback_url = (getattr(settings, "agent_callback_url", None) or "http://host.docker.internal:8000/api").rstrip("/")
                 safe_callback_secret = getattr(settings, "agent_callback_secret", "") or "dsuite-agent-callback-secret"
                 safe_task_api_url = getattr(settings, "task_api_base_url", None) or safe_callback_url
-                safe_x_task_token = (x_task_token or "").replace("'", "")
-                safe_gf_action = (greenfield_repo_action or "").replace("'", "").replace('"', "").strip()
+                safe_project_mode = (project_mode or "greenfield").replace("'", "").replace('"', "").strip()
+                if safe_project_mode in ("brownfield", "migration", "modernization"):
+                    safe_gf_action = ""
+                else:
+                    safe_gf_action = (greenfield_repo_action or "").replace("'", "").replace('"', "").strip()
                 safe_gf_custom = (greenfield_custom_instructions or "").replace("'", "").replace('"', "").replace("\n", " ").strip()
                 exec_cmd = (
                     f"export AGENT_ID='{agent_id}' && "
                     f"export AGENT_NAME='{safe_agent_name}' && "
                     f"export AGENT_ROLE='{safe_agent_role}' && "
                     f"export PROJECT_ID='{project_token}' && "
+                    f"export PROJECT_MODE='{safe_project_mode}' && "
                     f"export AGENT_CONFIG_FILE='{config_filename}' && "
                     f"export GREENFIELD_REPO_ACTION='{safe_gf_action}' && "
                     f"export GREENFIELD_CUSTOM_INSTRUCTIONS='{safe_gf_custom}' && "
@@ -2980,8 +2990,12 @@ async def _run_phased_swarm_coordinator(
             with SessionLocal() as s_db:
                 g_row = s_db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
                 if g_row:
-                    greenfield_repo_action = greenfield_repo_action or getattr(g_row, "repo_action", None)
-                    greenfield_custom_instructions = greenfield_custom_instructions or getattr(g_row, "repo_custom_instructions", None)
+                    g_mode = str(getattr(g_row, "project_type", "") or "").lower()
+                    if g_mode in ("brownfield", "migration", "modernization"):
+                        greenfield_repo_action = ""
+                    else:
+                        greenfield_repo_action = greenfield_repo_action or getattr(g_row, "repo_action", None)
+                        greenfield_custom_instructions = greenfield_custom_instructions or getattr(g_row, "repo_custom_instructions", None)
         except Exception:
             pass
 
@@ -3524,17 +3538,20 @@ async def run_all_agents(
 
     req_gf_action = (request.greenfield_repo_action or request.repo_action) if request else None
     req_gf_custom = (request.greenfield_custom_instructions or request.repo_custom_instructions) if request else None
-    if req_gf_action or req_gf_custom:
-        try:
-            gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
-            if gov:
+    try:
+        gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
+        if gov:
+            g_mode = str(getattr(gov, "project_type", "") or "").lower()
+            if g_mode in ("brownfield", "migration", "modernization"):
+                req_gf_action = None
+            if req_gf_action or req_gf_custom:
                 if req_gf_action:
                     gov.repo_action = req_gf_action
                 if req_gf_custom:
                     gov.repo_custom_instructions = req_gf_custom
                 db.commit()
-        except Exception as ge:
-            logger.debug(f"[run_all_agents] Note persisting repo directives: {ge}")
+    except Exception as ge:
+        logger.debug(f"[run_all_agents] Note persisting repo directives: {ge}")
 
     # Launch Phased Swarm Coordinator in background
     try:

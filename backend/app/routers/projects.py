@@ -250,13 +250,18 @@ async def save_project_git_config(
     if request.dest_repo_token is not None:
         db_response.dest_repo_token = request.dest_repo_token
 
-    if request.repo_action is not None:
-        db_response.repo_action = request.repo_action
-    if request.repo_custom_instructions is not None:
-        db_response.repo_custom_instructions = request.repo_custom_instructions
-
     if request.project_type is not None:
         db_response.project_type = request.project_type
+
+    effective_project_type = (db_response.project_type or "greenfield").strip().lower()
+    if effective_project_type in ("brownfield", "migration", "modernization"):
+        # For brownfield/migration projects, wipeout actions must never be stored or applied
+        db_response.repo_action = None
+    elif request.repo_action is not None:
+        db_response.repo_action = request.repo_action
+
+    if request.repo_custom_instructions is not None:
+        db_response.repo_custom_instructions = request.repo_custom_instructions
         
     db.commit()
     db.refresh(db_response)

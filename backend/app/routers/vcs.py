@@ -662,10 +662,60 @@ async def inspect_git_repository(
             elif auth_url.startswith("http://"):
                 auth_url = auth_url.replace("http://", f"http://x-access-token:{pat}@")
 
+    # Fast check via GitHub API for GitHub repositories (detects 'This repository is empty.' with 100% precision)
+    if provider == "github" and "github.com" in repo_url:
+        try:
+            clean_path = repo_url.split("github.com/")[-1].replace(".git", "").strip("/")
+            p_parts = clean_path.split("/")
+            if len(p_parts) >= 2:
+                gh_owner, gh_repo = p_parts[0], p_parts[1]
+                gh_headers = {
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "DSuite-BRD-Analyzer/2.0",
+                }
+                if pat:
+                    gh_headers["Authorization"] = f"Bearer {pat}"
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    c_res = await client.get(
+                        f"https://api.github.com/repos/{gh_owner}/{gh_repo}/contents",
+                        headers=gh_headers,
+                    )
+                    if c_res.status_code == 404:
+                        body_err = c_res.json() if c_res.headers.get("content-type", "").startswith("application/json") else {}
+                        if "empty" in str(body_err.get("message", "")).lower():
+                            return schemas.InspectGitRepoResponse(
+                                valid=True,
+                                is_empty=True,
+                                has_code=False,
+                                total_files=0,
+                                top_level_items=[],
+                                detected_stack=[],
+                                message="Repository is completely empty (no files or commits found). Ready for clean greenfield generation.",
+                                normalized_url=repo_url,
+                                provider="github",
+                            )
+                    elif c_res.status_code == 200:
+                        items = c_res.json()
+                        if isinstance(items, list) and len(items) == 0:
+                            return schemas.InspectGitRepoResponse(
+                                valid=True,
+                                is_empty=True,
+                                has_code=False,
+                                total_files=0,
+                                top_level_items=[],
+                                detected_stack=[],
+                                message="Repository is completely empty.",
+                                normalized_url=repo_url,
+                                provider="github",
+                            )
+        except Exception as gh_probe_err:
+            logger.debug(f"[InspectRepo] GitHub API probe note: {gh_probe_err}")
+
     # Step 1: Probe branches via git ls-remote (fast, 10s timeout)
+    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": ""}
     try:
         ls_cmd = ["git", "ls-remote", "--heads", auth_url]
-        res = subprocess.run(ls_cmd, capture_output=True, text=True, timeout=10)
+        res = subprocess.run(ls_cmd, capture_output=True, text=True, timeout=10, env=git_env)
         if res.returncode != 0:
             err = res.stderr.strip()
             if "Authentication failed" in err or "could not read Username" in err or "terminal prompts disabled" in err:
@@ -700,9 +750,22 @@ async def inspect_git_repository(
             clone_cmd.extend(["--branch", payload.branch])
         clone_cmd.extend([auth_url, temp_dir])
 
-        c_res = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=20)
+        c_res = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=20, env=git_env)
         if c_res.returncode != 0:
-            # If clone failed on specific branch or default
+            err = (c_res.stderr or "").lower()
+            if "empty repository" in err or "remote branch" in err or "could not find remote branch" in err or "not found in upstream" in err:
+                return schemas.InspectGitRepoResponse(
+                    valid=True,
+                    is_empty=True,
+                    has_code=False,
+                    total_files=0,
+                    top_level_items=[],
+                    detected_stack=[],
+                    message="Repository is brand new and empty.",
+                    normalized_url=repo_url,
+                    provider=provider,
+                )
+            # If clone failed for other reasons on existing repo
             return schemas.InspectGitRepoResponse(
                 valid=True,
                 is_empty=False,

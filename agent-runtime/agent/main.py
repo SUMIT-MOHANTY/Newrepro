@@ -305,9 +305,11 @@ def main() -> None:
     else:
         greenfield_action = os.environ.get("GREENFIELD_REPO_ACTION", "").lower()
         greenfield_custom = os.environ.get("GREENFIELD_CUSTOM_INSTRUCTIONS", "").strip()
+        project_mode = os.environ.get("PROJECT_MODE", "").strip().lower()
 
         # If user explicitly instructed a Wipe on pre-existing code in greenfield repo:
-        if greenfield_action == "wipe":
+        # STRICT SAFETY: Brownfield and Migration projects can NEVER be wiped.
+        if greenfield_action == "wipe" and project_mode not in ("brownfield", "migration", "modernization"):
             print(f"[AgentRuntime] 🧹 Greenfield Clean Slate: User requested wiping pre-existing repository code before generation.")
             try:
                 from mcp.git_tools import GitTools

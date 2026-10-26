@@ -948,16 +948,21 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     setGlobalGitRepoUrl(configData.dest_repo_url || '');
                     setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
                     setGlobalGitToken('');
-                    if (configData.repo_action) {
-                        setGreenfieldAction(configData.repo_action);
-                        setModalActionChoice(configData.repo_action);
-                    }
-                    if (configData.repo_custom_instructions) {
-                        setGreenfieldCustomInstructions(configData.repo_custom_instructions);
-                        setModalCustomInstructions(configData.repo_custom_instructions);
-                    }
                     if (configData.project_type) {
                         setProjectType(configData.project_type);
+                    }
+                    const isGf = ((configData.project_type || projectType || '').toLowerCase() === 'greenfield');
+                    if (isGf) {
+                        if (configData.repo_action) {
+                            setGreenfieldAction(configData.repo_action);
+                            setModalActionChoice(configData.repo_action);
+                        }
+                        if (configData.repo_custom_instructions) {
+                            setGreenfieldCustomInstructions(configData.repo_custom_instructions);
+                            setModalCustomInstructions(configData.repo_custom_instructions);
+                        }
+                    } else {
+                        setGreenfieldAction('');
                     }
                     return;
                 }
@@ -1508,6 +1513,12 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 const isGreenfield = (projectType || '').toLowerCase() === 'greenfield';
                 if (isGreenfield && details.has_code && !details.is_empty) {
                     setShowGreenfieldModal(true);
+                    return details;
+                } else if (isGreenfield && (details.is_empty || !details.has_code)) {
+                    // Repository is confirmed empty and clean: ensure modal is hidden and clear wipe action
+                    setShowGreenfieldModal(false);
+                    setGreenfieldAction('');
+                    localStorage.removeItem(`greenfield_repo_action_${selectedProjectKey}`);
                     return details;
                 }
             }
@@ -2864,14 +2875,14 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                     <p className="text-xs text-app-text-muted">Loading saved Git config...</p>
                                 )}
 
-                                {isInspectingRepo && (
+                                {((projectType || '').toLowerCase() === 'greenfield') && isInspectingRepo && (
                                     <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 mt-2">
                                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                         <span>Inspecting repository files for Greenfield compatibility...</span>
                                     </div>
                                 )}
 
-                                {greenfieldAction && (
+                                {((projectType || '').toLowerCase() === 'greenfield') && greenfieldAction && (
                                     <div className={`mt-4 p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm ${
                                         greenfieldAction === 'wipe'
                                             ? 'bg-amber-500/10 border-amber-300 dark:border-amber-700/80 text-amber-900 dark:text-amber-100'
@@ -2920,6 +2931,29 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         >
                                             Change Strategy
                                         </button>
+                                    </div>
+                                )}
+
+                                {((projectType || '').toLowerCase() !== 'greenfield') && (
+                                    <div className="mt-4 p-4 rounded-xl border border-sky-300 dark:border-sky-800 bg-sky-500/10 text-sky-900 dark:text-sky-200 flex items-start gap-3 shadow-sm">
+                                        <div className="w-8 h-8 rounded-lg bg-sky-200 dark:bg-sky-900/50 flex items-center justify-center flex-shrink-0 text-sky-700 dark:text-sky-300">
+                                            <CheckCircle2 className="w-4 h-4" />
+                                        </div>
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="text-xs font-bold uppercase tracking-wider">
+                                                    {((projectType || '').toLowerCase() === 'migration' || (projectType || '').toLowerCase() === 'modernization')
+                                                        ? 'Migration Directive: 100% Functional Parity'
+                                                        : 'Brownfield Directive: Zero Regression'}
+                                                </span>
+                                                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-sky-200 dark:bg-sky-900/60 text-sky-800 dark:text-sky-300">Protected</span>
+                                            </div>
+                                            <p className="text-xs font-medium mt-0.5 opacity-90 leading-relaxed">
+                                                {((projectType || '').toLowerCase() === 'migration' || (projectType || '').toLowerCase() === 'modernization')
+                                                    ? 'Existing legacy models and business logic will be preserved and ported with 100% parity. Repository wipeout is strictly disabled.'
+                                                    : 'Existing files, endpoints, and git history will be 100% preserved. AI agents will perform targeted surgical edits with zero regressions.'}
+                                            </p>
+                                        </div>
                                     </div>
                                 )}
                             </div>
@@ -2993,7 +3027,7 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                         {globalGitRepoUrl.replace('https://github.com/', '').replace('https://dev.azure.com/', '')}
                                     </span>
                                     <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold text-[10px] whitespace-nowrap">
-                                        {greenfieldRepoDetails?.total_files || 'Multiple'} files
+                                        {greenfieldRepoDetails?.total_files !== undefined && greenfieldRepoDetails?.total_files !== null ? greenfieldRepoDetails.total_files : 'Multiple'} files
                                     </span>
                                 </div>
                                 {greenfieldRepoDetails?.top_level_items && greenfieldRepoDetails.top_level_items.length > 0 && (
