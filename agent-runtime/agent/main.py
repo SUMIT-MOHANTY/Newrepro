@@ -84,13 +84,25 @@ def main() -> None:
             "AGENT_NAME": "agent_name",
             "AGENT_ID": "agent_id",
             "AGENT_ROLE": "agent_role",
+            "GREENFIELD_REPO_ACTION": "greenfield_repo_action",
+            "GREENFIELD_CUSTOM_INSTRUCTIONS": "greenfield_custom_instructions",
         }
         for env_key, config_key in env_mapping.items():
             if config_key in task_config and env_key not in os.environ:
                 val = task_config[config_key]
                 os.environ[env_key] = str(val) if not isinstance(val, bool) else str(val).lower()
 
-        # Fallback aliases for Git configuration
+        # Fallback aliases for Git and Greenfield configuration
+        if "GREENFIELD_REPO_ACTION" not in os.environ:
+            for gak in ("greenfield_repo_action", "repo_action"):
+                if gak in task_config and task_config[gak]:
+                    os.environ["GREENFIELD_REPO_ACTION"] = str(task_config[gak])
+                    break
+        if "GREENFIELD_CUSTOM_INSTRUCTIONS" not in os.environ:
+            for gck in ("greenfield_custom_instructions", "repo_custom_instructions"):
+                if gck in task_config and task_config[gck]:
+                    os.environ["GREENFIELD_CUSTOM_INSTRUCTIONS"] = str(task_config[gck])
+                    break
         if "GIT_REPO_URL" not in os.environ and "repo_url" in task_config:
             os.environ["GIT_REPO_URL"] = str(task_config["repo_url"])
         if "GIT_AUTH_TOKEN" not in os.environ:
@@ -166,9 +178,28 @@ def main() -> None:
 
     init_marker = Path(state.workspace_path) / ".agent_initialized"
     ws_path = Path(state.workspace_path)
+
+    # Sync / clone remote repository into /workspace if configured and not yet initialized locally
+    git_repo = os.environ.get("GIT_REPO_URL", "").strip()
+    git_tok = os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN") or os.environ.get("GIT_TOKEN")
+    git_br = os.environ.get("GIT_BRANCH", "main")
+    if git_repo and not (ws_path / ".git").exists():
+        try:
+            from mcp.git_tools import GitTools
+            gt = GitTools(state.workspace_path)
+            print(f"[AgentRuntime] 📦 Syncing repository from remote branch '{git_br}' ({git_repo})...")
+            c_res = gt.clone(repo_url=git_repo, branch=git_br, auth_token=git_tok, workspace_path=state.workspace_path)
+            if c_res.success:
+                print(f"[AgentRuntime] ✅ {c_res.data.get('message', 'Remote repo cloned')}")
+            else:
+                print(f"[AgentRuntime] ℹ️ Remote clone note: {c_res.error}")
+        except Exception as git_clone_err:
+            print(f"[AgentRuntime] ⚠️ Git clone setup note: {git_clone_err}")
+
+    internal_dirs = (".agent", ".agent_history", ".agent_ipc", ".agent_signals", ".git", "node_modules", "__pycache__")
     has_code_files = any(
         f for f in ws_path.iterdir()
-        if not f.name.startswith(".") and f.name not in ("node_modules", "__pycache__")
+        if f.name not in internal_dirs and not f.name.startswith(".")
     ) if ws_path.exists() else False
     is_existing_workspace = init_marker.exists() or has_code_files
 
@@ -272,6 +303,66 @@ def main() -> None:
         except Exception as pe:
             print(f"[AgentRuntime] Warning restoring preview on wake-up: {pe}")
     else:
+        greenfield_action = os.environ.get("GREENFIELD_REPO_ACTION", "").lower()
+        greenfield_custom = os.environ.get("GREENFIELD_CUSTOM_INSTRUCTIONS", "").strip()
+
+        # If user explicitly instructed a Wipe on pre-existing code in greenfield repo:
+        if greenfield_action == "wipe":
+            print(f"[AgentRuntime] 🧹 Greenfield Clean Slate: User requested wiping pre-existing repository code before generation.")
+            try:
+                from mcp.git_tools import GitTools
+                gt_wipe = GitTools(state.workspace_path)
+                try:
+                    gt_wipe.checkout_branch(git_br, create=False)
+                except Exception as br_err:
+                    print(f"[AgentRuntime] Note checking out {git_br} for wipe: {br_err}")
+
+                import shutil
+                for item in ws_path.iterdir():
+                    if item.name.startswith(".git") or item.name.startswith(".agent"):
+                        continue
+                    if item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
+                    else:
+                        item.unlink(missing_ok=True)
+
+                init_marker.unlink(missing_ok=True)
+
+                # Commit wipe & push to remote branch so GitHub is also wiped clean
+                try:
+                    gt_wipe.add_all()
+                    gt_wipe.commit("Clean slate: wipe pre-existing code for greenfield project")
+                    if git_repo:
+                        push_wipe = gt_wipe.push(branch=git_br, auth_token=git_tok, repo_url=git_repo, force=True)
+                        if push_wipe.success:
+                            print(f"[AgentRuntime] 🚀 Successfully pushed clean slate wipe to remote branch '{git_br}' on {git_repo}!")
+                        else:
+                            print(f"[AgentRuntime] ⚠️ Clean slate remote push note: {push_wipe.error}")
+                except Exception as wipe_push_err:
+                    print(f"[AgentRuntime] ⚠️ Clean slate remote push error: {wipe_push_err}")
+
+                print(f"[AgentRuntime] ✅ Workspace cleaned. Ready for fresh greenfield generation.")
+                has_code_files = False
+                is_existing_workspace = False
+                state.task_type = "greenfield"
+            except Exception as clean_err:
+                print(f"[AgentRuntime] ⚠️ Warning cleaning workspace: {clean_err}")
+
+        # If user provided custom instructions for pre-existing code:
+        if greenfield_custom:
+            print(f"[AgentRuntime] 📝 Greenfield Custom Directive active: {greenfield_custom[:80]}...")
+            if isinstance(task_config, dict):
+                task_config["greenfield_custom_instructions"] = greenfield_custom
+                task_config["repo_custom_instructions"] = greenfield_custom
+            directive_text = (
+                f"\n\n### MANDATORY USER DIRECTIVE FOR PRE-EXISTING REPOSITORY CODE:\n"
+                f"This project is a Greenfield application, but the repository contains pre-existing code. "
+                f"The user has provided the following explicit instructions on how you must handle the codebase:\n"
+                f"\"\"\"\n{greenfield_custom}\n\"\"\"\n"
+                f"You MUST strictly follow the user's instructions above when designing architecture, writing code, and modifying or retaining existing files.\n"
+            )
+            state.prompt = f"{state.prompt}{directive_text}"
+
         if is_existing_workspace:
             print(f"[AgentRuntime] 🚀 Container started for follow-up task {state.task_id} in existing workspace.")
             if state.task_type in ("initial_generation", "greenfield", ""):

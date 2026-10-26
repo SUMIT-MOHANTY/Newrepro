@@ -735,13 +735,25 @@ async def save_governance_prerequisites(
         )
         db.add(gov)
 
-    if payload and payload.prerequisites is not None:
-        gov.prerequisites_data = payload.prerequisites
+    if payload:
+        if payload.prerequisites is not None:
+            gov.prerequisites_data = payload.prerequisites
+        act = payload.repo_action or payload.greenfield_repo_action
+        if act is not None:
+            gov.repo_action = act
+        inst = payload.repo_custom_instructions or payload.greenfield_custom_instructions
+        if inst is not None:
+            gov.repo_custom_instructions = inst
 
     gov.prerequisites_completed_at = datetime.utcnow()
     db.commit()
     db.refresh(gov)
-    return {"status": "success", "prerequisites": gov.prerequisites_data or []}
+    return {
+        "status": "success",
+        "prerequisites": gov.prerequisites_data or [],
+        "repo_action": gov.repo_action,
+        "repo_custom_instructions": gov.repo_custom_instructions,
+    }
 
 
 # ─── NXDune Manual Sync Endpoints ───────────────────────────────────────────────

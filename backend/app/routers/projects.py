@@ -249,6 +249,14 @@ async def save_project_git_config(
         db_response.dest_repo_url = request.dest_repo_url
     if request.dest_repo_token is not None:
         db_response.dest_repo_token = request.dest_repo_token
+
+    if request.repo_action is not None:
+        db_response.repo_action = request.repo_action
+    if request.repo_custom_instructions is not None:
+        db_response.repo_custom_instructions = request.repo_custom_instructions
+
+    if request.project_type is not None:
+        db_response.project_type = request.project_type
         
     db.commit()
     db.refresh(db_response)
@@ -257,6 +265,9 @@ async def save_project_git_config(
         source_repo_token=db_response.source_repo_token,
         dest_repo_url=db_response.dest_repo_url,
         dest_repo_token=db_response.dest_repo_token,
+        repo_action=db_response.repo_action,
+        repo_custom_instructions=db_response.repo_custom_instructions,
+        project_type=db_response.project_type or "greenfield",
     )
 
 
@@ -267,22 +278,20 @@ async def get_project_git_config(
     db: Session = Depends(get_db),
 ):
     project_token = _normalize_project_token(project_token)
-    row = db.query(
-        models.GovernanceResponse.source_repo_url,
-        models.GovernanceResponse.source_repo_token,
-        models.GovernanceResponse.dest_repo_url,
-        models.GovernanceResponse.dest_repo_token,
-    ).filter(
+    gov = db.query(models.GovernanceResponse).filter(
         models.GovernanceResponse.project_token == project_token
     ).first()
-    if not row:
+    if not gov:
         raise HTTPException(status_code=404, detail="Project not found")
         
     return schemas.ProjectGitConfigResponse(
-        source_repo_url=row.source_repo_url,
-        source_repo_token=row.source_repo_token,
-        dest_repo_url=row.dest_repo_url,
-        dest_repo_token=row.dest_repo_token,
+        source_repo_url=gov.source_repo_url,
+        source_repo_token=gov.source_repo_token,
+        dest_repo_url=gov.dest_repo_url,
+        dest_repo_token=gov.dest_repo_token,
+        repo_action=gov.repo_action,
+        repo_custom_instructions=gov.repo_custom_instructions,
+        project_type=gov.project_type or "greenfield",
     )
 
 

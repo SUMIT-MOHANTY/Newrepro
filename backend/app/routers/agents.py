@@ -92,6 +92,7 @@ router = APIRouter(tags=["Agents & Tasks"])
 _agent_status_cache: Dict[str, Dict[str, Any]] = {}
 _agent_cache_timestamps: Dict[str, float] = {}
 AGENT_CACHE_TTL = 5.0  # 5 seconds cache TTL
+_cancelled_projects: set[str] = set()
 
 def _get_cache_key(organization_name: str, project_token: Optional[str], user_id: int) -> str:
     """Generate cache key for agent status"""
@@ -1807,6 +1808,8 @@ async def _bg_run_agent(
     source_repo_url: Optional[str] = None,
     source_repo_token: Optional[str] = None,
     custom_override_prompt: Optional[str] = None,
+    greenfield_repo_action: Optional[str] = None,
+    greenfield_custom_instructions: Optional[str] = None,
 ):
     """
     Launch agent execution in the isolated Docker container runtime.
@@ -1832,6 +1835,9 @@ async def _bg_run_agent(
         )
 
         db = SessionLocal()
+        if project_token and project_token in _cancelled_projects:
+            logger.info(f"[_bg_run_agent] Project {project_token} is cancelled — aborting agent {agent_id}.")
+            return
         try:
             # ── Resolve agent metadata ──
             base_agent_id = agent_id.split("#")[0] if agent_id else None
@@ -2031,6 +2037,10 @@ async def _bg_run_agent(
             os.makedirs(workspace_dir, exist_ok=True)
             _ensure_workspace_git_ignores(workspace_dir)
 
+            if project_token and project_token in _cancelled_projects:
+                logger.info(f"[_bg_run_agent] Project {project_token} is cancelled — halting before container launch.")
+                return
+
             container_name = await asyncio.to_thread(
                 playground_manager.acquire_playground,
                 org_name=org_name,
@@ -2180,6 +2190,18 @@ async def _bg_run_agent(
                         git_repo_url = git_repo_url or cred.git_repo_url
                         git_token = git_token or cred.git_token
 
+            # Resolve greenfield directives from governance record if not explicitly passed
+            if not greenfield_repo_action or not greenfield_custom_instructions:
+                try:
+                    gov_rec = db.query(models.GovernanceResponse).filter(
+                        models.GovernanceResponse.project_token == project_token
+                    ).first()
+                    if gov_rec:
+                        greenfield_repo_action = greenfield_repo_action or getattr(gov_rec, "repo_action", None)
+                        greenfield_custom_instructions = greenfield_custom_instructions or getattr(gov_rec, "repo_custom_instructions", None)
+                except Exception:
+                    pass
+
             # Embed structured tasks and Git credentials for the Supervisor DAG scheduler & runtime
             if git_repo_url:
                 task_config["repo_url"] = git_repo_url
@@ -2189,6 +2211,9 @@ async def _bg_run_agent(
                 task_config["git_auth_token"] = git_token
                 task_config["git_pat_token"] = git_token
                 task_config["has_git_token"] = True
+
+            task_config["greenfield_repo_action"] = greenfield_repo_action or ""
+            task_config["greenfield_custom_instructions"] = greenfield_custom_instructions or ""
 
             base_branch = (
                 (cred.git_branch if "cred" in locals() and cred and getattr(cred, "git_branch", None) else None)
@@ -2280,6 +2305,21 @@ async def _bg_run_agent(
                     if agent_rec_mem:
                         et = ev_obj.get("event_type") or ev_obj.get("type") or ""
                         pl = ev_obj.get("payload") or {}
+
+                        # Fallback real-time TokenOps usage processing from shared JSONL volume
+                        if et == "llm_call_completed":
+                            try:
+                                from app.services.agents.agent_billing_service import record_agent_llm_usage
+                                record_agent_llm_usage(
+                                    payload=pl,
+                                    session_id=ev_obj.get("session_id") or pl.get("session_id"),
+                                    task_id=ev_obj.get("task_id") or pl.get("task_id"),
+                                    project_id=project_token,
+                                    event_uid=ev_obj.get("event_uid") or pl.get("event_uid"),
+                                )
+                            except Exception as b_err:
+                                logger.debug(f"[on_structured_event] TokenOps usage recording notice: {b_err}")
+
                         if et == "thinking":
                             thought = (pl.get("thought_summary") or pl.get("reasoning") or "")[:120]
                             agent_rec_mem["progress"] = max(agent_rec_mem.get("progress", 25), 40)
@@ -2348,12 +2388,16 @@ async def _bg_run_agent(
                 safe_callback_secret = getattr(settings, "agent_callback_secret", "") or "dsuite-agent-callback-secret"
                 safe_task_api_url = getattr(settings, "task_api_base_url", None) or safe_callback_url
                 safe_x_task_token = (x_task_token or "").replace("'", "")
+                safe_gf_action = (greenfield_repo_action or "").replace("'", "").replace('"', "").strip()
+                safe_gf_custom = (greenfield_custom_instructions or "").replace("'", "").replace('"', "").replace("\n", " ").strip()
                 exec_cmd = (
                     f"export AGENT_ID='{agent_id}' && "
                     f"export AGENT_NAME='{safe_agent_name}' && "
                     f"export AGENT_ROLE='{safe_agent_role}' && "
                     f"export PROJECT_ID='{project_token}' && "
                     f"export AGENT_CONFIG_FILE='{config_filename}' && "
+                    f"export GREENFIELD_REPO_ACTION='{safe_gf_action}' && "
+                    f"export GREENFIELD_CUSTOM_INSTRUCTIONS='{safe_gf_custom}' && "
                     f"export SKIP_IN_CONTAINER_PREVIEW='true' && "
                     f"export IDLE_TIMEOUT_SECONDS=1 && "
                     f"export CALLBACK_URL='{safe_callback_url}' && "
@@ -2648,6 +2692,10 @@ async def _bg_run_agent(
 class RunAgentRequest(BaseModel):
     git_repo_url: Optional[str] = None
     git_token: Optional[str] = None
+    greenfield_repo_action: Optional[str] = None
+    greenfield_custom_instructions: Optional[str] = None
+    repo_action: Optional[str] = None
+    repo_custom_instructions: Optional[str] = None
 
 @router.post("/agents/{agent_id}/run")
 async def run_agent(
@@ -2733,6 +2781,8 @@ async def run_agent(
     # Fire-and-forget: agent runs in background
     run_repo = effective_repo if effective_repo and effective_token else None
     run_token = effective_token if effective_repo and effective_token else None
+    single_gf_action = (request.greenfield_repo_action or request.repo_action) if request else None
+    single_gf_custom = (request.greenfield_custom_instructions or request.repo_custom_instructions) if request else None
     bg_task = asyncio.create_task(
         _bg_run_agent(
             agent_id,
@@ -2741,6 +2791,8 @@ async def run_agent(
             continuous=True,  # CRITICAL FIX: Enable continuous mode so agents keep working
             project_token=project_token,
             x_task_token=x_task_token,
+            greenfield_repo_action=single_gf_action,
+            greenfield_custom_instructions=single_gf_custom,
         )
     )
     bg_task.add_done_callback(_log_background_task_result)
@@ -2759,6 +2811,8 @@ async def reset_agent(
     """Reset an agent back to idle state and kill any active running container."""
     try:
         project_token = _normalize_project_token(project_token)
+        if project_token:
+            _cancelled_projects.add(project_token)
         # Handle instance suffix
         base_agent_id = agent_id.split("#")[0] if "#" in agent_id else agent_id
 
@@ -2799,16 +2853,31 @@ async def reset_agent(
 
         agent_service.append_agent_log(
             agent_id,
-            "🛑 Agent execution manually reset to idle.",
+            "🛑 Agent execution manually stopped by user.",
             "warning",
             project_token,
         )
+
+        try:
+            from app.infrastructure.events.event_broadcaster import get_event_broadcaster
+            get_event_broadcaster().publish_sync(project_token, {
+                "event_type": "agent_stopped",
+                "type": "agent_stopped",
+                "agent_id": agent_id,
+                "project_id": project_token,
+                "payload": {"message": "Agent execution stopped by user"},
+            })
+        except Exception:
+            pass
+
         return {"agent": agent, "status": "stopped"}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/agents/reset-all")
+@router.post("/agents/stop-all")
+@router.post("/agents/stop")
 async def reset_all_agents(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
@@ -2817,6 +2886,8 @@ async def reset_all_agents(
     """Reset all agents and task ownerships back to idle/pending for a project."""
     try:
         project_token = _normalize_project_token(project_token)
+        if project_token:
+            _cancelled_projects.add(project_token)
         
         # Stop any active containers
         try:
@@ -2877,9 +2948,10 @@ async def reset_all_agents(
 class RunAllRequest(BaseModel):
     agents_config: Optional[Dict[str, Dict[str, str]]] = None
     source_repo_url: Optional[str] = None
-
-
-
+    greenfield_repo_action: Optional[str] = None
+    greenfield_custom_instructions: Optional[str] = None
+    repo_action: Optional[str] = None
+    repo_custom_instructions: Optional[str] = None
 
 
 async def _run_phased_swarm_coordinator(
@@ -2888,6 +2960,8 @@ async def _run_phased_swarm_coordinator(
     git_repo_url: Optional[str],
     git_token: Optional[str],
     x_task_token: Optional[str],
+    greenfield_repo_action: Optional[str] = None,
+    greenfield_custom_instructions: Optional[str] = None,
 ):
     """Orchestrates multi-agent execution across dependency phases (DAG):
     Phase 1: Backend & Data Models
@@ -2899,6 +2973,21 @@ async def _run_phased_swarm_coordinator(
     from app.services.agents.master_orchestrator import extract_backend_contracts
     from app.core.config import get_settings
 
+    # Resolve greenfield directives from governance response if not passed explicitly
+    if not greenfield_repo_action or not greenfield_custom_instructions:
+        try:
+            from app.database import SessionLocal
+            with SessionLocal() as s_db:
+                g_row = s_db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
+                if g_row:
+                    greenfield_repo_action = greenfield_repo_action or getattr(g_row, "repo_action", None)
+                    greenfield_custom_instructions = greenfield_custom_instructions or getattr(g_row, "repo_custom_instructions", None)
+        except Exception:
+            pass
+
+    if project_token:
+        _cancelled_projects.discard(project_token)
+
     settings = get_settings()
     clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
     workspace_dir = os.path.join(settings.project_storage_root, clean_token)
@@ -2908,6 +2997,9 @@ async def _run_phased_swarm_coordinator(
     blackboard = get_swarm_blackboard(project_token, workspace_dir)
 
     # ── Phase 1: Backend & Data Models Execution ──
+    if project_token and project_token in _cancelled_projects:
+        agent_service.append_agent_log("M_agent_01", "[Swarm Coordinator] 🛑 Swarm execution stopped by user.", "warning", project_token)
+        return
     p1 = phased_plan.get("phase1_backend", [])
     if p1:
         agent_service.append_agent_log(
@@ -2917,12 +3009,17 @@ async def _run_phased_swarm_coordinator(
             project_token,
         )
         for aid in p1:
+            if project_token and project_token in _cancelled_projects:
+                agent_service.append_agent_log("M_agent_01", "[Swarm Coordinator] 🛑 Swarm execution stopped by user.", "warning", project_token)
+                return
             await _bg_run_agent(
                 agent_id=aid,
                 git_repo_url=git_repo_url,
                 git_token=git_token,
                 project_token=project_token,
                 x_task_token=x_task_token,
+                greenfield_repo_action=greenfield_repo_action,
+                greenfield_custom_instructions=greenfield_custom_instructions,
             )
 
         # Extract and publish API contracts for consumers
@@ -2942,6 +3039,9 @@ async def _run_phased_swarm_coordinator(
             logger.warning(f"[SwarmCoordinator] Contract extraction error: {e}")
 
     # ── Phase 2: Frontend Views & UI Integration ──
+    if project_token and project_token in _cancelled_projects:
+        agent_service.append_agent_log("M_agent_01", "[Swarm Coordinator] 🛑 Swarm execution stopped by user.", "warning", project_token)
+        return
     p2 = phased_plan.get("phase2_frontend", [])
     if p2:
         agent_service.append_agent_log(
@@ -2951,15 +3051,23 @@ async def _run_phased_swarm_coordinator(
             project_token,
         )
         for aid in p2:
+            if project_token and project_token in _cancelled_projects:
+                agent_service.append_agent_log("M_agent_01", "[Swarm Coordinator] 🛑 Swarm execution stopped by user.", "warning", project_token)
+                return
             await _bg_run_agent(
                 agent_id=aid,
                 git_repo_url=git_repo_url,
                 git_token=git_token,
                 project_token=project_token,
                 x_task_token=x_task_token,
+                greenfield_repo_action=greenfield_repo_action,
+                greenfield_custom_instructions=greenfield_custom_instructions,
             )
 
     # ── Phase 3: DevOps & Container Infrastructure ──
+    if project_token and project_token in _cancelled_projects:
+        agent_service.append_agent_log("M_agent_01", "[Swarm Coordinator] 🛑 Swarm execution stopped by user.", "warning", project_token)
+        return
     p3 = phased_plan.get("phase3_devops", [])
     if p3:
         agent_service.append_agent_log(
@@ -2969,15 +3077,23 @@ async def _run_phased_swarm_coordinator(
             project_token,
         )
         for aid in p3:
+            if project_token and project_token in _cancelled_projects:
+                agent_service.append_agent_log("M_agent_01", "[Swarm Coordinator] 🛑 Swarm execution stopped by user.", "warning", project_token)
+                return
             await _bg_run_agent(
                 agent_id=aid,
                 git_repo_url=git_repo_url,
                 git_token=git_token,
                 project_token=project_token,
                 x_task_token=x_task_token,
+                greenfield_repo_action=greenfield_repo_action,
+                greenfield_custom_instructions=greenfield_custom_instructions,
             )
 
     # ── Phase 4: Automated QA & Verification Gate ──
+    if project_token and project_token in _cancelled_projects:
+        agent_service.append_agent_log("M_agent_01", "[Swarm Coordinator] 🛑 Swarm execution stopped by user.", "warning", project_token)
+        return
     p4 = phased_plan.get("phase4_qa_gate") or phased_plan.get("phase3_qa_gate", ["T_agent_01"])
     if p4:
         agent_service.append_agent_log(
@@ -2987,12 +3103,17 @@ async def _run_phased_swarm_coordinator(
             project_token,
         )
         for aid in p4:
+            if project_token and project_token in _cancelled_projects:
+                agent_service.append_agent_log("M_agent_01", "[Swarm Coordinator] 🛑 Swarm execution stopped by user.", "warning", project_token)
+                return
             await _bg_run_agent(
                 agent_id=aid,
                 git_repo_url=git_repo_url,
                 git_token=git_token,
                 project_token=project_token,
                 x_task_token=x_task_token,
+                greenfield_repo_action=greenfield_repo_action,
+                greenfield_custom_instructions=greenfield_custom_instructions,
             )
 
     # ── Closed-Loop Convergence Battery & Self-Healing Repair Loop ──
@@ -3218,6 +3339,8 @@ async def run_all_agents(
     No more self-service chaos - Master assigns tasks and prevents conflicts
     """
     project_token = _normalize_project_token(project_token)
+    if project_token:
+        _cancelled_projects.discard(project_token)
     organization_name = _require_organization(current_user)
     
 
@@ -3399,6 +3522,20 @@ async def run_all_agents(
             if not a_mem.get("output_log"):
                 a_mem["output_log"] = []
 
+    req_gf_action = (request.greenfield_repo_action or request.repo_action) if request else None
+    req_gf_custom = (request.greenfield_custom_instructions or request.repo_custom_instructions) if request else None
+    if req_gf_action or req_gf_custom:
+        try:
+            gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_token).first()
+            if gov:
+                if req_gf_action:
+                    gov.repo_action = req_gf_action
+                if req_gf_custom:
+                    gov.repo_custom_instructions = req_gf_custom
+                db.commit()
+        except Exception as ge:
+            logger.debug(f"[run_all_agents] Note persisting repo directives: {ge}")
+
     # Launch Phased Swarm Coordinator in background
     try:
         asyncio.create_task(
@@ -3408,6 +3545,8 @@ async def run_all_agents(
                 git_repo_url=git_repo_url_to_use,
                 git_token=git_token_to_use,
                 x_task_token=x_task_token,
+                greenfield_repo_action=req_gf_action,
+                greenfield_custom_instructions=req_gf_custom,
             )
         )
     except Exception as spawn_err:

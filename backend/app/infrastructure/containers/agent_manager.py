@@ -40,6 +40,8 @@ class AgentContainerConfig:
     git_token: str | None = None
     git_branch: str | None = "main"
     tools: list[str] | None = None
+    greenfield_repo_action: str | None = None
+    greenfield_custom_instructions: str | None = None
 
 
 _cached_docker_client = None
@@ -102,6 +104,8 @@ class AgentManager:
                 "git_token": config.git_token,
                 "git_branch": config.git_branch,
                 "allowed_tools": config.tools or ["filesystem", "git", "terminal", "build_tool"],
+                "greenfield_repo_action": config.greenfield_repo_action,
+                "greenfield_custom_instructions": config.greenfield_custom_instructions,
                 "timestamp": time.time(),
             }
             signal_fname = f"prompt_{int(time.time()*1000)}_{config.task_id[:8]}.json"
@@ -280,6 +284,7 @@ class AgentManager:
             "WORKSPACE_PATH": "/workspace",
             "PROJECT_ID": config.project_id,
             "TENANT_ID": config.tenant_id,
+            "USER_ID": str(config.user_id) if config.user_id else "",
             "CALLBACK_URL": config.callback_url,
             "CALLBACK_SECRET": config.callback_secret,
             "MODEL_NAME": config.model or settings.ai_model,
@@ -294,6 +299,8 @@ class AgentManager:
             "GIT_REPO_URL": config.repo_url or "",
             "GIT_TOKEN": config.git_token or "",
             "GIT_BRANCH": config.git_branch or "main",
+            "GREENFIELD_REPO_ACTION": config.greenfield_repo_action or "",
+            "GREENFIELD_CUSTOM_INSTRUCTIONS": config.greenfield_custom_instructions or "",
             "IDLE_TIMEOUT_SECONDS": "7200",
         }
         if getattr(settings, "use_brn_llama", False):

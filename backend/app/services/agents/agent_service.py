@@ -205,6 +205,16 @@ class AgentService:
         do not dispatch blindly. Return the session/task but mark it blocked so the
         caller can decide whether to retry, fix upstream, or escalate.
         """
+        # Automatically resolve owner user_id from project if not explicitly supplied
+        if user_id is None and project_id:
+            doc = db.query(models.Document).filter(models.Document.project_token == project_id).first()
+            if doc and doc.owner_id:
+                user_id = doc.owner_id
+            if user_id is None:
+                gov = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_id).first()
+                if gov and gov.owner_id:
+                    user_id = gov.owner_id
+
         session = self.get_or_create_session(db, project_id=project_id, user_id=user_id)
 
         task = models.AgentTask(
@@ -239,6 +249,17 @@ class AgentService:
             db.refresh(task)
             db.refresh(session)
 
+        greenfield_action = None
+        custom_instructions = None
+        if project_id:
+            try:
+                gov_rec = db.query(models.GovernanceResponse).filter(models.GovernanceResponse.project_token == project_id).first()
+                if gov_rec:
+                    greenfield_action = getattr(gov_rec, "repo_action", None)
+                    custom_instructions = getattr(gov_rec, "repo_custom_instructions", None)
+            except Exception:
+                pass
+
         config = AgentContainerConfig(
             session_id=session.id,
             task_id=task.id,
@@ -255,6 +276,8 @@ class AgentService:
             git_token=git_token,
             git_branch=git_branch,
             tools=tools,
+            greenfield_repo_action=greenfield_action,
+            greenfield_custom_instructions=custom_instructions,
         )
 
         # Dispatch container in background thread so HTTP call returns immediately

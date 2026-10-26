@@ -286,10 +286,16 @@ function normalizeEvent(item) {
     }
 
     if (type === 'task_completed' || type === 'supervisor_completed' || type === 'session_completed' || type === 'llm_call_completed') {
-      const label =
-        type === 'task_completed'
-          ? `task_completed: ${payload.task_title || payload.title || payload.task_id || ''}`.trim()
-          : type;
+      let label = type;
+      if (type === 'task_completed') {
+        label = `task_completed: ${payload.task_title || payload.title || payload.task_id || ''}`.trim();
+      } else if (type === 'llm_call_completed') {
+        const tokensVal = payload.total_tokens || (Number(payload.input_tokens || 0) + Number(payload.output_tokens || 0));
+        const tokensStr = tokensVal ? ` (${Number(tokensVal).toLocaleString()} tokens)` : '';
+        const modelStr = payload.model ? ` [${payload.model}]` : '';
+        const agentStr = payload.sub_agent || payload.agent_name || payload.agent ? ` (${payload.sub_agent || payload.agent_name || payload.agent})` : '';
+        label = `AI Call completed${agentStr}${modelStr}${tokensStr}`;
+      }
       return {
         id: item.event_uid || item._clientId || Math.random().toString(),
         kind: 'check',

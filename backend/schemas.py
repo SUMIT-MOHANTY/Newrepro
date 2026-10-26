@@ -1,6 +1,6 @@
 import json
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 class UserBase(BaseModel):
@@ -455,6 +455,11 @@ class GovernanceResult(BaseModel):
 class PrerequisitesSaveRequest(BaseModel):
     prerequisites: Optional[list] = None
     custom_rules: Optional[str] = None
+    repo_action: Optional[str] = None
+    repo_custom_instructions: Optional[str] = None
+    greenfield_repo_action: Optional[str] = None
+    greenfield_custom_instructions: Optional[str] = None
+
 class AccessRequest(BaseModel):
     path: str
     section_name: str
@@ -485,12 +490,36 @@ class ProjectGitConfigRequest(BaseModel):
     source_repo_token: Optional[str] = None
     dest_repo_url: Optional[str] = None
     dest_repo_token: Optional[str] = None
+    repo_action: Optional[str] = None
+    repo_custom_instructions: Optional[str] = None
+    project_type: Optional[str] = None
 
 class ProjectGitConfigResponse(BaseModel):
     source_repo_url: Optional[str] = None
     source_repo_token: Optional[str] = None
     dest_repo_url: Optional[str] = None
     dest_repo_token: Optional[str] = None
+    repo_action: Optional[str] = None
+    repo_custom_instructions: Optional[str] = None
+    project_type: Optional[str] = None
+
+class InspectGitRepoRequest(BaseModel):
+    repo_url: str
+    pat: Optional[str] = None
+    provider: Optional[str] = "github"
+    project_token: Optional[str] = None
+    branch: Optional[str] = None
+
+class InspectGitRepoResponse(BaseModel):
+    valid: bool = True
+    is_empty: bool = True
+    has_code: bool = False
+    total_files: int = 0
+    top_level_items: List[Dict[str, Any]] = []
+    detected_stack: List[str] = []
+    message: str = ""
+    normalized_url: Optional[str] = None
+    provider: Optional[str] = None
 
 
 # ===== SUPPORT TICKETS =====

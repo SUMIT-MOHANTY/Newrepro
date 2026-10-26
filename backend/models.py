@@ -426,6 +426,8 @@ class GovernanceResponse(Base):
     source_repo_token = Column(String, nullable=True)
     dest_repo_url = Column(String, nullable=True)
     dest_repo_token = Column(String, nullable=True)
+    repo_action = Column(String, nullable=True)
+    repo_custom_instructions = Column(Text, nullable=True)
 
     # Soft-delete / archive flag — when True, project is hidden from UI but stays in DB
     is_archived = Column(Boolean, default=False)

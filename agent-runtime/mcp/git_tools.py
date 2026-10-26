@@ -158,12 +158,29 @@ class GitTools:
                 self._run(["git", "config", "user.email", author_email], cwd=str(target))
                 return ToolResult(success=True, data={"message": f"Updated existing repo on branch {branch}", "path": str(target)})
             else:
-                cmd = ["git", "clone", "--branch", branch, "--depth", "1", clean_url, "."]
-                self._run(cmd, cwd=str(target))
+                # Use robust init + remote add + fetch so it succeeds even when workspace has initial files (.agent, .gitignore)
+                self._run(["git", "init"], cwd=str(target))
                 self._ensure_ignore_rules(target)
                 self._run(["git", "config", "user.name", author_name], cwd=str(target))
                 self._run(["git", "config", "user.email", author_email], cwd=str(target))
-                return ToolResult(success=True, data={"message": f"Successfully cloned {repo_url} branch {branch}", "path": str(target)})
+                try:
+                    self._run(["git", "remote", "remove", "origin"], cwd=str(target))
+                except Exception:
+                    pass
+                self._run(["git", "remote", "add", "origin", clean_url], cwd=str(target))
+                fetch_res = subprocess.run(
+                    ["git", "fetch", "--depth", "1", "origin", branch],
+                    cwd=str(target),
+                    capture_output=True,
+                    text=True,
+                )
+                if fetch_res.returncode == 0:
+                    self._run(["git", "checkout", "-f", "-B", branch, f"origin/{branch}"], cwd=str(target))
+                    return ToolResult(success=True, data={"message": f"Successfully cloned {repo_url} branch {branch}", "path": str(target)})
+                else:
+                    self._run(["git", "checkout", "-B", branch], cwd=str(target))
+                    self._run(["git", "commit", "--allow-empty", f"--author={author_name} <{author_email}>", "-m", "Initialize project repository"], cwd=str(target))
+                    return ToolResult(success=True, data={"message": f"Initialized repo for empty remote {repo_url}", "path": str(target)})
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
@@ -442,8 +459,8 @@ class GitTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
-    def push(self, branch: str | None = None, remote: str = "origin", auth_token: str | None = None, repo_url: str | None = None, agent_name: str | None = None) -> ToolResult:
-        """Push local commits to remote repository (supports feature branches)."""
+    def push(self, branch: str | None = None, remote: str = "origin", auth_token: str | None = None, repo_url: str | None = None, agent_name: str | None = None, force: bool = False) -> ToolResult:
+        """Push local commits to remote repository (supports feature branches and force push)."""
         token = auth_token or os.environ.get("GIT_AUTH_TOKEN") or os.environ.get("GIT_PAT_TOKEN")
         url = repo_url or os.environ.get("GIT_REPO_URL")
         target_branch = branch
@@ -470,11 +487,19 @@ class GitTools:
                     else:
                         auth_url = clean_url
                         
+                    try:
+                        self._run(["git", "remote", "remove", "auth_origin"], cwd=str(self._workspace))
+                    except Exception:
+                        pass
                     self._run(["git", "remote", "add", "auth_origin", auth_url], cwd=str(self._workspace))
                     remote = "auth_origin"
                     temp_remote = True
             
-            self._run(["git", "push", "-u", remote, target_branch], cwd=str(self._workspace))
+            push_cmd = ["git", "push", "-u"]
+            if force:
+                push_cmd.append("--force")
+            push_cmd.extend([remote, target_branch])
+            self._run(push_cmd, cwd=str(self._workspace))
             
             if temp_remote:
                 self._run(["git", "remote", "remove", "auth_origin"], cwd=str(self._workspace))

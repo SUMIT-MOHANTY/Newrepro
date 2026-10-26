@@ -1400,6 +1400,12 @@ class Orchestrator:
             proj_id = getattr(s, "project_id", None) or os.environ.get("PROJECT_ID")
             if proj_id:
                 payload["project_id"] = proj_id
+        if "user_id" not in payload:
+            uid = getattr(s, "user_id", None) or os.environ.get("USER_ID")
+            if uid:
+                payload["user_id"] = uid
+        if "tenant_id" not in payload and getattr(s, "tenant_id", None):
+            payload["tenant_id"] = s.tenant_id
 
         event_uid = f"ev_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
         payload["event_uid"] = event_uid

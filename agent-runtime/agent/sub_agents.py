@@ -214,10 +214,26 @@ class SubAgent(ABC):
                 "- Write complete implementation code with realistic mock/seed domain data.\n\n"
             )
 
+        greenfield_custom_directive = ""
+        custom_instructions = (
+            (context.get("greenfield_custom_instructions") if context else "")
+            or (context.get("repo_custom_instructions") if context else "")
+            or os.environ.get("GREENFIELD_CUSTOM_INSTRUCTIONS", "")
+        ).strip()
+        if custom_instructions:
+            greenfield_custom_directive = (
+                f"\n\n### 📝 MANDATORY USER DIRECTIVE FOR PRE-EXISTING REPOSITORY CODE:\n"
+                f"This project is a Greenfield application, but the repository contains pre-existing code. "
+                f"The user has provided the following explicit instructions on how you must handle the codebase:\n"
+                f"\"\"\"\n{custom_instructions}\n\"\"\"\n"
+                f"You MUST strictly follow the user's instructions above when designing architecture, writing code, and modifying or retaining existing files.\n\n"
+            )
+
         return (
             f"# Agent Role: {self.role}\n"
             f"You are **{self.name}**, a specialized {self.role} agent in an autonomous multi-agent swarm.\n\n"
             f"{mode_directive}"
+            f"{greenfield_custom_directive}"
             f"{brd_context_str}"
             f"{arch_guidance}"
             f"{core_directive}"

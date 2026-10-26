@@ -126,8 +126,9 @@ export const API_ENDPOINTS = {
     AZURE_DEVOPS_GET_CREDENTIALS: `${API_BASE_URL}/azure-devops/credentials`,
     AZURE_DEVOPS_LIST_PROJECT_REPOS: `${API_BASE_URL}/azure-devops/list-project-repos`,
     
-    // Git Validation
+    // Git Validation & Inspection
     GIT_VALIDATE_CONNECTION: `${API_BASE_URL}/git/validate-connection`,
+    GIT_INSPECT_REPO: `${API_BASE_URL}/git/inspect-repo`,
 
     // AI Agents (Backend Docker Execution)
     AGENTS: `${API_BASE_URL}/agents`,
@@ -138,6 +139,8 @@ export const API_ENDPOINTS = {
     },
     AGENT_RUN: (agentId) => `${API_BASE_URL}/agents/${agentId}/run`,
     AGENT_RESET: (agentId) => `${API_BASE_URL}/agents/${agentId}/reset`,
+    AGENT_STOP: (agentId) => `${API_BASE_URL}/agents/${agentId}/reset`,
+    AGENT_STOP_ALL: `${API_BASE_URL}/agents/reset-all`,
     AGENT_RUN_ALL: `${API_BASE_URL}/agents/run-all`,
     AGENT_ADD: `${API_BASE_URL}/agents/add`,
     AGENT_UPDATE: (agentId) => `${API_BASE_URL}/agents/${agentId}`,

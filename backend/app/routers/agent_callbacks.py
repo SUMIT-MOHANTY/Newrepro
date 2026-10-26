@@ -49,6 +49,12 @@ async def receive_agent_callback(
     if not isinstance(payload, dict):
         payload = {"message": str(payload)}
 
+    # Ensure all root body fields (session_id, task_id, user_id, model, tokens, etc.)
+    # are accessible in payload for maximum resilience across all container versions & callers
+    for k, v in body.items():
+        if k not in ("payload", "event_type") and k not in payload:
+            payload[k] = v
+
     session_id = payload.get("session_id")
     task_id = payload.get("task_id")
     project_id = payload.get("project_id") or request.headers.get("x-project-id")
@@ -86,6 +92,20 @@ async def receive_agent_callback(
         except Exception as e:
             logger.warning(f"[AgentCallback] Failed to record event in DB: {e}")
 
+    # ── Real-Time TokenOps Billing & Ledger Recording for Agent Runtime LLM Calls ──
+    if event_type == "llm_call_completed":
+        try:
+            from app.services.agents.agent_billing_service import record_agent_llm_usage
+            record_agent_llm_usage(
+                payload=payload,
+                session_id=session_id,
+                task_id=task_id,
+                project_id=str(project_id or ""),
+                event_uid=body.get("event_uid") or payload.get("event_uid"),
+            )
+        except Exception as e:
+            logger.error(f"[AgentCallback] Failed to record TokenOps billing for agent LLM call: {e}", exc_info=True)
+
     # ── Live DB progress sync: runtime task lifecycle events update the local
     # task ownership rows so UI progress reflects real execution state.
     # (Root cause of "progress stuck at 0/10% even though the app is live":
@@ -98,7 +118,13 @@ async def receive_agent_callback(
             logger.warning(f"[AgentCallback] Task progress sync error: {e}")
 
     # Build human-readable live log message
-    msg = payload.get("message") or payload.get("label") or payload.get("final_text") or event_type
+    if event_type == "llm_call_completed":
+        t_tokens = int(payload.get("total_tokens") or (int(payload.get("input_tokens") or 0) + int(payload.get("output_tokens") or 0)))
+        m_name = payload.get("model") or "AI"
+        agent_lbl = payload.get("sub_agent") or payload.get("agent_name") or payload.get("agent") or payload.get("agent_id") or "Agent"
+        msg = f"AI Inference [{agent_lbl}]: {m_name} ({t_tokens:,} tokens)"
+    else:
+        msg = payload.get("message") or payload.get("label") or payload.get("final_text") or event_type
     import time
     is_success = event_type in ("preview_ready", "session_completed")
     is_error = "fail" in str(event_type).lower() or "error" in str(event_type).lower()

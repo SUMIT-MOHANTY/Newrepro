@@ -374,6 +374,26 @@ class ValidateGitRepoRequest(BaseModel):
     provider: str = "github"  # "github" or "azure-devops"
 
 
+def _clean_pat(raw_pat: Optional[str]) -> str:
+    if not raw_pat:
+        return ""
+    token = str(raw_pat).strip()
+    while (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'")):
+        token = token[1:-1].strip()
+    for prefix in ("bearer ", "token ", "ghp:", "pat:"):
+        if token.lower().startswith(prefix):
+            token = token[len(prefix):].strip()
+    return token
+
+def _clean_repo_url(url: str) -> str:
+    u = str(url or "").strip()
+    while (u.startswith('"') and u.endswith('"')) or (u.startswith("'") and u.endswith("'")):
+        u = u[1:-1].strip()
+    if u and not u.startswith("http://") and not u.startswith("https://") and not u.startswith("git@"):
+        u = "https://" + u
+    return u
+
+
 @router.post("/git/validate-connection")
 async def validate_git_connection(
     payload: ValidateGitRepoRequest,
@@ -385,9 +405,9 @@ async def validate_git_connection(
     For GitHub, this tests if the repo is accessible.
     """
     try:
-        repo_url = payload.repo_url.strip()
-        pat = (payload.pat or "").strip()
-        provider = payload.provider.lower()
+        repo_url = _clean_repo_url(payload.repo_url)
+        pat = _clean_pat(payload.pat)
+        provider = (payload.provider or "github").lower()
         
         if not repo_url:
             raise HTTPException(status_code=400, detail="Repository URL is required")
@@ -489,10 +509,27 @@ async def validate_git_connection(
             if pat:
                 try:
                     async with httpx.AsyncClient(timeout=10.0) as client:
+                        # GitHub requires User-Agent. Modern fine-grained tokens (github_pat_*)
+                        # and classic tokens (ghp_*) use Bearer auth.
+                        base_headers = {
+                            "Accept": "application/vnd.github+json",
+                            "User-Agent": "DSuite-BRD-Analyzer/2.0",
+                            "X-GitHub-Api-Version": "2022-11-28",
+                        }
+                        
+                        bearer_headers = {**base_headers, "Authorization": f"Bearer {pat}"}
                         response = await client.get(
                             f"https://api.github.com/repos/{owner}/{repo}",
-                            headers={"Authorization": f"token {pat}"}
+                            headers=bearer_headers,
                         )
+                        
+                        if response.status_code == 401:
+                            # Try legacy token scheme for older GitHub tokens
+                            token_headers = {**base_headers, "Authorization": f"token {pat}"}
+                            response = await client.get(
+                                f"https://api.github.com/repos/{owner}/{repo}",
+                                headers=token_headers,
+                            )
                         
                         if response.status_code == 200:
                             return {
@@ -506,14 +543,44 @@ async def validate_git_connection(
                                 "message": f"Connection successful! Repository '{owner}/{repo}' is accessible."
                             }
                         elif response.status_code == 401:
-                            raise HTTPException(
-                                status_code=401,
-                                detail="Invalid GitHub token. Please check your Personal Access Token."
-                            )
+                            # Check whether the PAT itself is valid by querying /user
+                            user_test = await client.get("https://api.github.com/user", headers=bearer_headers)
+                            if user_test.status_code == 401:
+                                user_test = await client.get("https://api.github.com/user", headers={**base_headers, "Authorization": f"token {pat}"})
+                            
+                            if user_test.status_code == 200:
+                                user_info = user_test.json()
+                                user_login = user_info.get("login", "unknown")
+                                raise HTTPException(
+                                    status_code=401,
+                                    detail=(
+                                        f"Token is valid for GitHub user '@{user_login}', but GitHub returned 401 Unauthorized for repository '{owner}/{repo}'. "
+                                        f"Please verify: 1) If using a fine-grained token, make sure '{repo}' is added under 'Repository access' with 'Contents: Read and write' permissions. "
+                                        f"2) If '{owner}' is an organization, check if SAML SSO authorization is required."
+                                    )
+                                )
+                            else:
+                                raise HTTPException(
+                                    status_code=401,
+                                    detail="Invalid or expired GitHub Personal Access Token. Please verify you copied the full token without extra spaces."
+                                )
                         elif response.status_code == 404:
                             raise HTTPException(
                                 status_code=404,
-                                detail=f"Repository '{owner}/{repo}' not found or not accessible with this token."
+                                detail=(
+                                    f"Repository '{owner}/{repo}' not found or not accessible with this token. "
+                                    f"If it is a private repository, ensure your PAT has 'Contents: Read and write' permissions and access to this repository."
+                                )
+                            )
+                        elif response.status_code == 403:
+                            err_msg = ""
+                            try:
+                                err_msg = response.json().get("message", "")
+                            except Exception:
+                                pass
+                            raise HTTPException(
+                                status_code=403,
+                                detail=f"Access forbidden by GitHub: {err_msg or 'Insufficient token permissions for this repository. Ensure Contents (Read & Write) is enabled.'}"
                             )
                         else:
                             raise HTTPException(
@@ -550,6 +617,172 @@ async def validate_git_connection(
             status_code=500,
             detail=f"Validation failed: {str(e)[:200]}"
         )
+
+
+@router.post("/git/inspect-repo", response_model=schemas.InspectGitRepoResponse)
+@router.post("/api/git/inspect-repo", response_model=schemas.InspectGitRepoResponse)
+async def inspect_git_repository(
+    payload: schemas.InspectGitRepoRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Inspect a git repository for greenfield compatibility.
+    Detects if the repository already contains code or files, provides top-level structure,
+    and identifies tech stack manifests.
+    """
+    import subprocess
+    import tempfile
+    import shutil
+    from pathlib import Path
+
+    repo_url = _clean_repo_url(payload.repo_url)
+    pat = _clean_pat(payload.pat)
+    provider = (payload.provider or "github").lower()
+
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="Repository URL is required")
+
+    # Normalize provider if obvious from URL
+    if "dev.azure.com" in repo_url or "visualstudio.com" in repo_url:
+        provider = "azure-devops"
+    elif "github.com" in repo_url:
+        provider = "github"
+
+    # Build authenticated URL
+    auth_url = repo_url
+    if pat and "@" not in auth_url:
+        if "github.com" in auth_url:
+            if auth_url.startswith("https://"):
+                auth_url = auth_url.replace("https://", f"https://oauth2:{pat}@")
+            elif auth_url.startswith("http://"):
+                auth_url = auth_url.replace("http://", f"http://oauth2:{pat}@")
+        else:
+            if auth_url.startswith("https://"):
+                auth_url = auth_url.replace("https://", f"https://x-access-token:{pat}@")
+            elif auth_url.startswith("http://"):
+                auth_url = auth_url.replace("http://", f"http://x-access-token:{pat}@")
+
+    # Step 1: Probe branches via git ls-remote (fast, 10s timeout)
+    try:
+        ls_cmd = ["git", "ls-remote", "--heads", auth_url]
+        res = subprocess.run(ls_cmd, capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            err = res.stderr.strip()
+            if "Authentication failed" in err or "could not read Username" in err or "terminal prompts disabled" in err:
+                raise HTTPException(status_code=401, detail="Authentication failed for this repository. Please check your PAT.")
+            elif "not found" in err.lower() or "repository not found" in err.lower():
+                raise HTTPException(status_code=404, detail="Repository not found. Please verify the URL.")
+            else:
+                raise HTTPException(status_code=400, detail=f"Failed to access repository: {err[:200]}")
+
+        heads = res.stdout.strip()
+        # If no heads exist, the repository is brand new and completely empty!
+        if not heads:
+            return schemas.InspectGitRepoResponse(
+                valid=True,
+                is_empty=True,
+                has_code=False,
+                total_files=0,
+                top_level_items=[],
+                detected_stack=[],
+                message="Repository is completely empty (no branches or commits found). Ready for clean greenfield generation.",
+                normalized_url=repo_url,
+                provider=provider,
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Repository connection check timed out.")
+
+    # Step 2: Shallow clone to inspect contents
+    temp_dir = tempfile.mkdtemp(prefix="repo_inspect_")
+    try:
+        clone_cmd = ["git", "clone", "--depth", "1"]
+        if payload.branch:
+            clone_cmd.extend(["--branch", payload.branch])
+        clone_cmd.extend([auth_url, temp_dir])
+
+        c_res = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=20)
+        if c_res.returncode != 0:
+            # If clone failed on specific branch or default
+            return schemas.InspectGitRepoResponse(
+                valid=True,
+                is_empty=False,
+                has_code=True,
+                total_files=1,
+                top_level_items=[{"name": "Remote Repository", "type": "directory"}],
+                detected_stack=[],
+                message="Repository contains existing branches and commits.",
+                normalized_url=repo_url,
+                provider=provider,
+            )
+
+        root = Path(temp_dir)
+        top_items = []
+        total_files = 0
+        code_files = 0
+        detected_stack = set()
+
+        IGNORED = {".git", "node_modules", "target", "bin", "build", "dist", ".gradle", ".mvn", "__pycache__", ".idea", ".vscode"}
+        CODE_EXTS = {".js", ".ts", ".jsx", ".tsx", ".py", ".java", ".go", ".cs", ".cpp", ".c", ".html", ".css", ".php", ".rb", ".rs", ".json", ".xml", ".yaml", ".yml"}
+
+        for item in sorted(root.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            if item.name == ".git":
+                continue
+            top_items.append({
+                "name": item.name,
+                "type": "directory" if item.is_dir() else "file"
+            })
+
+        for r, dirs, files in os.walk(temp_dir):
+            dirs[:] = [d for d in dirs if d not in IGNORED]
+            for f in files:
+                if f.startswith(".git"):
+                    continue
+                total_files += 1
+                f_lower = f.lower()
+                ext = os.path.splitext(f_lower)[1]
+                
+                # Stack detection
+                if f_lower == "package.json":
+                    detected_stack.add("Node.js")
+                elif f_lower == "tsconfig.json":
+                    detected_stack.add("TypeScript")
+                elif f_lower in ("pom.xml", "build.gradle", "build.gradle.kts"):
+                    detected_stack.add("Java")
+                elif f_lower in ("requirements.txt", "pyproject.toml", "pipfile"):
+                    detected_stack.add("Python")
+                elif f_lower == "go.mod":
+                    detected_stack.add("Go")
+                elif ext in (".csproj", ".sln"):
+                    detected_stack.add(".NET / C#")
+                elif f_lower in ("dockerfile", "docker-compose.yml", "docker-compose.yaml"):
+                    detected_stack.add("Docker")
+
+                if ext in CODE_EXTS and f_lower not in ("readme.md", "license", "licence", ".gitignore"):
+                    code_files += 1
+
+        # Check if the repo only has boilerplate doc like README / .gitignore
+        has_real_code = (code_files > 0) or any(i["type"] == "directory" for i in top_items)
+        is_empty = (total_files == 0)
+
+        message = (
+            f"Repository contains {total_files} existing file(s) across {len([i for i in top_items if i['type'] == 'directory'])} folder(s)."
+            if has_real_code
+            else "Repository is clean (contains only documentation / license files)."
+        )
+
+        return schemas.InspectGitRepoResponse(
+            valid=True,
+            is_empty=is_empty,
+            has_code=has_real_code,
+            total_files=total_files,
+            top_level_items=top_items[:30],
+            detected_stack=sorted(list(detected_stack)),
+            message=message,
+            normalized_url=repo_url,
+            provider=provider,
+        )
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @router.get("/azure-devops/repos")

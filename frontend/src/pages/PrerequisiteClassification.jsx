@@ -4,7 +4,8 @@ import { API_ENDPOINTS, VIBE_WORKSPACE_URL, API_BASE_URL } from '../config';
 import {
     KeyRound, CheckCircle2, Circle, AlertCircle, AlertTriangle, ArrowRight,
     ChevronLeft, Database, Globe, Server,
-    Lock, FileKey, Cloud, Package, Info, Sparkles, Loader2
+    Lock, FileKey, Cloud, Package, Info, Sparkles, Loader2,
+    Trash2, FolderGit2, FileCode, Sliders, RefreshCw
 } from 'lucide-react';
 
 import { getCachedTaskToken, setCachedTaskToken as cacheTaskToken } from '../utils/tokenCache';
@@ -599,6 +600,38 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
     const [gitToastVisible, setGitToastVisible] = useState(false);
     const gitToastTimerRef = useRef(null);
 
+    // Greenfield non-empty repo detection and strategy modal state
+    const [projectType, setProjectType] = useState(() => {
+        if (selectedProjectKey) {
+            return localStorage.getItem(`project_type_${selectedProjectKey}`) || 'greenfield';
+        }
+        return 'greenfield';
+    });
+    const [showGreenfieldModal, setShowGreenfieldModal] = useState(false);
+    const [greenfieldRepoDetails, setGreenfieldRepoDetails] = useState(null);
+    const [isInspectingRepo, setIsInspectingRepo] = useState(false);
+    const [greenfieldAction, setGreenfieldAction] = useState(() => {
+        if (selectedProjectKey) {
+            return localStorage.getItem(`greenfield_repo_action_${selectedProjectKey}`) || '';
+        }
+        return '';
+    });
+    const [greenfieldCustomInstructions, setGreenfieldCustomInstructions] = useState(() => {
+        if (selectedProjectKey) {
+            return localStorage.getItem(`greenfield_custom_instructions_${selectedProjectKey}`) || '';
+        }
+        return '';
+    });
+    // Temporary modal state while making a choice
+    const [modalActionChoice, setModalActionChoice] = useState('wipe');
+    const [modalCustomInstructions, setModalCustomInstructions] = useState('');
+    const [modalNewRepoUrl, setModalNewRepoUrl] = useState('');
+    const [modalNewRepoToken, setModalNewRepoToken] = useState('');
+    const [modalNewRepoProvider, setModalNewRepoProvider] = useState('github');
+    const [isValidatingModalNewRepo, setIsValidatingModalNewRepo] = useState(false);
+    const [modalNewRepoValidation, setModalNewRepoValidation] = useState(null);
+    const [modalNewRepoError, setModalNewRepoError] = useState('');
+
     // Auto-dismiss general error toast after 6 seconds
     useEffect(() => {
         if (error) {
@@ -915,6 +948,17 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     setGlobalGitRepoUrl(configData.dest_repo_url || '');
                     setHasSavedGlobalGitToken(Boolean(configData.dest_repo_token));
                     setGlobalGitToken('');
+                    if (configData.repo_action) {
+                        setGreenfieldAction(configData.repo_action);
+                        setModalActionChoice(configData.repo_action);
+                    }
+                    if (configData.repo_custom_instructions) {
+                        setGreenfieldCustomInstructions(configData.repo_custom_instructions);
+                        setModalCustomInstructions(configData.repo_custom_instructions);
+                    }
+                    if (configData.project_type) {
+                        setProjectType(configData.project_type);
+                    }
                     return;
                 }
 
@@ -1067,6 +1111,21 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     analysisObj = JSON.parse(projectDoc.analysis_result);
                 } catch {
                     analysisObj = null;
+                }
+
+                // Extract and store project classification (greenfield / brownfield / migration)
+                const docProjectType = 
+                    analysisObj?.project_type ||
+                    analysisObj?.metrics?.project_type ||
+                    analysisObj?.stage1?.development_classification?.type ||
+                    analysisObj?.projectMeta?.project_type ||
+                    projectDoc?.project_type;
+                if (docProjectType) {
+                    const normType = String(docProjectType).trim().toLowerCase();
+                    setProjectType(normType);
+                    if (selectedProjectKey) {
+                        localStorage.setItem(`project_type_${selectedProjectKey}`, normType);
+                    }
                 }
 
                 const detectedRepo = extractRepoSuggestionFromAnalysis(analysisObj);
@@ -1407,13 +1466,170 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
             if (data.normalized_url && data.normalized_url !== globalGitRepoUrl.trim()) {
                 setGlobalGitRepoUrl(data.normalized_url);
             }
+
+            // Inspect repository contents for greenfield compatibility
+            const isGreenfield = (projectType || '').toLowerCase() === 'greenfield';
+            if (isGreenfield) {
+                await inspectGreenfieldRepo(
+                    data.normalized_url || globalGitRepoUrl.trim(),
+                    globalGitToken.trim() || null,
+                    repoProvider
+                );
+            }
         } catch (err) {
             console.error('Git validation error:', err);
             showGitToast(sanitizeErrorMessage(err));
         } finally {
             setIsValidatingGit(false);
         }
-    }, [globalGitRepoUrl, globalGitToken, repoProvider, showGitToast]);
+    }, [globalGitRepoUrl, globalGitToken, repoProvider, showGitToast, projectType]);
+
+    const inspectGreenfieldRepo = useCallback(async (targetUrl, targetPat, targetProvider) => {
+        if (!targetUrl || !targetUrl.trim()) return null;
+        setIsInspectingRepo(true);
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(API_ENDPOINTS.GIT_INSPECT_REPO, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    repo_url: targetUrl.trim(),
+                    pat: targetPat ? targetPat.trim() : null,
+                    provider: targetProvider || repoProvider,
+                    project_token: selectedProjectKey,
+                }),
+            });
+            if (res.ok) {
+                const details = await res.json();
+                setGreenfieldRepoDetails(details);
+                const isGreenfield = (projectType || '').toLowerCase() === 'greenfield';
+                if (isGreenfield && details.has_code && !details.is_empty) {
+                    setShowGreenfieldModal(true);
+                    return details;
+                }
+            }
+        } catch (e) {
+            console.warn('[GitInspect] Error inspecting repository:', e);
+        } finally {
+            setIsInspectingRepo(false);
+        }
+        return null;
+    }, [projectType, repoProvider, selectedProjectKey]);
+
+    const handleApplyGreenfieldStrategy = async () => {
+        let actionToSave = modalActionChoice;
+        let customToSave = '';
+        if (modalActionChoice === 'new_repo') {
+            if (!modalNewRepoUrl.trim()) {
+                setModalNewRepoError('Please enter a new repository URL.');
+                return;
+            }
+            setGlobalGitRepoUrl(modalNewRepoUrl.trim());
+            if (modalNewRepoToken) {
+                setGlobalGitToken(modalNewRepoToken.trim());
+            }
+            setGreenfieldAction('new_repo');
+            localStorage.setItem(`greenfield_repo_action_${selectedProjectKey}`, 'new_repo');
+        } else if (modalActionChoice === 'wipe') {
+            setGreenfieldAction('wipe');
+            localStorage.setItem(`greenfield_repo_action_${selectedProjectKey}`, 'wipe');
+        } else if (modalActionChoice === 'custom') {
+            if (!modalCustomInstructions.trim()) {
+                setModalNewRepoError('Please provide custom instructions for the agents.');
+                return;
+            }
+            customToSave = modalCustomInstructions.trim();
+            setGreenfieldAction('custom');
+            setGreenfieldCustomInstructions(customToSave);
+            localStorage.setItem(`greenfield_repo_action_${selectedProjectKey}`, 'custom');
+            localStorage.setItem(`greenfield_custom_instructions_${selectedProjectKey}`, customToSave);
+        }
+
+        // Instantly sync greenfield strategy with backend git-config API
+        try {
+            const syncPayload = {
+                repo_action: actionToSave,
+                repo_custom_instructions: customToSave || null,
+            };
+            if (modalActionChoice === 'new_repo') {
+                syncPayload.dest_repo_url = modalNewRepoUrl.trim();
+                if (modalNewRepoToken) syncPayload.dest_repo_token = modalNewRepoToken.trim();
+            }
+            await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify(syncPayload),
+            });
+        } catch (syncErr) {
+            console.warn('[handleApplyGreenfieldStrategy] Failed to sync git-config with backend:', syncErr);
+        }
+
+        setShowGreenfieldModal(false);
+        setModalNewRepoError('');
+    };
+
+    const handleValidateModalNewRepo = async () => {
+        if (!modalNewRepoUrl.trim()) {
+            setModalNewRepoError('Please enter a repository URL to test.');
+            return;
+        }
+        setIsValidatingModalNewRepo(true);
+        setModalNewRepoError('');
+        setModalNewRepoValidation(null);
+        try {
+            const token = localStorage.getItem('token');
+            const res = await fetch(API_ENDPOINTS.GIT_VALIDATE_CONNECTION, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    repo_url: modalNewRepoUrl.trim(),
+                    pat: modalNewRepoToken.trim() || null,
+                    provider: modalNewRepoProvider,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Validation failed for new repository');
+            }
+            setModalNewRepoValidation(data);
+            if (data.normalized_url) {
+                setModalNewRepoUrl(data.normalized_url);
+            }
+            // Inspect new repo
+            const inspectRes = await fetch(API_ENDPOINTS.GIT_INSPECT_REPO, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    repo_url: (data.normalized_url || modalNewRepoUrl).trim(),
+                    pat: modalNewRepoToken.trim() || null,
+                    provider: modalNewRepoProvider,
+                    project_token: selectedProjectKey,
+                }),
+            });
+            if (inspectRes.ok) {
+                const inspectData = await inspectRes.json();
+                if (inspectData.has_code && !inspectData.is_empty) {
+                    setModalNewRepoError(`Warning: The new repository also contains ${inspectData.total_files} file(s). Recommended to use an empty repo or choose Wipe.`);
+                }
+            }
+        } catch (err) {
+            setModalNewRepoError(sanitizeErrorMessage(err));
+        } finally {
+            setIsValidatingModalNewRepo(false);
+        }
+    };
 
     const totalItems = prerequisites.length;
     const providedCount = prerequisites.filter(p => p.provided).length;
@@ -1453,6 +1669,17 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 } catch {
                     throw new Error('Please enter a valid Git repository URL (e.g., https://github.com/org/repo.git).');
                 }
+
+                // Greenfield existing repo conflict protection
+                const isGreenfield = (projectType || '').toLowerCase() === 'greenfield';
+                if (isGreenfield && !greenfieldAction && repo) {
+                    const inspection = await inspectGreenfieldRepo(repo, pat, repoProvider);
+                    if (inspection && inspection.has_code && !inspection.is_empty) {
+                        setSubmitting(false);
+                        setShowGreenfieldModal(true);
+                        return;
+                    }
+                }
                 
                 // Save global Git config from prerequisites so all agents reuse it.
                 const sourceUrl = analysisRepoSuggestion?.url || repo;
@@ -1463,6 +1690,9 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     dest_repo_url: repo,
                 };
                 if (pat) destGitConfigPayload.dest_repo_token = pat;
+                if (greenfieldAction) destGitConfigPayload.repo_action = greenfieldAction;
+                if (greenfieldCustomInstructions) destGitConfigPayload.repo_custom_instructions = greenfieldCustomInstructions;
+                if (projectType) destGitConfigPayload.project_type = projectType;
 
                 const destConfigRes = await fetch(`${API_BASE_URL}/api/projects/${selectedProjectKey}/git-config`, {
                     method: 'POST',
@@ -1529,6 +1759,8 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 progress,
                 totalItems,
                 providedCount,
+                greenfield_repo_action: greenfieldAction,
+                greenfield_custom_instructions: greenfieldCustomInstructions,
                 // Persist all items with their provided flag so UI can be restored fully.
                 items: prerequisites.map((p) => sanitizePrerequisiteForAiPayload(p)),
             };
@@ -1559,6 +1791,10 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     body: JSON.stringify({
                         prerequisites: prerequisites.map(p => sanitizePrerequisiteForAiPayload(p)),
                         custom_rules: customRules,
+                        repo_action: greenfieldAction || null,
+                        repo_custom_instructions: greenfieldCustomInstructions || null,
+                        greenfield_repo_action: greenfieldAction || null,
+                        greenfield_custom_instructions: greenfieldCustomInstructions || null,
                     }),
                 });
             } catch (err) {
@@ -2457,7 +2693,18 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                 <div className="bg-app-bg-card/90 backdrop-blur-xl rounded-2xl shadow-lg border border-app-border-light/80 p-6 mb-6">
                     {!['developer_only', 'ai_assist', 'vibe_coding'].includes(processMode) && (
                         <div className="mb-6 pb-6 border-b border-app-border-light">
-                            <h3 className="text-base font-bold text-app-text-main mb-1">Git Configuration</h3>
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <h3 className="text-base font-bold text-app-text-main">Git Configuration</h3>
+                                <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border uppercase tracking-wider ${
+                                    (projectType || '').toLowerCase() === 'brownfield'
+                                        ? 'bg-amber-500/10 text-amber-700 border-amber-300 dark:border-amber-700 dark:text-amber-300'
+                                        : (projectType || '').toLowerCase() === 'migration' || (projectType || '').toLowerCase() === 'modernization'
+                                        ? 'bg-blue-500/10 text-blue-700 border-blue-300 dark:border-blue-700 dark:text-blue-300'
+                                        : 'bg-emerald-500/10 text-emerald-700 border-emerald-300 dark:border-emerald-700 dark:text-emerald-300'
+                                }`}>
+                                    {(projectType || 'greenfield').toUpperCase()} APP
+                                </span>
+                            </div>
                             <p className="text-sm text-app-text-muted mb-4">
                                 Provide one global repository (GitHub or Azure DevOps) here. All agents in this project will use these credentials. PAT is optional for public repositories.
                             </p>
@@ -2616,6 +2863,65 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                                 {isLoadingGitConfig && (
                                     <p className="text-xs text-app-text-muted">Loading saved Git config...</p>
                                 )}
+
+                                {isInspectingRepo && (
+                                    <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 mt-2">
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        <span>Inspecting repository files for Greenfield compatibility...</span>
+                                    </div>
+                                )}
+
+                                {greenfieldAction && (
+                                    <div className={`mt-4 p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm ${
+                                        greenfieldAction === 'wipe'
+                                            ? 'bg-amber-500/10 border-amber-300 dark:border-amber-700/80 text-amber-900 dark:text-amber-100'
+                                            : greenfieldAction === 'custom'
+                                                ? 'bg-purple-500/10 border-purple-300 dark:border-purple-700/80 text-purple-900 dark:text-purple-100'
+                                                : 'bg-emerald-500/10 border-emerald-300 dark:border-emerald-700/80 text-emerald-900 dark:text-emerald-100'
+                                    }`}>
+                                        <div className="flex items-start gap-3 min-w-0">
+                                            {greenfieldAction === 'wipe' ? (
+                                                <div className="w-8 h-8 rounded-lg bg-amber-200 dark:bg-amber-900/50 flex items-center justify-center flex-shrink-0 text-amber-700 dark:text-amber-300">
+                                                    <Trash2 className="w-4 h-4" />
+                                                </div>
+                                            ) : greenfieldAction === 'custom' ? (
+                                                <div className="w-8 h-8 rounded-lg bg-purple-200 dark:bg-purple-900/50 flex items-center justify-center flex-shrink-0 text-purple-700 dark:text-purple-300">
+                                                    <FileCode className="w-4 h-4" />
+                                                </div>
+                                            ) : (
+                                                <div className="w-8 h-8 rounded-lg bg-emerald-200 dark:bg-emerald-900/50 flex items-center justify-center flex-shrink-0 text-emerald-700 dark:text-emerald-300">
+                                                    <CheckCircle2 className="w-4 h-4" />
+                                                </div>
+                                            )}
+                                            <div className="min-w-0">
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span className="text-xs font-bold uppercase tracking-wider">
+                                                        {greenfieldAction === 'wipe' && 'Greenfield Strategy: Clean Slate'}
+                                                        {greenfieldAction === 'custom' && 'Greenfield Strategy: Custom Directive'}
+                                                        {greenfieldAction === 'new_repo' && 'Greenfield Strategy: New Clean Repository'}
+                                                    </span>
+                                                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-black/10 dark:bg-white/10">Active</span>
+                                                </div>
+                                                <p className="text-xs font-medium mt-0.5 opacity-90 leading-relaxed">
+                                                    {greenfieldAction === 'wipe' && 'The AI agents will clean out pre-existing repository code and start brand new from the BRD requirements.'}
+                                                    {greenfieldAction === 'custom' && (greenfieldCustomInstructions ? `"${greenfieldCustomInstructions}"` : 'Custom user instructions will govern pre-existing code.')}
+                                                    {greenfieldAction === 'new_repo' && 'Agents will build in the clean replacement repository.'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setModalActionChoice(greenfieldAction || 'wipe');
+                                                setModalCustomInstructions(greenfieldCustomInstructions || '');
+                                                setShowGreenfieldModal(true);
+                                            }}
+                                            className="px-3 py-1.5 text-xs font-bold rounded-lg border border-current hover:bg-black/5 dark:hover:bg-white/5 transition-colors self-start sm:self-center flex-shrink-0"
+                                        >
+                                            Change Strategy
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
@@ -2651,6 +2957,243 @@ const PrerequisiteClassification = ({ fetchRoadmapData, selectedProjectKey, proj
                     </div>
                 </div>
             </div>
+
+            {/* Greenfield Non-Empty Repository Modal */}
+            {showGreenfieldModal && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-[9999] p-3 sm:p-4 overflow-y-auto">
+                    <div className="bg-app-bg-card rounded-2xl shadow-2xl border border-amber-300 dark:border-amber-700 max-w-lg w-full my-auto flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                        {/* Glow Banner */}
+                        <div className="h-1 bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500" />
+
+                        {/* Modal Header */}
+                        <div className="px-5 py-3.5 border-b border-app-border-light bg-gradient-to-b from-amber-500/10 to-transparent">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-300 dark:border-amber-700 flex items-center justify-center flex-shrink-0 text-amber-600 dark:text-amber-400">
+                                    <AlertTriangle className="w-4 h-4" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <h3 className="text-sm sm:text-base font-extrabold text-app-text-main truncate">
+                                            Greenfield: Existing Code Detected
+                                        </h3>
+                                        <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-300 uppercase tracking-wider flex-shrink-0">
+                                            Action Required
+                                        </span>
+                                    </div>
+                                    <p className="text-[11px] text-app-text-muted mt-0.5 truncate">
+                                        Marked as <strong>Greenfield</strong>, but the repository already contains code.
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Compact Inspection Details Strip */}
+                            <div className="mt-2.5 px-3 py-1.5 rounded-lg bg-app-bg-page border border-app-border flex items-center justify-between text-[11px] gap-2 flex-wrap">
+                                <div className="flex items-center gap-2 min-w-0 flex-1">
+                                    <span className="font-mono text-app-text-main font-semibold truncate max-w-[220px]" title={globalGitRepoUrl}>
+                                        {globalGitRepoUrl.replace('https://github.com/', '').replace('https://dev.azure.com/', '')}
+                                    </span>
+                                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold text-[10px] whitespace-nowrap">
+                                        {greenfieldRepoDetails?.total_files || 'Multiple'} files
+                                    </span>
+                                </div>
+                                {greenfieldRepoDetails?.top_level_items && greenfieldRepoDetails.top_level_items.length > 0 && (
+                                    <div className="flex items-center gap-1 overflow-x-auto text-[10px] font-mono">
+                                        {greenfieldRepoDetails.top_level_items.slice(0, 4).map((item, idx) => (
+                                            <span key={idx} className="px-1.5 py-0.5 rounded bg-app-bg-card border border-app-border text-app-text-muted whitespace-nowrap">
+                                                {item.type === 'directory' ? '📁' : '📄'} {item.name}
+                                            </span>
+                                        ))}
+                                        {greenfieldRepoDetails.top_level_items.length > 4 && (
+                                            <span className="text-app-text-muted text-[10px]">+{greenfieldRepoDetails.top_level_items.length - 4} more</span>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Modal Body: Strategy Selection */}
+                        <div className="px-5 py-3 space-y-2 max-h-[55vh] overflow-y-auto">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-app-text-label">
+                                How should the AI agents proceed?
+                            </p>
+
+                            {/* Option 1: Wipe & Build Fresh */}
+                            <div
+                                onClick={() => setModalActionChoice('wipe')}
+                                className={`p-2.5 rounded-xl border transition-all cursor-pointer relative ${
+                                    modalActionChoice === 'wipe'
+                                        ? 'border-amber-500 bg-amber-500/10 shadow-sm'
+                                        : 'border-app-border bg-app-bg-page hover:border-amber-400/50'
+                                }`}
+                            >
+                                <div className="flex items-start gap-2.5">
+                                    <input
+                                        type="radio"
+                                        name="greenfield_strategy"
+                                        checked={modalActionChoice === 'wipe'}
+                                        onChange={() => setModalActionChoice('wipe')}
+                                        className="mt-0.5 w-3.5 h-3.5 text-amber-600 focus:ring-amber-500"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                            <Trash2 className="w-3.5 h-3.5 text-amber-600" />
+                                            <span className="text-xs font-bold text-app-text-main">
+                                                Wipe Existing Code & Build Fresh
+                                            </span>
+                                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500 text-white uppercase tracking-wider">
+                                                Recommended
+                                            </span>
+                                        </div>
+                                        <p className="text-[11px] text-app-text-muted mt-0.5 leading-snug">
+                                            Clean out existing code (preserves Git remote) and build fresh from BRD requirements.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Option 2: Provide a Different (Empty) Repository */}
+                            <div
+                                onClick={() => setModalActionChoice('new_repo')}
+                                className={`p-2.5 rounded-xl border transition-all cursor-pointer relative ${
+                                    modalActionChoice === 'new_repo'
+                                        ? 'border-sky-500 bg-sky-500/10 shadow-sm'
+                                        : 'border-app-border bg-app-bg-page hover:border-sky-400/50'
+                                }`}
+                            >
+                                <div className="flex items-start gap-2.5">
+                                    <input
+                                        type="radio"
+                                        name="greenfield_strategy"
+                                        checked={modalActionChoice === 'new_repo'}
+                                        onChange={() => setModalActionChoice('new_repo')}
+                                        className="mt-0.5 w-3.5 h-3.5 text-sky-600 focus:ring-sky-500"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1.5">
+                                            <FolderGit2 className="w-3.5 h-3.5 text-sky-600" />
+                                            <span className="text-xs font-bold text-app-text-main">
+                                                Provide a Different (Empty) Repository
+                                            </span>
+                                        </div>
+                                        <p className="text-[11px] text-app-text-muted mt-0.5 leading-snug">
+                                            Connect a clean, empty repository URL for this greenfield project.
+                                        </p>
+
+                                        {modalActionChoice === 'new_repo' && (
+                                            <div className="mt-2 space-y-2 pt-2 border-t border-sky-200 dark:border-sky-900/50" onClick={(e) => e.stopPropagation()}>
+                                                <div>
+                                                    <input
+                                                        type="text"
+                                                        value={modalNewRepoUrl}
+                                                        onChange={(e) => setModalNewRepoUrl(e.target.value)}
+                                                        placeholder="https://github.com/org/empty-repo.git"
+                                                        className="w-full text-xs px-2.5 py-1.5 border rounded-lg bg-app-bg-card border-app-border text-app-text-main focus:ring-2 focus:ring-sky-400 outline-none font-mono"
+                                                    />
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <input
+                                                        type="password"
+                                                        value={modalNewRepoToken}
+                                                        onChange={(e) => setModalNewRepoToken(e.target.value)}
+                                                        placeholder="PAT (optional if public)"
+                                                        className="flex-1 text-xs px-2.5 py-1.5 border rounded-lg bg-app-bg-card border-app-border text-app-text-main focus:ring-2 focus:ring-sky-400 outline-none"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleValidateModalNewRepo}
+                                                        disabled={isValidatingModalNewRepo || !modalNewRepoUrl.trim()}
+                                                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-50 transition-colors whitespace-nowrap"
+                                                    >
+                                                        {isValidatingModalNewRepo ? (
+                                                            <><Loader2 className="w-3 h-3 animate-spin" /> Verifying…</>
+                                                        ) : (
+                                                            <><CheckCircle2 className="w-3 h-3" /> Verify</>
+                                                        )}
+                                                    </button>
+                                                </div>
+                                                {modalNewRepoValidation && (
+                                                    <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                                                        ✓ {modalNewRepoValidation.message}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Option 3: Keep Existing Code with Custom Instructions */}
+                            <div
+                                onClick={() => setModalActionChoice('custom')}
+                                className={`p-2.5 rounded-xl border transition-all cursor-pointer relative ${
+                                    modalActionChoice === 'custom'
+                                        ? 'border-purple-500 bg-purple-500/10 shadow-sm'
+                                        : 'border-app-border bg-app-bg-page hover:border-purple-400/50'
+                                }`}
+                            >
+                                <div className="flex items-start gap-2.5">
+                                    <input
+                                        type="radio"
+                                        name="greenfield_strategy"
+                                        checked={modalActionChoice === 'custom'}
+                                        onChange={() => setModalActionChoice('custom')}
+                                        className="mt-0.5 w-3.5 h-3.5 text-purple-600 focus:ring-purple-500"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1.5">
+                                            <FileCode className="w-3.5 h-3.5 text-purple-600" />
+                                            <span className="text-xs font-bold text-app-text-main">
+                                                Keep Existing Code & Give Custom Instructions
+                                            </span>
+                                        </div>
+                                        <p className="text-[11px] text-app-text-muted mt-0.5 leading-snug">
+                                            Keep current files and give custom rules on how agents handle them.
+                                        </p>
+
+                                        {modalActionChoice === 'custom' && (
+                                            <div className="mt-2 pt-2 border-t border-purple-200 dark:border-purple-900/50" onClick={(e) => e.stopPropagation()}>
+                                                <textarea
+                                                    rows={2}
+                                                    value={modalCustomInstructions}
+                                                    onChange={(e) => setModalCustomInstructions(e.target.value)}
+                                                    placeholder="e.g. Keep existing auth in /auth. Generate greenfield endpoints under /api/v2 and rewrite frontend..."
+                                                    className="w-full text-xs p-2 border rounded-lg bg-app-bg-card border-app-border text-app-text-main focus:ring-2 focus:ring-purple-400 outline-none leading-normal"
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {modalNewRepoError && (
+                                <div className="p-2 rounded-lg bg-red-500/10 border border-red-300 dark:border-red-800 text-[11px] text-red-700 dark:text-red-300">
+                                    {modalNewRepoError}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Modal Footer */}
+                        <div className="px-5 py-2.5 border-t border-app-border bg-app-bg-page/50 flex items-center justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowGreenfieldModal(false)}
+                                className="px-3.5 py-1.5 text-xs font-semibold rounded-lg border border-app-border hover:bg-app-bg-hover text-app-text-muted transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleApplyGreenfieldStrategy}
+                                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold rounded-lg text-white bg-gradient-to-r from-amber-600 via-orange-600 to-amber-600 hover:shadow shadow-amber-500/20 active:scale-95 transition-all"
+                            >
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                Apply Strategy & Proceed
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             
             {/* Toast / Snackbar Floating Notifications Container (Top Right - clears App Header) */}
             <div className="fixed top-20 right-6 z-[9999] flex flex-col gap-3 pointer-events-none">

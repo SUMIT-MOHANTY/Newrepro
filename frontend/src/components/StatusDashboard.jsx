@@ -843,6 +843,16 @@ export default function StatusDashboard({
         if (sourceUrl) {
             body.source_repo_url = sourceUrl;
         }
+        const greenfieldAction = localStorage.getItem(`greenfield_repo_action_${selectedProjectKey}`);
+        const greenfieldCustom = localStorage.getItem(`greenfield_custom_instructions_${selectedProjectKey}`);
+        if (greenfieldAction) {
+            body.greenfield_repo_action = greenfieldAction;
+            body.repo_action = greenfieldAction;
+        }
+        if (greenfieldCustom) {
+            body.greenfield_custom_instructions = greenfieldCustom;
+            body.repo_custom_instructions = greenfieldCustom;
+        }
 
         try {
             const headers = {
@@ -913,16 +923,47 @@ export default function StatusDashboard({
         }
     };
 
-    // ── Reset Agent ──────────────────────────────────────────────────
+    // ── Stop / Reset Agent ───────────────────────────────────────────
     const handleResetAgent = async (agentId) => {
+        // Optimistically set the agent to idle immediately in the UI for instant feedback
+        setAgents(prev => (prev || []).map(a => 
+            (a.id === agentId || a.status === 'running')
+                ? { ...a, status: 'idle', progress: 0, progress_message: 'Stopped by user' }
+                : a
+        ));
+        setRunningAll(false);
+        setRunningAgent(null);
         try {
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RESET(agentId)), {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${token}` },
             });
-            fetchAgents();
+            await fetchAgents();
+            await fetchTasks(false, 1, true);
         } catch (e) {
             console.error('Reset failed', e);
+        }
+    };
+
+    const handleStopAll = async () => {
+        // Optimistically stop all running agents in the UI
+        setAgents(prev => (prev || []).map(a => ({
+            ...a,
+            status: 'idle',
+            progress: 0,
+            progress_message: 'All agents stopped by user'
+        })));
+        setRunningAll(false);
+        setRunningAgent(null);
+        try {
+            await fetch(withProjectToken(API_ENDPOINTS.AGENT_STOP_ALL), {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            await fetchAgents();
+            await fetchTasks(false, 1, true);
+        } catch (e) {
+            console.error('Stop all failed', e);
         }
     };
 
@@ -967,6 +1008,16 @@ export default function StatusDashboard({
             if (sourceUrl) {
                 body.source_repo_url = sourceUrl;
             }
+            const greenfieldAction = localStorage.getItem(`greenfield_repo_action_${selectedProjectKey}`);
+            const greenfieldCustom = localStorage.getItem(`greenfield_custom_instructions_${selectedProjectKey}`);
+            if (greenfieldAction) {
+                body.greenfield_repo_action = greenfieldAction;
+                body.repo_action = greenfieldAction;
+            }
+            if (greenfieldCustom) {
+                body.greenfield_custom_instructions = greenfieldCustom;
+                body.repo_custom_instructions = greenfieldCustom;
+            }
 
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
@@ -1010,10 +1061,21 @@ export default function StatusDashboard({
             const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
             if (selectedProjectKey) headers['x-project-token'] = selectedProjectKey;
             if (hasValidTaskToken) headers['x-task-token'] = taskToken;
+            const multiBody = { agents_config: { __global__: globalConfig } };
+            const gfAction = localStorage.getItem(`greenfield_repo_action_${selectedProjectKey}`);
+            const gfCustom = localStorage.getItem(`greenfield_custom_instructions_${selectedProjectKey}`);
+            if (gfAction) {
+                multiBody.greenfield_repo_action = gfAction;
+                multiBody.repo_action = gfAction;
+            }
+            if (gfCustom) {
+                multiBody.greenfield_custom_instructions = gfCustom;
+                multiBody.repo_custom_instructions = gfCustom;
+            }
             await fetch(withProjectToken(API_ENDPOINTS.AGENT_RUN_ALL), {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ agents_config: { __global__: globalConfig } }),
+                body: JSON.stringify(multiBody),
             });
             await fetchAgents();
             await fetchTasks(false, 1, true);
@@ -2722,6 +2784,15 @@ export default function StatusDashboard({
                                                     {runningAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
                                                     {runningAll ? 'Starting...' : 'Run All'}
                                                 </button>
+                                                {(runningAll || agents.some(a => a.status === 'running')) && (
+                                                    <button
+                                                        onClick={() => handleStopAll()}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide bg-app-status-error hover:bg-red-700 text-white shadow-md hover:shadow-lg transition-all duration-200 animate-pulse"
+                                                        title="Stop all running agents immediately"
+                                                    >
+                                                        <StopCircle className="w-3.5 h-3.5" /> Stop All
+                                                    </button>
+                                                )}
                                                 {/* VS Code View button - temporarily hidden */}
                                                 {/* <button
                                                     onClick={() => setShowVSCodeWorkspace(true)}

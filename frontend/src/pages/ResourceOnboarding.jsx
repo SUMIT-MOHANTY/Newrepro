@@ -440,6 +440,20 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         fetchHistory();
       }
 
+      // Retrieve any greenfield action or custom instructions saved for this project
+      const greenfieldAction = localStorage.getItem(`greenfield_repo_action_${currentProjectToken}`) || '';
+      const greenfieldCustom = localStorage.getItem(`greenfield_custom_instructions_${currentProjectToken}`) || '';
+
+      const runBody = {};
+      if (greenfieldAction) {
+        runBody.greenfield_repo_action = greenfieldAction;
+        runBody.repo_action = greenfieldAction;
+      }
+      if (greenfieldCustom) {
+        runBody.greenfield_custom_instructions = greenfieldCustom;
+        runBody.repo_custom_instructions = greenfieldCustom;
+      }
+
       // After successful onboard, auto-trigger agent execution
       try {
         const runHeaders = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
@@ -447,7 +461,7 @@ export default function ResourceOnboarding({ selectedProjectKey, fetchHistory })
         await fetch(`${API_ENDPOINTS.AGENTS}/run-all?project_token=${encodeURIComponent(currentProjectToken)}`, {
           method: 'POST',
           headers: runHeaders,
-          body: JSON.stringify({}),
+          body: JSON.stringify(runBody),
         });
       } catch (runErr) {
         console.warn('Auto-trigger agents failed, user can manually start from dashboard:', runErr);

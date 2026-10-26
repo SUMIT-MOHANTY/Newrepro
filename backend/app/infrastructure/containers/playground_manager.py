@@ -590,7 +590,12 @@ class PlaygroundContainerManager:
     def stop_agent_container(self, project_token: str, agent_id: Optional[str] = None) -> bool:
         """Immediately stop and cancel any running agent container for a project/agent."""
         stopped_any = False
+        clean_proj = "".join(c for c in (project_token or "") if c.isalnum() or c == "_")[:10].lower()
+        base_aid = agent_id.split("#")[0] if agent_id else None
+        clean_aid = "".join(c for c in (base_aid or "") if c.isalnum() or c == "_")[:16].lower() if base_aid else None
+
         with self.lock:
+            # 1. Check in-memory registered containers
             for name, meta in list(self.containers.items()):
                 proj_match = meta.get("project_token") == project_token
                 agent_match = not agent_id or meta.get("agent_id") == agent_id
@@ -608,21 +613,59 @@ class PlaygroundContainerManager:
                     meta["status"] = "IDLE"
                     stopped_any = True
 
+            # 2. Write signal to host workspace directory directly as fallback
+            try:
+                from app.core.config import get_settings
+                settings = get_settings()
+                clean_token = (project_token or "default_project").replace("/", "_").replace("\\", "_")
+                ws_dir = os.path.join(settings.project_storage_root, clean_token)
+                if os.path.exists(ws_dir):
+                    sig_dir = os.path.join(ws_dir, ".agent_signals")
+                    os.makedirs(sig_dir, exist_ok=True)
+                    with open(os.path.join(sig_dir, "cancel_active.json"), "w", encoding="utf-8") as f:
+                        f.write(f'{{"action": "cancel", "timestamp": {time.time()}}}')
+            except Exception:
+                pass
+
+            # 3. Docker Python SDK container termination
             if self._docker_client:
                 try:
                     for c in self._docker_client.containers.list():
                         c_name = c.name
-                        if project_token in c_name or (agent_id and agent_id in c_name) or CONTAINER_PREFIX in c_name:
+                        matches_proj = (clean_proj and clean_proj in c_name) or (project_token and project_token in c_name)
+                        matches_agent = not clean_aid or clean_aid in c_name
+                        if matches_proj and matches_agent:
                             try:
                                 c.kill()
                             except Exception:
-                                try:
-                                    c.stop(timeout=2)
-                                except Exception:
-                                    pass
+                                pass
+                            try:
+                                c.remove(force=True)
+                            except Exception:
+                                pass
                             stopped_any = True
                 except Exception as e:
-                    logger.warning(f"[PlaygroundManager] Error stopping containers for {project_token}: {e}")
+                    logger.warning(f"[PlaygroundManager] Error stopping containers via SDK for {project_token}: {e}")
+
+            # 4. CLI Docker termination fallback (vital when docker SDK is in stub mode)
+            try:
+                res = subprocess.run(
+                    ["docker", "ps", "-a", "--filter", f"name={CONTAINER_PREFIX}", "--format", "{{.Names}}"],
+                    capture_output=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=5,
+                )
+                if res.returncode == 0:
+                    for c_name in [line.strip() for line in res.stdout.splitlines() if line.strip()]:
+                        matches_proj = (clean_proj and clean_proj in c_name) or (project_token and project_token in c_name)
+                        matches_agent = not clean_aid or clean_aid in c_name
+                        if matches_proj and matches_agent:
+                            subprocess.run(["docker", "rm", "-f", c_name], capture_output=True, timeout=10)
+                            stopped_any = True
+            except Exception as cli_err:
+                logger.warning(f"[PlaygroundManager] Error stopping containers via CLI for {project_token}: {cli_err}")
+
         return stopped_any
 
     def cleanup_all(self) -> None:
