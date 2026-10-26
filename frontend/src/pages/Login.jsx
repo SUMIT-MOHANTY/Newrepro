@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { Mail, Lock, ArrowRight, Loader2, ShieldCheck, Eye, EyeOff, Sparkles, Sun, Moon } from 'lucide-react';
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { sanitizeErrorMessage } from '../utils/errorHandling';
+import { clearTenantScopedState } from '../utils/auth';
 import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 import dsuiteLogoWhite from '../assets/DSuite Gradient Ribbon Logo White.png';
 import OrganizationSelect from './OrganizationSelect';

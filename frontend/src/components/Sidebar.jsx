@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
+import { X, Plus, Share2, History, Trash2, Activity, ShieldCheck, FileCheck, Users, CreditCard, Coins, Globe, LifeBuoy, User, LogOut } from 'lucide-react';
 import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 import dsuiteLogoWhite from '../assets/DSuite Gradient Ribbon Logo White.png';
 import { API_ENDPOINTS } from '../config';
