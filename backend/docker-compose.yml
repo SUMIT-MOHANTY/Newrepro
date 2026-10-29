@@ -1,0 +1,147 @@
+# =============================================================================
+# Docker Compose - Development Configuration
+# Purpose: Local development with SQLite, hot-reload, and volume-mounted source
+# =============================================================================
+
+version: "3.8"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Backend API Service - Development Mode
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: todo-backend-dev
+    restart: unless-stopped
+    
+    # Environment variables for development
+    environment:
+      - DJANGO_SETTINGS_MODULE=app.core.config
+      - DJANGO_SECRET_KEY=dev-secret-key-change-in-production
+      - DJANGO_DEBUG=True
+      - DATABASE_URL=sqlite:///app/data/db.sqlite3
+      - JWT_SECRET_KEY=dev-jwt-secret-change-in-production
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=60
+      - JWT_REFRESH_TOKEN_EXPIRE_DAYS=7
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000
+      - ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,backend
+      - SECURE_SSL_REDIRECT=False
+      - SESSION_COOKIE_SECURE=False
+      - CSRF_COOKIE_SECURE=False
+      - HOST=0.0.0.0
+      - PORT=8000
+    
+    # Port mapping
+    ports:
+      - "8000:8000"
+    
+    # Volume mounts for hot-reload development
+    volumes:
+      # Mount source code for hot-reload
+      - ./app:/app/app:ro
+      - ./main.py:/app/main.py:ro
+      - ./manage.py:/app/manage.py:ro
+      - ./requirements.txt:/app/requirements.txt:ro
+      # Persist SQLite database
+      - sqlite_data:/app/data
+      # Static files
+      - staticfiles:/app/staticfiles
+    
+    # Working directory
+    working_dir: /app
+    
+    # Command for development with hot-reload
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             python -m uvicorn main:application --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app"
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Networks
+    networks:
+      - todo-dev-network
+    
+    # Resource limits (development-appropriate)
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # Frontend Development Server (Optional)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: dockerfile
+      target: development
+    container_name: todo-frontend-dev
+    restart: unless-stopped
+    
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+    
+    ports:
+      - "5173:5173"
+    
+    volumes:
+      - ../frontend/src:/app/src:ro
+      - ../frontend/public:/app/public:ro
+      - ../frontend/index.html:/app/index.html:ro
+      - ../frontend/vite.config.js:/app/vite.config.js:ro
+      - ../frontend/tailwind.config.js:/app/tailwind.config.js:ro
+      - ../frontend/postcss.config.js:/app/postcss.config.js:ro
+      - node_modules:/app/node_modules
+    
+    command: >
+      sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    
+    networks:
+      - todo-dev-network
+    
+    depends_on:
+      backend:
+        condition: service_healthy
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+# -----------------------------------------------------------------------------
+# Named Volumes
+# -----------------------------------------------------------------------------
+volumes:
+  sqlite_data:
+    driver: local
+  staticfiles:
+    driver: local
+  node_modules:
+    driver: local
+
+# -----------------------------------------------------------------------------
+# Networks
+# -----------------------------------------------------------------------------
+networks:
+  todo-dev-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
