@@ -60,11 +60,23 @@ class RefreshTokenBlacklist(models.Model):
     @classmethod
     def is_blacklisted(cls, token_jti: str) -> bool:
         """Check if a token JTI is in the blacklist."""
+        if not token_jti:
+            return False
         return cls.objects.filter(token_jti=token_jti).exists()
     
     @classmethod
     def blacklist_token(cls, token_jti: str, expires_at, user_id=None):
         """Add a token to the blacklist."""
+        if not token_jti:
+            return None
+        
+        # Convert string user_id to UUID if needed
+        if user_id and isinstance(user_id, str):
+            try:
+                user_id = uuid.UUID(user_id)
+            except (ValueError, TypeError):
+                user_id = None
+        
         return cls.objects.create(
             token_jti=token_jti,
             expires_at=expires_at,
