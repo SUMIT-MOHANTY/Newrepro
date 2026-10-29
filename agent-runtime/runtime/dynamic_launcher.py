@@ -68,7 +68,8 @@ class DynamicAppLauncher:
         self.ignore_dirs = {
             ".git", ".agent", ".agent_ipc", ".agent_signals", ".agent_history",
             "node_modules", "venv", ".venv", "env", "__pycache__",
-            ".pytest_cache", ".coverage", "htmlcov", "dist", "build"
+            ".pytest_cache", ".coverage", "htmlcov", "dist", "build",
+            "vibecoding", "agent-runtime", "scratch"
         }
 
     def analyze_workspace(self) -> ArchitecturePlan:

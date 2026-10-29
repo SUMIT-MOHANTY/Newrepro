@@ -62,7 +62,7 @@ class SearchTools:
         for root, dirs, files in os.walk(str(search_root)):
             dirs[:] = [
                 d for d in dirs
-                if d not in {"node_modules", ".git", "dist", "build", "__pycache__", ".next", ".agent_history"}
+                if d not in {"node_modules", ".git", "dist", "build", "__pycache__", ".next", ".agent_history", "vibecoding", "agent-runtime", "scratch"}
             ]
 
             for filename in files:

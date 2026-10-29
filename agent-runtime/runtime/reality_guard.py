@@ -102,7 +102,7 @@ class WorkspaceState:
     def refresh(self) -> dict[str, FileMetadata]:
         """Scan the physical filesystem and update authoritative state."""
         current_files: dict[str, FileMetadata] = {}
-        ignored_dirs = {".git", "node_modules", "dist", ".vite", "__pycache__", ".agent_signals"}
+        ignored_dirs = {".git", "node_modules", "dist", ".vite", "__pycache__", ".agent_signals", "vibecoding", "agent-runtime", "scratch"}
 
         if os.path.exists(self.workspace_path):
             for root, dirs, filenames in os.walk(self.workspace_path):

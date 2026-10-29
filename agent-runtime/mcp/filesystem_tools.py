@@ -27,6 +27,9 @@ _FORBIDDEN_DIR_NAMES = {
     "build",
     ".next",
     "__pycache__",
+    "vibecoding",
+    "agent-runtime",
+    "scratch",
 }
 
 _FORBIDDEN_FILE_NAMES = {

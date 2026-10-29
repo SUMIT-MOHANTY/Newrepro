@@ -290,7 +290,7 @@ class BuildTools:
                 if (
                     child.is_dir()
                     and not child.name.startswith(".")
-                    and child.name not in ("node_modules", "venv", "__pycache__", "target", "build", "dist", ".git")
+                    and child.name not in ("node_modules", "venv", "__pycache__", "target", "build", "dist", ".git", "vibecoding", "agent-runtime", "scratch")
                     and child not in seen_paths
                 ):
                     p_info = self._inspect_dir_project(child)
