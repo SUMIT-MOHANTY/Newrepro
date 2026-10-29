@@ -29,17 +29,56 @@ export const clearAuthData = () => {
     clearTenantScopedState();
 };
 
-export const logoutAndRedirect = () => {
+// Store the redirect path for use by React Router
+let pendingRedirectPath = null;
+
+export const getPendingRedirect = () => {
+    const path = pendingRedirectPath;
+    pendingRedirectPath = null;
+    return path;
+};
+
+// Safe check for public paths without using window.location
+const isPublicPath = (path) => {
+    if (!path) return false;
+    return PUBLIC_AUTH_PATHS.has(path);
+};
+
+export const logoutAndRedirect = (currentPath) => {
     clearAuthData();
 
-    if (typeof window === 'undefined') return;
+    // Use provided currentPath or default to root
+    const path = currentPath || '/';
+    
     if (isAuthRedirectInProgress) return;
-
-    const currentPath = window.location.pathname || '/';
-    if (PUBLIC_AUTH_PATHS.has(currentPath)) return;
+    if (isPublicPath(path)) return;
 
     isAuthRedirectInProgress = true;
-    window.location.replace('/login');
+    // Store redirect path instead of using window.location.replace
+    // This allows React Router's Navigate component to handle the redirect
+    pendingRedirectPath = '/login';
+    // Dispatch a custom event that components can listen for
+    if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('auth:redirect-required', { detail: { path: '/login' } }));
+    }
+};
+
+// Get auth token from localStorage
+export const getAuthToken = () => {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('token');
+};
+
+// Set auth token in localStorage
+export const setAuthToken = (token) => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('token', token);
+};
+
+// Check if user is authenticated
+export const isAuthenticated = () => {
+    const token = getAuthToken();
+    return !!token && !isTokenExpired(token);
 };
 
 // Decode JWT token to check expiration
@@ -82,4 +121,3 @@ export const getTimeUntilExpiration = (token) => {
     const diff = expiration - now;
     return Math.floor(diff / 60000); // Convert to minutes
 };
-
