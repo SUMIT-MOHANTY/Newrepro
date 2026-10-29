@@ -1,10 +1,38 @@
 const colors = {
     primary: {
-        DEFAULT: '#2563eb', // blue-600
-        hover: '#1d4ed8',   // blue-700
-        light: '#eff6ff',   // blue-50
-        ring: '#bfdbfe',    // blue-200
-        dark: '#1e40af',    // blue-800
+        DEFAULT: '#4f46e5', // indigo-600
+        hover: '#4338ca',   // indigo-700
+        light: '#eef2ff',   // indigo-50
+        ring: '#c7d2fe',    // indigo-200
+        dark: '#3730a3',    // indigo-800
+    },
+    secondary: {
+        DEFAULT: '#64748b', // slate-500
+        hover: '#475569',   // slate-600
+        light: '#f8fafc',   // slate-50
+        ring: '#cbd5e1',    // slate-300
+        dark: '#334155',    // slate-700
+    },
+    success: {
+        DEFAULT: '#10b981', // emerald-500
+        hover: '#059669',   // emerald-600
+        light: '#ecfdf5',   // emerald-50
+        ring: '#a7f3d0',    // emerald-200
+        dark: '#047857',    // emerald-700
+    },
+    warning: {
+        DEFAULT: '#f59e0b', // amber-500
+        hover: '#d97706',   // amber-600
+        light: '#fffbeb',   // amber-50
+        ring: '#fde68a',    // amber-200
+        dark: '#b45309',    // amber-700
+    },
+    danger: {
+        DEFAULT: '#f43f5e', // rose-500
+        hover: '#e11d48',   // rose-600
+        light: '#fff1f2',   // rose-50
+        ring: '#fecdd3',    // rose-200
+        dark: '#be123c',    // rose-700
     },
     accent: {
         DEFAULT: '#4f46e5', // indigo-600
