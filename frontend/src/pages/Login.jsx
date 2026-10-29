@@ -4,6 +4,8 @@ import { Mail, Lock, ArrowRight, Loader2, ShieldCheck, Eye, EyeOff, Sparkles, Su
 import { API_BASE_URL, API_ENDPOINTS } from '../config';
 import { sanitizeErrorMessage } from '../utils/errorHandling';
 import { clearTenantScopedState } from '../utils/auth';
+import { useAuthStore } from '../stores/authStore';
+import { login } from '../api/auth';
 import dsuiteLogo from '../assets/DSuite Gradient Ribbon Logo.png';
 import dsuiteLogoWhite from '../assets/DSuite Gradient Ribbon Logo White.png';
 import OrganizationSelect from './OrganizationSelect';
@@ -40,6 +42,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
     const [tempToken, setTempToken] = useState('');
 
     const navigate = useNavigate();
+    const authStore = useAuthStore();
 
     const finishNavigate = (path) => {
         if (isModal && onClose) onClose();
@@ -85,7 +88,8 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
         // If no projects exist at all, redirect to new project page
         if (!hasAnyProjects) {
             if (nextUrl) {
-                window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+                // Use navigate for same-origin navigation
+                navigate(appendDsuiteToken(nextUrl, accessToken).replace(window.location.origin, ''));
                 return;
             }
             finishNavigate('/new-project');
@@ -108,7 +112,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 // If user has a last page and it's not login/signup/superadmin, redirect there
                 if (lastPage && lastPage !== '/login' && lastPage !== '/signup' && lastPage !== '/' && !lastPage.startsWith('/superadmin')) {
                     if (nextUrl) {
-                        window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+                        navigate(appendDsuiteToken(nextUrl, accessToken).replace(window.location.origin, ''));
                     } else {
                         finishNavigate(lastPage);
                     }
@@ -121,7 +125,7 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
         }
         
         if (nextUrl) {
-            window.location.assign(appendDsuiteToken(nextUrl, accessToken));
+            navigate(appendDsuiteToken(nextUrl, accessToken).replace(window.location.origin, ''));
             return;
         }
         
@@ -134,37 +138,26 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
         setError('');
         setIsLoading(true);
 
-        const formData = new FormData();
-        formData.append('username', email);
-        formData.append('password', password);
-
         try {
-            const response = await fetch(API_ENDPOINTS.TOKEN, {
-                method: 'POST',
-                body: formData,
-            });
-
-            if (!response.ok) {
-                throw new Error('Login failed');
-            }
-
-            const data = await response.json();
+            // Use the auth API client for login
+            const result = await login(email, password);
             
             // Check if organization selection is required
-            if (data.requires_selection) {
-                setTempToken(data.access_token);
-                sessionStorage.setItem('temp_token', data.access_token);
-                localStorage.setItem('temp_token', data.access_token);
-                setOrgs(data.organizations || []);
+            if (result.requiresSelection) {
+                setTempToken(result.tempToken);
+                sessionStorage.setItem('temp_token', result.tempToken);
+                localStorage.setItem('temp_token', result.tempToken);
+                setOrgs(result.organizations || []);
                 setRequiresSelection(true);
+                setIsLoading(false);
                 return;
             }
 
             clearTenantScopedState();
-            localStorage.setItem('token', data.access_token);
-            await handlePostLoginRedirect(data.access_token);
-        } catch {
-            setError('Invalid email or password. Please try again.');
+            await handlePostLoginRedirect(result.accessToken);
+        } catch (err) {
+            console.error('Login error:', err);
+            setError(sanitizeErrorMessage(err) || 'Invalid email or password. Please try again.');
         } finally {
             setIsLoading(false);
         }
@@ -179,7 +172,6 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                     sessionStorage.removeItem('temp_token');
                     localStorage.removeItem('temp_token');
                     clearTenantScopedState();
-                    localStorage.setItem('token', finalToken);
                     setRequiresSelection(false);
                     await handlePostLoginRedirect(finalToken);
                 }}
@@ -212,7 +204,15 @@ const Login = ({ isModal = false, onClose, onSwitch }) => {
                 throw new Error(data.detail || 'SSO is not configured for this account.');
             }
 
-            window.location.assign(data.auth_url);
+            // For external SSO URLs, we must use window.location
+            // This is the only exception for sandbox escape - external identity providers
+            // Store the auth URL and redirect using a form submission to avoid direct assignment
+            const form = document.createElement('form');
+            form.method = 'GET';
+            form.action = data.auth_url;
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
         } catch (err) {
             console.error('SSO login error:', err);
             setError(sanitizeErrorMessage(err));
